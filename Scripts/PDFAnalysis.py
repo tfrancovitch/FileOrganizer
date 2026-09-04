@@ -4,7 +4,7 @@ PDFAnalysis.py
 Part of: The File Organizer
 Version: 1.1.1
 
-Extracts metadata from every PDF file in the run's inventory CSV: page count,
+Extracts metadata from every PDF file selected by the database-backed analyzer engine: page count,
 encryption status, whether the first page has extractable text (a cheap
 signal for "scanned image PDF" vs. a real text document -- only the first
 page is checked, not the whole document, to stay fast at scale), and
@@ -13,16 +13,13 @@ standard document properties (Title/Author/Producer/CreationDate).
 Requires:
     pip install pypdf pdfplumber
 
-Usage:
-    python PDFAnalysis.py --csv DuplicateHashInventory.csv --output PDFInventory.csv --report PDFReport.txt
 """
 
-import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from file_organizer_common import run_analysis, to_long_path
+from file_organizer_common import to_long_path
 
 try:
     from pypdf import PdfReader
@@ -76,24 +73,3 @@ def report_extra(results):
         f"  Encrypted PDFs             : {encrypted}",
         f"  Likely scanned (no text)   : {no_text}",
     ]
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Extract PDF metadata for every PDF in the inventory.")
-    parser.add_argument("--csv", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--report")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--skip-cloud-only", action="store_true")
-    args = parser.parse_args()
-
-    run_analysis(
-        csv_path=args.csv, output_path=args.output, report_path=args.report,
-        extensions=EXTENSIONS, checkpoint_fields=CHECKPOINT_FIELDS, analyze_fn=analyze_pdf,
-        force=args.force, skip_cloud_only=args.skip_cloud_only,
-        report_title="PDF ANALYSIS REPORT", extra_report_lines_fn=report_extra,
-    )
-
-
-if __name__ == "__main__":
-    main()

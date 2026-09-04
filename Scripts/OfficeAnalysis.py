@@ -4,7 +4,7 @@ OfficeAnalysis.py
 Part of: The File Organizer
 Version: 1.3.1
 
-Extracts document properties from Office files in the run's inventory CSV:
+Extracts document properties from Office files selected by the database-backed analyzer engine:
 title, author, created/modified dates, and a type-appropriate content
 count (word count for Word, sheet count for Excel, slide count for
 PowerPoint).
@@ -37,17 +37,16 @@ than a .docx sitting next to it, not something to wonder about later.
 Requires:
     pip install python-docx openpyxl python-pptx olefile
 
-Usage:
-    python OfficeAnalysis.py --csv DuplicateHashInventory.csv --output OfficeInventory.csv --report OfficeReport.txt
 """
 
-import argparse
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from file_organizer_common import run_analysis, to_long_path
+sys.path.insert(0, str(Path(__file__).parent / "Database"))
+import fo_text
+from file_organizer_common import to_long_path
 
 try:
     import docx
@@ -84,7 +83,10 @@ LEGACY_TYPE_LABELS = {".doc": "Word (legacy)", ".xls": "Excel (legacy)", ".ppt":
 def analyze_docx(path):
     d = docx.Document(to_long_path(path))
     props = d.core_properties
-    word_count = sum(len(p.text.split()) for p in d.paragraphs)
+    # B6: counted per paragraph without materialising tokens. Same
+    # defect as B5-E.F009, same fix -- a long .docx has as many words
+    # as a long .txt and there is no reason to allocate them all.
+    word_count = sum(fo_text.count_words(p.text) for p in d.paragraphs)
     return {
         "OfficeType": "Word",
         "ExtractionMode": "Full",
@@ -279,25 +281,3 @@ def report_extra(results):
         lines.append(f"  Metadata-only (legacy format, no content extraction): {metadata_only_count}")
         lines.append("  (No conversion or derivative files created -- see module docstring.)")
     return lines
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Extract document properties from Office files (.docx/.xlsx/.pptx, plus metadata-only for legacy .doc/.xls/.ppt).")
-    parser.add_argument("--csv", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--report")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--skip-cloud-only", action="store_true")
-    args = parser.parse_args()
-
-    run_analysis(
-        csv_path=args.csv, output_path=args.output, report_path=args.report,
-        extensions=EXTENSIONS,
-        checkpoint_fields=CHECKPOINT_FIELDS, analyze_fn=analyze_office,
-        force=args.force, skip_cloud_only=args.skip_cloud_only,
-        report_title="OFFICE FILE ANALYSIS REPORT", extra_report_lines_fn=report_extra,
-    )
-
-
-if __name__ == "__main__":
-    main()

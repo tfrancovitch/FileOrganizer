@@ -7,7 +7,7 @@ rem  Part of: The File Organizer
 rem
 rem  The single double-click entry point. Works even on a
 rem  completely fresh Windows install with nothing else set up:
-rem  if Python isn't found (or is older than 3.9), this downloads
+rem  if Python isn't found (or is older than 3.11), this downloads
 rem  and silently installs it -- per-user, no administrator
 rem  rights needed -- before launching the dashboard. If Python
 rem  is already present, it skips straight to launching.
@@ -28,11 +28,11 @@ set "ROOT=%~dp0"
 set "DASHBOARD=%ROOT%Scripts\Dashboard.py"
 
 rem ------------------------------------------------------------
-rem 1. Is a suitable Python (3.9+) already on PATH?
+rem 1. Is a suitable Python (3.11+) already on PATH?
 rem ------------------------------------------------------------
 where python >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
-    python -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>nul
+    python -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>nul
     if !ERRORLEVEL! EQU 0 (
         goto :launch
     )
@@ -42,7 +42,7 @@ rem ------------------------------------------------------------
 rem 2. Not found, or too old -- download and install silently.
 rem ------------------------------------------------------------
 echo ============================================================
-echo  Python was not found on this computer.
+echo  A suitable Python (3.11 or newer) was not found.
 echo  Downloading and installing it now -- this is a one-time
 echo  setup step and may take a minute. An internet connection
 echo  is required for this step.

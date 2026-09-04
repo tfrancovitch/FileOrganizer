@@ -1,98 +1,95 @@
 #!/usr/bin/env python3
 r"""
 Part of: The File Organizer
-Version: 3.2.1
+Version: B6.1
 
-A lightweight Tkinter dashboard for The File Organizer. This is a thin
-orchestration layer over the existing PowerShell/Python scripts -- it
-does not reimplement any inventory/analysis logic itself. It just
-launches the right script, in the right order, in the right folder, and
-shows stage-level progress while doing so.
+Tkinter dashboard for the database-backed Phase 1 runtime.
 
-Design choices:
-  - Tkinter, not WPF: the lightest GUI toolkit available, ships with
-    Python (no install needed), and Pillow -- already a hard dependency
-    via ImageHash.py -- will power a future image-comparison view
-    without adding anything new.
-  - Stage-level progress only ("Step 4 of 9"), not per-file progress --
-    far cheaper to implement and run. PowerShell's Write-Progress also
-    doesn't surface cleanly through a captured subprocess anyway, so
-    fine-grained progress would need rework of multiple scripts for
-    little practical benefit.
-  - Every pipeline script is invoked as an unmodified subprocess, always
-    from the single master Scripts\ folder -- projects no longer get
-    their own copy of the scripts (see New-Project.ps1 v2.0.0). Each
-    script is told which project to operate on via -SettingsPath,
-    rather than inferring it from its own location.
-  - This file itself now lives IN Scripts\, alongside every other
-    script -- the project root holds only TheFileOrganizer.bat (the
-    double-click launcher) and README.txt. On startup, before showing
-    the main menu, it runs Test-Installation.ps1 (inward: is the
-    toolkit itself intact?) then Install-Dependencies.ps1 (outward:
-    does this machine have what the toolkit needs?) -- cheap in the
-    steady state, and exactly the right moment to catch a real problem.
+Dashboard owns user interaction and stage-level progress. RunCoordinator owns
+execution, persistence, run/stage state, logs, and database-backed engines for
+inventory, hashing, duplicate detection and analyzers. PowerShell remains only
+for Windows bootstrap/installation helpers and the double-click launch path;
+it is not a parallel data-processing pipeline.
 
-Requires:
-    Nothing beyond a standard Python install (tkinter is stdlib).
+Historical stage keys such as ``PreliminaryInventory.ps1`` remain stable in
+run history for compatibility, but the ``command`` field records the Python
+engine that actually executed the work.
 
-Usage:
-    Normally launched via double-clicking TheFileOrganizer.bat at the
-    project root, which just runs this file. Can also be run directly:
-        python Dashboard.py
+On startup the dashboard runs Test-Installation.ps1 (package integrity) and
+Install-Dependencies.ps1 (runtime dependencies) before opening the main menu.
+
+Requires: Python 3.11+ with tkinter.
 """
 
 import json
 import os
 
-# Prevent Python from writing __pycache__ folders into Scripts\ at all.
-# These scripts are short-lived, one-shot CLI runs -- the compile-time
-# savings bytecode caching provides is negligible against the real work
-# (hashing, extraction), so there's no cost to just not creating them.
-# Set here so every subprocess this launches (the *.ps1 wrappers, which
-# in turn launch the *.py category scripts) inherits it automatically.
+# Prevent Python from writing __pycache__ folders into the shipped Scripts\ tree.
+# Runtime work is dominated by filesystem analysis, and keeping the installation
+# byte-stable makes package-integrity checks and portable use simpler.
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
+# RunCoordinator is the supported execution/persistence boundary. The import is
+# defensive only so startup can report a useful diagnostic if the installation
+# is damaged; there is no parallel Alpha/PowerShell data-processing fallback.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import RunCoordinator as fo_coordinator
+except Exception as _coordinator_import_error:  # pragma: no cover
+    fo_coordinator = None
+    _COORDINATOR_IMPORT_ERROR = _coordinator_import_error
+else:
+    _COORDINATOR_IMPORT_ERROR = None
+
 SCRIPTS_DIR                 = Path(__file__).resolve().parent
 ROOT_DIR                    = SCRIPTS_DIR.parent
 PROJECTS_DIR                = ROOT_DIR / "Projects"
-NEW_PROJECT_SCRIPT          = SCRIPTS_DIR / "New-Project.ps1"
 TEST_INSTALLATION_SCRIPT    = SCRIPTS_DIR / "Test-Installation.ps1"
 INSTALL_DEPENDENCIES_SCRIPT = SCRIPTS_DIR / "Install-Dependencies.ps1"
 
-# The core duplicate-detection chain -- ALWAYS runs, never optional. It's
-# this project's primary objective, and every category script below
-# requires the run's inventory CSV, which only exists once this completes.
-# Third element: does this script support the -SkipCloudOnly switch?
-# (PreliminaryInventory/PotentialDuplicates don't hash anything, so they
-# were never given that parameter -- passing it would error out.)
+# Stable stage identities for the required pre-scan/duplicate chain. The names
+# are historical keys in run records; they are not executable script paths.
+# Downstream stages read SQLite current state, never an inventory CSV input.
 PRE_SCAN_STAGES = [
-    ("PreliminaryInventory.ps1", "Preliminary Inventory",        False),
-    ("PotentialDuplicates.ps1",  "Finding Potential Duplicates", False),
+    ("PreliminaryInventory.ps1", "Preliminary Inventory"),
+    ("PotentialDuplicates.ps1",  "Finding Potential Duplicates"),
 ]
 
-# NOTE: eventually this becomes one of two choices (Duplicate Run / Full
-# Run) once Step 9 (Choose Run Type) is built. For now this is the only
-# path forward from the Pre-Scan summary screen -- Step 9 will replace
-# the "Continue" button below with a real choice, not change what
-# actually runs today.
-DUPLICATE_HASH_STAGES = [
-    ("PartialHash.ps1", "Partial Hash Pass", True),
-    ("FullHash.ps1",    "Full Hash Pass",    True),
-]
 
-FULL_RUN_STAGES = [
-    ("FullHashInventory.ps1", "Full Hash Inventory (every file)", True),
-]
+#: The stage key stays "PreliminaryInventory.ps1" even when the Python
+#: engine runs it. It is the accepted identity in every R2-R6 run
+#: record and the key STAGE_EXPECTED_OUTPUT and STAGE_ROLES are indexed
+#: by; renaming it would change accepted run history to no purpose. The
+#: stage's `command` records which engine actually executed, so the
+#: record is unambiguous about what ran.
+INVENTORY_STAGE_KEY = "PreliminaryInventory.ps1"
 
-# Optional category stages -- shown as checkboxes, run only if checked.
-# All of these support -SkipCloudOnly.
+
+
+#: Stage keys stay as the PowerShell script names even when Python does
+#: the work. They are the accepted identity in every R2-R6 run record
+#: and the keys STAGE_EXPECTED_OUTPUT and STAGE_ROLES are indexed by.
+#: Renaming them would rewrite accepted run history to no purpose; the
+#: stage's `command` records which engine actually executed. Stage-key
+#: cleanup belongs after the PowerShell runtime path is retired.
+SIZE_CANDIDATE_STAGE_KEY = "PotentialDuplicates.ps1"
+PARTIAL_HASH_STAGE_KEY   = "PartialHash.ps1"
+FULL_HASH_STAGE_KEY      = "FullHash.ps1"
+FULL_RUN_STAGE_KEY       = "FullHashInventory.ps1"
+TIME_ESTIMATES_STAGE_KEY = "TimeEstimates.ps1"
+NEW_PROJECT_STAGE_KEY    = "New-Project.ps1"
+
+# Optional category stages are shown as checkboxes and run only when selected.
+# Their stage keys remain historical `.ps1` names for run-history continuity;
+# RunCoordinator executes the in-process Python analyzers.
 CATEGORY_STAGES = [
     ("ImageAnalysis.ps1",     "Images",                "Perceptual hashing for photos/images"),
     ("PDFAnalysis.ps1",       "PDFs",                  "Page count, metadata, encryption status"),
@@ -106,6 +103,81 @@ CATEGORY_STAGES = [
 ]
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+# ----------------------------------------------------------------------
+# Beta R2 -- application-level logging helpers
+#
+# Everything below degrades to a no-op when the coordinator modules are
+# unavailable, so no call site needs to guard.
+# ----------------------------------------------------------------------
+
+def get_app_log():
+    r"""The application log at TheFileOrganizer\Logs\app.log, or None.
+
+    This is the log for failures that have no run and no project to
+    attach themselves to -- which is exactly the class of failure that
+    is hardest to explain after the fact.
+    """
+    if fo_coordinator is None:
+        return None
+    try:
+        return fo_coordinator.fo_log.get_app_log(str(ROOT_DIR))
+    except Exception:
+        return None
+
+
+def app_log_write(severity, message):
+    log = get_app_log()
+    if log is None:
+        return False
+    try:
+        return log.log(severity, message)
+    except Exception:
+        return False
+
+
+def make_coordinator(project_name=None):
+    """A RunCoordinator for this project, or None if R2 is unavailable."""
+    if fo_coordinator is None:
+        return None
+    try:
+        return fo_coordinator.RunCoordinator(str(ROOT_DIR), project_name)
+    except Exception as exc:
+        app_log_write("ERROR", f"Could not create a run coordinator: {exc}")
+        return None
+
+
+class _NullStage:
+    """Stand-in stage handle used when run recording is unavailable.
+
+    Accepts every call a real StageHandle does and does nothing, so the
+    scan methods below read identically whether or not R2's modules
+    loaded. Without it, every stage would need a conditional wrapped
+    around it and the Alpha control flow -- which must be preserved
+    exactly -- would become hard to verify by eye.
+    """
+
+    run_stage_id = None
+    status = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def record(self, *args, **kwargs):
+        return None
+
+    def record_skipped(self, *args, **kwargs):
+        return None
+
+    def record_failure(self, *args, **kwargs):
+        return None
+
+    def add_event(self, *args, **kwargs):
+        return None
 
 
 def run_powershell(script_name, cwd, extra_args=None, timeout=None):
@@ -206,6 +278,25 @@ class Dashboard(tk.Tk):
         self.scan_thread = None  # tracks the currently running scan thread, if any -- see on_close
         self.scan_is_pausable = False
 
+        # Beta R2: the coordinator for the scan currently running, so
+        # on_close can record an abandoned run immediately rather than
+        # leaving it for the next launch's reconciliation pass.
+        self.active_coordinator = None
+
+        app_log = get_app_log()
+        if app_log is not None:
+            app_log.session_start(
+                fo_coordinator.APP_VERSION,
+                extra={"App root": str(ROOT_DIR),
+                       "Dashboard": "3.5.0"})
+            if app_log.degraded:
+                # Nothing can be done about it and it must not stop the
+                # application -- but say so on the console, which is
+                # attached when run via `python Dashboard.py`.
+                print(f"WARNING: app.log is not writable: {app_log.degraded_reason}")
+        elif _COORDINATOR_IMPORT_ERROR is not None:
+            print(f"WARNING: run logging is unavailable: {_COORDINATOR_IMPORT_ERROR}")
+
         self.container = ttk.Frame(self)
         self.container.pack(fill="both", expand=True)
 
@@ -223,6 +314,10 @@ class Dashboard(tk.Tk):
         import traceback
         detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
         print(detail)  # still useful if run via `python Dashboard.py` with a console attached
+        # Beta R2: an unhandled callback exception is an application-level
+        # failure with no run to attach itself to. app.log is where those
+        # go -- and it exists whether or not a project has been opened.
+        app_log_write("CRITICAL", "Unhandled exception in a UI callback:\n" + detail)
         messagebox.showerror(
             "Unexpected Error",
             f"Something went wrong:\n\n{exc_value}\n\n"
@@ -232,6 +327,36 @@ class Dashboard(tk.Tk):
     def clear_container(self):
         for widget in self.container.winfo_children():
             widget.destroy()
+
+    def _abandon_active_run(self, reason):
+        """Beta R2: close an in-flight run record on the way out.
+
+        Reconciliation on the next launch would catch this anyway, but
+        recording it now means the database is accurate immediately
+        instead of only after the application is next started.
+        """
+        coordinator = self.active_coordinator
+        self.active_coordinator = None
+        if coordinator is None:
+            return
+        try:
+            coordinator.abandon(reason)
+        except Exception as exc:
+            app_log_write("WARNING", f"Could not close the in-flight run record: {exc}")
+
+    def destroy(self):
+        # Every close path in this class routes through destroy(), so
+        # this is the one place that reliably sees the window going away
+        # -- including the "close anyway" answers below.
+        self._abandon_active_run(
+            "The application was closed while this run was in progress.")
+        log = get_app_log()
+        if log is not None:
+            try:
+                log.session_end()
+            except Exception:
+                pass
+        super().destroy()
 
     def on_close(self):
         """Handles the window's X button / Alt+F4 / any WM_DELETE_WINDOW
@@ -354,12 +479,42 @@ class Dashboard(tk.Tk):
         self.after(150, self._poll_startup_queue)
 
     def _run_startup_checks(self):
+        # 0. Beta R2: reconcile runs that a previous session left marked
+        #    running. Done here, on the existing startup thread, because
+        #    this screen is already the moment the application takes to
+        #    check itself -- and "was the last session interrupted?" is
+        #    the same kind of question as "is the toolkit intact?".
+        #
+        #    Each project database is opened on its own, in turn, through
+        #    fo_db.open_project, so the isolation guard applies to every
+        #    one and no project is ever open alongside another. This also
+        #    applies the 001 -> 002 migration to existing projects on the
+        #    first R2 launch.
+        #
+        #    Never fatal: a project that cannot be checked is logged and
+        #    skipped, and startup carries on.
+        if fo_coordinator is not None:
+            self.progress_queue.put(("startup_status", "Checking for interrupted runs..."))
+            try:
+                results = fo_coordinator.reconcile_all_projects(str(ROOT_DIR))
+                if results["runs_reconciled"]:
+                    app_log_write("INFO", (
+                        f"Startup reconciliation recorded "
+                        f"{len(results['runs_reconciled'])} interrupted run(s)."))
+            except Exception as exc:
+                app_log_write("WARNING", f"Stale-run reconciliation failed: {exc}")
+
         # 1. Inward check first -- is the toolkit itself intact? No point
         #    checking the environment for scripts that are missing/corrupt.
         self.progress_queue.put(("startup_status", "Checking installation (Test-Installation.ps1)..."))
         success, stdout, stderr, returncode = run_powershell(
             str(TEST_INSTALLATION_SCRIPT), cwd=SCRIPTS_DIR, timeout=60)
         if not success:
+            # An application-level failure, before any project or run
+            # exists. app.log is the only place it can be recorded.
+            app_log_write("ERROR", (
+                f"Test-Installation.ps1 failed (exit {returncode}). "
+                f"{(stderr or stdout or '').strip()[:800]}"))
             self.progress_queue.put(("startup_warning", (
                 "Test-Installation.ps1 found a problem with the toolkit's own files "
                 "(missing, empty, or corrupted). See InstallationCheckReport.txt in "
@@ -372,6 +527,9 @@ class Dashboard(tk.Tk):
         success, stdout, stderr, returncode = run_powershell(
             str(INSTALL_DEPENDENCIES_SCRIPT), cwd=SCRIPTS_DIR, timeout=300)
         if not success:
+            app_log_write("ERROR", (
+                f"Install-Dependencies.ps1 failed (exit {returncode}). "
+                f"{(stderr or stdout or '').strip()[:800]}"))
             self.progress_queue.put(("startup_warning", (
                 "Install-Dependencies.ps1 found a required package or tool that "
                 "couldn't be installed. See DependencyCheckReport.txt in the "
@@ -379,6 +537,7 @@ class Dashboard(tk.Tk):
             )))
             return
 
+        app_log_write("INFO", "Startup checks passed.")
         self.progress_queue.put(("startup_ok",))
 
     # ------------------------------------------------------------------
@@ -404,16 +563,37 @@ class Dashboard(tk.Tk):
 
         ttk.Label(frame, text="New Project", font=("Segoe UI", 14, "bold")).pack(pady=(20, 20))
 
+        # B4.3: a project may cover more than one source folder. ONE
+        # folder stays the ordinary case -- the list simply has one row
+        # in it, and the user never has to think about the feature.
         path_frame = ttk.Frame(frame)
         path_frame.pack(fill="x", padx=30, pady=5)
-        ttk.Label(path_frame, text="Folder to inventory:").pack(anchor="w")
+        ttk.Label(path_frame, text="Folder(s) to inventory:").pack(anchor="w")
 
         path_row = ttk.Frame(path_frame)
         path_row.pack(fill="x", pady=4)
         self.target_path_var = tk.StringVar()
         ttk.Entry(path_row, textvariable=self.target_path_var, width=45).pack(
             side="left", fill="x", expand=True)
-        ttk.Button(path_row, text="Browse...", command=self.browse_folder).pack(side="left", padx=(6, 0))
+        ttk.Button(path_row, text="Browse...",
+                   command=self.browse_folder).pack(side="left", padx=(6, 0))
+        ttk.Button(path_row, text="Add",
+                   command=self.add_source_folder).pack(side="left", padx=(6, 0))
+
+        list_row = ttk.Frame(path_frame)
+        list_row.pack(fill="x", pady=(4, 0))
+        self.source_roots_list = tk.Listbox(list_row, height=4,
+                                            selectmode="browse")
+        self.source_roots_list.pack(side="left", fill="x", expand=True)
+        ttk.Button(list_row, text="Remove",
+                   command=self.remove_source_folder).pack(side="left",
+                                                           padx=(6, 0),
+                                                           anchor="n")
+        ttk.Label(path_frame,
+                  text="Add a second folder only if you want one project to "
+                       "cover both.",
+                  foreground="#666").pack(anchor="w", pady=(2, 0))
+        self.source_roots = []
 
         name_frame = ttk.Frame(frame)
         name_frame.pack(fill="x", padx=30, pady=(15, 5))
@@ -432,13 +612,149 @@ class Dashboard(tk.Tk):
         if folder:
             self.target_path_var.set(folder)
 
-    def start_new_project(self):
-        target_path = self.target_path_var.get().strip()
-        if not target_path:
-            messagebox.showwarning("Missing folder", "Please browse to a folder to inventory first.")
+    def add_source_folder(self):
+        r"""Move the typed/browsed folder into the list.
+
+        Validated here rather than at creation time so a mistyped or
+        unplugged folder is refused while the user is still looking at
+        it, instead of after a project folder has been made.
+        """
+        folder = self.target_path_var.get().strip()
+        if not folder:
+            messagebox.showwarning("Nothing to add",
+                                   "Browse to a folder first.")
             return
+        ok, title, message = self.validate_target_folder(folder)
+        if not ok:
+            messagebox.showerror(title, message)
+            return
+        if self._equivalent_root_index(folder) is not None:
+            messagebox.showwarning(
+                "Already added",
+                "That folder is already in the list:\n\n%s" % folder)
+            return
+        self.source_roots.append(folder)
+        self.source_roots_list.insert("end", folder)
+        self.target_path_var.set("")
+
+    def remove_source_folder(self):
+        selection = self.source_roots_list.curselection()
+        if not selection:
+            messagebox.showwarning("Nothing selected",
+                                   "Select a folder in the list to remove it.")
+            return
+        index = selection[0]
+        self.source_roots_list.delete(index)
+        del self.source_roots[index]
+
+    def _equivalent_root_index(self, folder):
+        r"""Index of an already-added root equivalent to `folder`.
+
+        Compared with the same normalisation the database uses for
+        source_root identity, so C:\Photos and C:\photos\ are caught
+        here as one folder -- which is far kinder than discovering it
+        later as a doubled inventory.
+        """
+        import fo_db
+        import win_meta
+        key = fo_db.path_key(win_meta.normalize_root(folder))
+        for index, existing in enumerate(self.source_roots):
+            if fo_db.path_key(win_meta.normalize_root(existing)) == key:
+                return index
+        return None
+
+    def _collect_source_roots(self):
+        """The roots to create the project with, list plus typed entry."""
+        roots = list(self.source_roots)
+        typed = self.target_path_var.get().strip()
+        if typed and self._equivalent_root_index(typed) is None:
+            roots.append(typed)
+        return roots
+
+    def validate_target_folder(self, target_path):
+        r"""Check the folder BEFORE anything is created. Returns
+        (ok, title, message).
+
+        Beta R5 cleanup. Previously a mistyped folder reached
+        New-Project.ps1, which correctly refused it -- but the user saw
+        only a generic "Failed to create project", which describes the
+        symptom rather than the cause and offers nothing to act on.
+
+        The two failure modes are told apart deliberately. "Not found"
+        and "cannot be accessed" call for completely different responses
+        from the user -- retype the path, versus check permissions or
+        plug the drive in -- and reporting a permissions problem as a
+        missing folder sends them to look for something that is right
+        where they left it.
+
+        This does NOT replace the PowerShell-side check in
+        New-Project.ps1, which remains as defence in depth: the
+        dashboard is not the only way that script can be invoked.
+        """
+        if not os.path.exists(target_path):
+            return (False, "Error: Folder Not Found",
+                    "The folder you selected could not be found. Please check "
+                    "the folder location and try again.")
+        if not os.path.isdir(target_path):
+            return (False, "Error: Folder Not Found",
+                    "The folder you selected could not be found. Please check "
+                    "the folder location and try again.\n\n"
+                    "(That location exists, but it is a file rather than a "
+                    "folder.)")
+        try:
+            # Existence is not readability. A drive that is present but
+            # locked, or a network share whose credentials have expired,
+            # passes isdir() and then fails on the first real read --
+            # which is exactly the case the generic error hid.
+            os.scandir(target_path).close()
+        except PermissionError:
+            return (False, "Error: Folder Cannot Be Accessed",
+                    "The folder was found, but it could not be opened. You may "
+                    "not have permission to read it. Check the folder's "
+                    "permissions, or choose a different folder, and try again.")
+        except OSError as exc:
+            return (False, "Error: Folder Cannot Be Accessed",
+                    "The folder was found, but it could not be opened.\n\n"
+                    f"{exc.strerror or exc}\n\n"
+                    "If it is on a removable or network drive, check that the "
+                    "drive is still connected, and try again.")
+        return (True, None, None)
+
+    def start_new_project(self):
+        source_roots = self._collect_source_roots()
+        if not source_roots:
+            messagebox.showwarning("Missing folder",
+                                   "Please browse to a folder to inventory first.")
+            return
+        target_path = source_roots[0]
+
+        ok, title, message = (True, None, None)
+        for candidate in source_roots:
+            ok, title, message = self.validate_target_folder(candidate)
+            if not ok:
+                target_path = candidate
+                break
+        if not ok:
+            # Return to the New Project screen with everything the user
+            # typed still in place. No project folder, no database and no
+            # processing run is created for what is only a typo: making
+            # one would leave an empty project behind for the user to
+            # find and wonder about later.
+            messagebox.showerror(title, message)
+            app_log_write("WARNING",
+                          f"New project rejected before creation -- {title}: {target_path}")
+            return
+
         project_name = self.project_name_var.get().strip()
-        self.show_progress_screen(mode="create", target_path=target_path, project_name=project_name)
+        # B4.4: the WHOLE root list crosses to the worker, as an
+        # immutable copy. Passing only source_roots[0] lost every root
+        # after the first, and the worker then read a `source_roots`
+        # name that existed nowhere in its scope -- a NameError on the
+        # real project-creation path. A tuple, because the worker runs
+        # on another thread and must not depend on GUI state that the
+        # user can still be editing.
+        self.show_progress_screen(mode="create", project_name=project_name,
+                                  source_roots=tuple(source_roots))
 
     # ------------------------------------------------------------------
     # Screen: Continue Project (minimal for now -- full search comes
@@ -602,7 +918,8 @@ class Dashboard(tk.Tk):
     # ------------------------------------------------------------------
     # Screen: Progress (core chain, then optionally category stages)
     # ------------------------------------------------------------------
-    def show_progress_screen(self, mode, target_path=None, project_name=None, stages_to_run=None):
+    def show_progress_screen(self, mode, target_path=None, project_name=None,
+                             stages_to_run=None, source_roots=None):
         self.clear_container()
         frame = self.container
 
@@ -619,7 +936,8 @@ class Dashboard(tk.Tk):
 
         if mode == "create":
             thread = threading.Thread(
-                target=self._run_new_project_then_core, args=(target_path, project_name), daemon=True)
+                target=self._run_new_project_then_core,
+                args=(tuple(source_roots or ()), project_name), daemon=True)
         elif mode == "duplicate_hash":
             thread = threading.Thread(
                 target=self._run_duplicate_hash_stages, args=(), daemon=True)
@@ -729,7 +1047,88 @@ class Dashboard(tk.Tk):
 
         ttk.Button(frame, text="Back to Main Menu", width=32, command=self.show_main_menu).pack(pady=6)
 
-    def _run_new_project_then_core(self, target_path, project_name):
+    # ------------------------------------------------------------------
+    # Beta R2 -- run/stage recording helpers
+    #
+    # These wrap the coordinator so the four scan methods below stay
+    # readable and so a missing/failed coordinator is handled in exactly
+    # one place. Every one of them is a no-op when coordinator is None.
+    # ------------------------------------------------------------------
+    def _begin_run(self, run_kind, project_name=None, run_folder=None,
+                   tolerate_stage_failures=False):
+        coordinator = make_coordinator(project_name or self.current_project)
+        if coordinator is None:
+            return None
+        try:
+            coordinator.begin_run(run_kind, run_folder=run_folder,
+                                  tolerate_stage_failures=tolerate_stage_failures)
+        except Exception as exc:
+            app_log_write("ERROR", f"Could not begin a run record ({run_kind}): {exc}")
+            return None
+        self.active_coordinator = coordinator
+        return coordinator
+
+    def _finish_run(self, coordinator, status=None, notes=None):
+        if coordinator is None:
+            return
+        try:
+            coordinator.finish(status=status, notes=notes)
+        except Exception as exc:
+            app_log_write("ERROR", f"Could not close the run record: {exc}")
+        finally:
+            if self.active_coordinator is coordinator:
+                self.active_coordinator = None
+
+    @staticmethod
+    def _stage_context(coordinator, script_name, label):
+        """A stage handle, or a null object when there is no coordinator.
+
+        Returning a stand-in rather than None keeps the scan methods free
+        of `if coordinator:` around every line, which is what makes the
+        R2 diff readable against the Alpha control flow it has to
+        preserve exactly.
+        """
+        if coordinator is None:
+            return _NullStage()
+        try:
+            return coordinator.stage(script_name, label)
+        except Exception as exc:
+            app_log_write("WARNING", f"Could not open a stage record for {script_name}: {exc}")
+            return _NullStage()
+
+    def _bind_current_run_folder(self, coordinator, project_name):
+        """Attach the run to the Runs\\<timestamp> folder that
+        PreliminaryInventory.ps1 just created.
+
+        The folder name is read back from settings.json rather than
+        chosen here: PreliminaryInventory.ps1 mints it and is a
+        protected Alpha file, so the coordinator follows it rather than
+        the other way round.
+        """
+        if coordinator is None:
+            return None
+        settings = load_settings(project_name) or {}
+        run_folder = settings.get("CurrentRun")
+        if not run_folder:
+            return None
+        try:
+            return coordinator.bind_run_folder(run_folder)
+        except Exception as exc:
+            app_log_write("WARNING", f"Could not bind the run folder: {exc}")
+            return None
+
+    def _run_new_project_then_core(self, source_roots, project_name):
+        r"""Create the project, then run the Pre-Scan.
+
+        B4.4: takes the full root list as an ARGUMENT. It previously
+        took a single target_path and then referred to `source_roots`,
+        which was defined only in start_new_project -- a NameError that
+        the enclosing except swallowed. Anything singular needed here is
+        derived locally from the list rather than passed alongside it,
+        so the two cannot disagree.
+        """
+        source_roots = list(source_roots or ())
+        target_path = source_roots[0] if source_roots else None
         total_steps = 1 + len(PRE_SCAN_STAGES) + 1  # +1 project creation, +1 calibration
         step = 0
 
@@ -746,108 +1145,229 @@ class Dashboard(tk.Tk):
 
         args = [target_path, project_name]
 
-        success, stdout, stderr, returncode = run_powershell(
-            str(NEW_PROJECT_SCRIPT), cwd=SCRIPTS_DIR, extra_args=args, timeout=120)
-        if not success:
-            self._error(f"Failed to create project.\n\n{stderr[:500]}")
-            return
-
-        created_name = project_name
-        self.current_project = created_name
-        self._log(f"Project created: {created_name}")
-        step += 1
-
-        settings_path = str(get_settings_path(created_name))
-
-        for script_name, label, supports_skip_cloud in PRE_SCAN_STAGES:
-            self._stage(f"Step {step + 1} of {total_steps}: {label}...", (step / total_steps) * 100)
-            self._log(f"Running {script_name}...")
-
-            extra_args = ["-SettingsPath", settings_path]
-            if supports_skip_cloud:
-                extra_args.append("-SkipCloudOnly")
-
-            success, stdout, stderr, returncode = run_powershell(script_name, cwd=SCRIPTS_DIR, extra_args=extra_args)
+        # Beta R2: this run begins BEFORE its project does. The
+        # coordinator records the run and the project-creation stage in
+        # memory and in app.log, then writes them to the project
+        # database via attach_database() once there is one -- so a
+        # creation failure is still recorded, which is precisely the
+        # case where a record is most wanted.
+        coordinator = self._begin_run("prescan", project_name=project_name)
+        try:
+            with self._stage_context(coordinator, NEW_PROJECT_STAGE_KEY,
+                                     "Creating project") as stage:
+                success, stdout, stderr, returncode = \
+                    coordinator.create_project(str(PROJECTS_DIR), project_name,
+                                               source_roots)
+                stage.record(returncode, stdout, stderr,
+                             status=None if success else "failed")
             if not success:
-                self._error(f"{label} failed -- stopping here since later steps depend on it.\n\n{stderr[:500]}")
+                app_log_write("ERROR", (
+                    f"Project creation failed for '{project_name}' "
+                    f"(exit {returncode}). {(stderr or '').strip()[:800]}"))
+                self._finish_run(coordinator, status="failed",
+                                 notes="Project creation failed.")
+                self._error(f"Failed to create project.\n\n{stderr[:500]}")
                 return
-            self._log("  done.")
+
+            created_name = project_name
+            self.current_project = created_name
+            self._log(f"Project created: {created_name}")
             step += 1
 
-        # Calibration folded directly into this same sequence, rather than
-        # behind a separate "Continue" click. A vague button leading to a
-        # second screen that LOOKED like active scanning (same progress UI
-        # as a real multi-hour run) was genuinely alarming with no way to
-        # tell "this is a 2-second sample" from "this is starting the big
-        # scan". One continuous, clearly-labeled sequence with nothing
-        # ambiguous in between fixes that directly.
-        self._stage(f"Step {step + 1} of {total_steps}: Preparing time estimates...", (step / total_steps) * 100)
-        self._log("Running TimeEstimates.ps1...")
-        success, stdout, stderr, returncode = run_powershell(
-            "TimeEstimates.ps1", cwd=SCRIPTS_DIR, extra_args=["-SettingsPath", settings_path])
-        if not success:
-            self._log(f"  WARNING: Calibration failed, proceeding without estimates: {stderr[:200]}")
-        else:
-            self._log("  done.")
+            if coordinator is not None:
+                # The database exists now; replay the run and the stage
+                # above into it.
+                try:
+                    coordinator.attach_database(created_name)
+                except Exception as exc:
+                    app_log_write("WARNING", f"Could not attach the run to the database: {exc}")
 
-        self._stage("Pre-Scan complete.", 100)
-        self._done("choose_run_type")
+            settings_path = str(get_settings_path(created_name))
+
+            for script_name, label in PRE_SCAN_STAGES:
+                self._stage(f"Step {step + 1} of {total_steps}: {label}...", (step / total_steps) * 100)
+                self._log(f"Running {script_name}...")
+
+                # Every pre-scan stage is Python. The stage KEYS keep
+                # their historical .ps1 names because they are stable
+                # identifiers in run_stage, exports and run history.
+                is_inventory = script_name == INVENTORY_STAGE_KEY
+                is_candidates = script_name == SIZE_CANDIDATE_STAGE_KEY
+
+                with self._stage_context(coordinator, script_name, label) as stage:
+                    if is_candidates:
+                        success, stdout, stderr, returncode = \
+                            coordinator.run_size_candidates(settings_path)
+                    elif is_inventory:
+                        # Beta B2: the inventory runs in this process.
+                        # No subprocess, no C# compiled at every scan,
+                        # and no CSV parsed back to reach the database.
+                        success, stdout, stderr, returncode = \
+                            coordinator.run_inventory(settings_path)
+
+                    # PreliminaryInventory mints the Runs\<timestamp>
+                    # folder. Bind to it as soon as it exists, so this
+                    # stage's captured output and every later stage's
+                    # land in the run folder rather than being buffered.
+                    # The Python engine has already bound it, and
+                    # bind_run_folder is idempotent, so this stays
+                    # correct for both engines.
+                    if is_inventory:
+                        self._bind_current_run_folder(coordinator, created_name)
+
+                    stage.record(returncode, stdout, stderr,
+                                 status=None if success else "failed")
+
+                    # errors.txt is written by the inventory itself and
+                    # is the only per-path error record the protected
+                    # scripts produce. Reading it here turns it into
+                    # structured events without touching that script.
+                    if script_name == "PreliminaryInventory.ps1" and coordinator is not None:
+                        try:
+                            coordinator.ingest_errors_txt(stage)
+                        except Exception as exc:
+                            app_log_write("WARNING", f"Could not ingest errors.txt: {exc}")
+
+                # Persist the inventory into SQLite as its own stage, so
+                # that a database failure stays distinguishable from a
+                # scan failure -- R3's decision, preserved.
+                #
+                # The rows were already written during the walk, so
+                # there is nothing to re-read; this stage records what
+                # that persistence did. A failure here is recorded and
+                # does not stop the run.
+                #
+                # B4.3: this block used to branch on a `use_python_engine`
+                # variable that B4.2 removed when it collapsed the
+                # engine switch. The reference survived, so every
+                # Pre-Scan raised NameError here -- swallowed by the
+                # except below, which logged a warning and silently
+                # skipped recording the ingest stage. The branch is gone
+                # now because there is only one engine to record.
+                if is_inventory and success and coordinator is not None:
+                    self._log("Recording inventory in the project database...")
+                    try:
+                        outcome = coordinator.record_inventory_ingest() or {}
+                        if outcome.get("status") not in (None, "failed",
+                                                         "skipped"):
+                            self._log(f"  {outcome.get('rows', 0)} file(s) "
+                                      f"recorded in "
+                                      f"{outcome.get('elapsed_sec', 0.0):.1f}s.")
+                    except Exception as exc:
+                        app_log_write("WARNING", f"Inventory ingestion error: {exc}")
+                        self._log("  WARNING: inventory could not be recorded in the "
+                                  "database; the scan itself is unaffected.")
+
+                if not success:
+                    self._finish_run(coordinator, status="failed",
+                                     notes=f"{label} failed.")
+                    self._error(f"{label} failed -- stopping here since later steps depend on it.\n\n{stderr[:500]}")
+                    return
+                self._log("  done.")
+                step += 1
+
+            # Calibration folded directly into this same sequence, rather than
+            # behind a separate "Continue" click. A vague button leading to a
+            # second screen that LOOKED like active scanning (same progress UI
+            # as a real multi-hour run) was genuinely alarming with no way to
+            # tell "this is a 2-second sample" from "this is starting the big
+            # scan". One continuous, clearly-labeled sequence with nothing
+            # ambiguous in between fixes that directly.
+            self._stage(f"Step {step + 1} of {total_steps}: Preparing time estimates...", (step / total_steps) * 100)
+            self._log("Preparing time estimates...")
+            with self._stage_context(coordinator, TIME_ESTIMATES_STAGE_KEY,
+                                     "Preparing time estimates") as stage:
+                success, stdout, stderr, returncode = \
+                    coordinator.run_time_estimates(settings_path)
+                # Calibration is explicitly optional here -- the Alpha
+                # flow proceeds without estimates. Recording it as a
+                # failed stage would be accurate but would then make the
+                # whole run report as failed, which it is not. It is a
+                # stage that failed inside a run that succeeded.
+                stage.record(returncode, stdout, stderr,
+                             status=None if success else "failed",
+                             note=None if success else "Optional stage; the run continued without time estimates.")
+            if not success:
+                self._log(f"  WARNING: Calibration failed, proceeding without estimates: {stderr[:200]}")
+            else:
+                self._log("  done.")
+
+            self._stage("Pre-Scan complete.", 100)
+            self._finish_run(coordinator,
+                             status="completed_with_warnings" if not success else None)
+            self._done("choose_run_type")
+        finally:
+            # Guarantees the run record is closed even if something above
+            # raised: a run left marked running would otherwise be
+            # reported as interrupted on the next launch, which would be
+            # a lie about what happened.
+            self._finish_run(coordinator)
 
     def _run_duplicate_hash_stages(self):
         """Runs PartialHash.ps1 + FullHash.ps1 on the current project --
         one of the two choices on the Pre-Scan / Choose Run Type screen."""
         settings_path = str(get_settings_path(self.current_project))
-        total_steps = len(DUPLICATE_HASH_STAGES)
-        step = 0
-
-        for script_name, label, supports_skip_cloud in DUPLICATE_HASH_STAGES:
-            self._stage(f"Step {step + 1} of {total_steps}: {label}...", (step / total_steps) * 100)
-            self._log(f"Running {script_name}...")
-
-            extra_args = ["-SettingsPath", settings_path]
-            if supports_skip_cloud:
-                extra_args.append("-SkipCloudOnly")
-
-            success, stdout, stderr, returncode = run_powershell(script_name, cwd=SCRIPTS_DIR, extra_args=extra_args)
-            if returncode == 2:
-                self._paused()
-                return
+        # Beta R2: this run's folder already exists -- PreliminaryInventory.ps1
+        # created it during the pre-scan -- so the coordinator can bind to it
+        # up front rather than discovering it partway through.
+        settings = load_settings(self.current_project) or {}
+        coordinator = self._begin_run("duplicate_analysis",
+                                      run_folder=settings.get("CurrentRun"))
+        try:
+            # One Python stage performs the whole partial -> escalate
+            # -> confirm pass. Recorded under the historical
+            # PartialHash.ps1 stage KEY: that name is a stable
+            # identifier in run_stage, exports and run history, not a
+            # reference to a file.
+            self._stage("Step 1 of 1: Hashing and duplicate detection...", 0)
+            self._log("Running the hash & duplicate engine...")
+            with self._stage_context(coordinator, PARTIAL_HASH_STAGE_KEY,
+                                     "Hash & Duplicate Pass") as stage:
+                success, stdout, stderr, returncode = \
+                    coordinator.run_duplicate_hash(settings_path)
+                stage.record(returncode, stdout, stderr,
+                             status=None if success else "failed")
             if not success:
-                self._error(f"{label} failed -- stopping here since later steps depend on it.\n\n{stderr[:500]}")
+                self._finish_run(coordinator, status="failed",
+                                 notes="Hash & Duplicate Pass failed.")
+                self._error("Duplicate detection failed.\n\n" + stderr[:500])
                 return
             self._log("  done.")
-            step += 1
-
-        self._stage("Duplicate detection complete.", 100)
-        self._done("categories")
+            self._stage("Duplicate detection complete.", 100)
+            self._finish_run(coordinator)
+            self._done("categories")
+        finally:
+            self._finish_run(coordinator)
 
     def _run_full_run_stage(self):
         """Runs FullHashInventory.ps1 -- the Full Run path from Choose Run
         Type, parallel to _run_duplicate_hash_stages for Duplicate Run."""
         settings_path = str(get_settings_path(self.current_project))
-        total_steps = len(FULL_RUN_STAGES)
-        step = 0
-
-        for script_name, label, supports_skip_cloud in FULL_RUN_STAGES:
-            self._stage(f"Step {step + 1} of {total_steps}: {label}...", (step / total_steps) * 100)
-            self._log(f"Running {script_name}...")
-
-            extra_args = ["-SettingsPath", settings_path]
-            if supports_skip_cloud:
-                extra_args.append("-SkipCloudOnly")
-
-            success, stdout, stderr, returncode = run_powershell(script_name, cwd=SCRIPTS_DIR, extra_args=extra_args)
-            if returncode == 2:
-                self._paused()
-                return
+        settings = load_settings(self.current_project) or {}
+        coordinator = self._begin_run("exhaustive_identity",
+                                      run_folder=settings.get("CurrentRun"))
+        try:
+            # The exhaustive pass. Recorded under the historical
+            # FullHashInventory.ps1 stage key.
+            self._stage("Step 1 of 1: Full Hash Inventory (every file)...", 0)
+            self._log("Running the hash engine (exhaustive)...")
+            with self._stage_context(coordinator, FULL_RUN_STAGE_KEY,
+                                     "Full Hash Inventory (every file)") as stage:
+                success, stdout, stderr, returncode = \
+                    coordinator.run_full_hash_inventory(settings_path)
+                stage.record(returncode, stdout, stderr,
+                             status=None if success else "failed")
             if not success:
-                self._error(f"{label} failed.\n\n{stderr[:500]}")
+                self._finish_run(coordinator, status="failed",
+                                 notes="Full Hash Inventory failed.")
+                self._error("Full Run failed.\n\n" + stderr[:500])
                 return
             self._log("  done.")
-            step += 1
-
-        self._stage("Full Run complete.", 100)
-        self._done("categories")
+            self._stage("Full Run complete.", 100)
+            self._finish_run(coordinator)
+            self._done("categories")
+        finally:
+            self._finish_run(coordinator)
 
     def _run_category_stages(self, stages_to_run):
         settings_path = str(get_settings_path(self.current_project))
@@ -857,30 +1377,89 @@ class Dashboard(tk.Tk):
             self._done("complete")
             return
 
-        for i, (script_name, label, _desc) in enumerate(stages_to_run):
-            self._stage(f"Step {i + 1} of {total_steps}: {label}...", (i / total_steps) * 100)
-            self._log(f"Running {script_name}...")
+        settings = load_settings(self.current_project) or {}
+        # tolerate_stage_failures: one analyzer failing does not stop the
+        # others and does not make the run a failure. The failed stage row
+        # and its error events carry that detail; the run reports
+        # completed_with_warnings. See RunCoordinator._roll_up_status.
+        coordinator = self._begin_run("content_analysis",
+                                      run_folder=settings.get("CurrentRun"),
+                                      tolerate_stage_failures=True)
+        try:
+            # Categories the user did NOT select are recorded as skipped
+            # rather than left absent. "Not run", "ran and found nothing"
+            # and "ran and failed" are three different answers, and only
+            # the first is invisible unless it is written down.
+            selected = {script for script, _label, _desc in stages_to_run}
+            if coordinator is not None:
+                for script_name, label, _desc in CATEGORY_STAGES:
+                    if script_name not in selected:
+                        try:
+                            coordinator.skip_stage(
+                                script_name, label,
+                                "Not selected for this analysis run.")
+                        except Exception as exc:
+                            app_log_write("WARNING",
+                                          f"Could not record skipped stage {script_name}: {exc}")
 
-            success, stdout, stderr, returncode = run_powershell(
-                script_name, cwd=SCRIPTS_DIR, extra_args=["-SettingsPath", settings_path, "-SkipCloudOnly"])
-            if returncode == 2:
-                # Unlike a per-category failure (which correctly continues
-                # to the next one, since categories are independent), a
-                # pause is a whole-session signal -- stop here, not just
-                # skip to the next category.
-                self._paused()
-                return
-            if not success:
-                # Category stages are independent of each other -- one
-                # failing shouldn't stop the rest from running.
-                self._log(f"  WARNING: {label} failed -- continuing with remaining categories.")
-                self._log(f"  {stderr[:300]}")
-            else:
-                self._log("  done.")
-                self._mark_category_completed(script_name)
+            # One Python stage per selected category, so the accepted
+            # per-category stage identity is preserved: the run_stage
+            # rows, their keys and their order are unchanged.
+            import fo_analyzers as _fo_analyzers
+            analyzer_keys = {}
+            for script_name, _label, _desc in stages_to_run:
+                spec = _fo_analyzers.SPEC_BY_SCRIPT.get(script_name)
+                if spec is not None:
+                    analyzer_keys[script_name] = spec.key
 
-        self._stage("All selected categories complete.", 100)
-        self._done("complete")
+            for i, (script_name, label, _desc) in enumerate(stages_to_run):
+                self._stage(f"Step {i + 1} of {total_steps}: {label}...", (i / total_steps) * 100)
+                self._log(f"Running {script_name}...")
+
+                with self._stage_context(coordinator, script_name, label) as stage:
+                    key = analyzer_keys[script_name]
+                    success, stdout, stderr, returncode = \
+                        coordinator.run_analyzers(
+                            settings_path, [key],
+                            stage_handles={key: stage.run_stage_id})
+                    status = stage.record(returncode, stdout, stderr)
+
+                if returncode == 2:
+                    # Unlike a per-category failure (which correctly continues
+                    # to the next one, since categories are independent), a
+                    # pause is a whole-session signal -- stop here, not just
+                    # skip to the next category.
+                    #
+                    # Ingest first. The categories that already finished
+                    # produced complete, correct CSVs, and abandoning
+                    # their results because a LATER category was paused
+                    # would lose work that was genuinely done.
+                    self._finish_run(coordinator, status="paused",
+                                     notes="Paused at a checkpoint at the user's request.")
+                    self._paused()
+                    return
+                if not success:
+                    # Category stages are independent of each other -- one
+                    # failing shouldn't stop the rest from running.
+                    self._log(f"  WARNING: {label} failed -- continuing with remaining categories.")
+                    self._log(f"  {stderr[:300]}")
+                else:
+                    if status == "no_applicable_files":
+                        # Exited cleanly and produced no output CSV: this
+                        # project has no files of that type. Reported to
+                        # the user as done, recorded distinctly.
+                        self._log("  done -- no files of this type were found.")
+                    else:
+                        self._log("  done.")
+                    self._mark_category_completed(script_name)
+
+            self._stage("All selected categories complete.", 100)
+            # The analyzer runtime persisted directly; there is no CSV
+            # ingest step on this path.
+            self._finish_run(coordinator)
+            self._done("complete")
+        finally:
+            self._finish_run(coordinator)
 
     # ------------------------------------------------------------------
     # Screen: Pre-Scan Summary

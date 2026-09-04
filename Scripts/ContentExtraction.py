@@ -5,7 +5,7 @@ Part of: The File Organizer
 Version: 1.1.1
 
 Extracts the actual TEXT CONTENT of every content-bearing document in
-the run's inventory CSV -- PDF, Word (.docx), PowerPoint (.pptx), Excel
+the database-backed analyzer engine -- PDF, Word (.docx), PowerPoint (.pptx), Excel
 (.xlsx), plain text (.txt), and Markdown (.md) -- into individual .txt
 files, indexed by DB_ID. This is the last Phase 1 (data-gathering) gap:
 earlier scripts captured metadata ABOUT documents (author, page count);
@@ -17,26 +17,25 @@ Output:
     ContentIndex.csv          -- DB_ID, FileName, Path, SourceType,
                                  ExtractedTextFile, CharCount, WordCount, Error
 
-    The extracted-text filename is a hash of the source path (not the
-    DB_ID) purely so this script doesn't need any changes to the shared
-    orchestrator's analyze_fn(path) signature -- ContentIndex.csv is the
-    actual DB_ID -> file lookup, so nothing else needs to care about the
-    hash naming.
+    The supported product runtime stores extracted text by the SHA-256 of
+    the extracted UTF-8 text, sharded by hash prefix. Identical extracted
+    text therefore reuses one artifact. RunCoordinator uses the in-process analyzer engine and persists results
+    directly to SQLite.
 
 Requires:
     pip install pdfplumber python-docx openpyxl python-pptx chardet
 
-Usage:
-    python ContentExtraction.py --csv DuplicateHashInventory.csv --output ContentIndex.csv --extract-folder ExtractedText --report ContentExtractionReport.txt
 """
 
-import argparse
 import hashlib
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from file_organizer_common import run_analysis, to_long_path
+sys.path.insert(0, str(Path(__file__).parent / "Database"))
+from file_organizer_common import to_long_path
+import fo_text
 
 try:
     import pdfplumber
@@ -69,12 +68,54 @@ except ImportError:
     sys.exit(1)
 
 EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"}
-CHECKPOINT_FIELDS = ["Key", "SourceType", "ExtractedTextFile", "CharCount", "WordCount", "Error"]
+CHECKPOINT_FIELDS = ["Key", "SourceType", "ExtractedTextFile", "TextSha256",
+                     "ReusedExisting", "CharCount", "WordCount", "Error"]
+
+
+#: Extracted artifacts are sharded two levels deep by the first four
+#: hex characters of their content hash: <ab>/<cd>/<full>.txt.
+#:
+#: B5-E.F008 flagged the flat directory as a real scalability problem
+#: -- a large project produced one folder with hundreds of thousands of
+#: entries in it, which NTFS handles poorly and Explorer handles worse.
+#: Two levels of 256 gives 65,536 buckets, so a million extracted
+#: documents average ~15 files per directory.
+SHARD_DEPTH = 2
+
+
+def content_to_relpath(text_sha256):
+    r"""
+ContentExtraction.py
+Part of: The File Organizer B6.1
+
+Per-file content extraction implementation used by the database-backed
+in-process analyzer engine.
+
+Supported document text is extracted into a content-addressed, two-level
+sharded store keyed by SHA-256 of the extracted UTF-8 text. Identical extracted
+text from different source paths reuses one artifact. The analyzer returns the
+artifact reference, content hash, encoding/counts and error state; SQLite
+persistence is owned by the analyzer runtime, not by this module.
+
+Plain-text decoding is BOM-aware and tries strict UTF-8 before probabilistic
+encoding detection. This prevents valid UTF-8 from being silently converted to
+a plausible but incorrect legacy encoding.
+
+Requires as applicable: pdfplumber, python-docx, openpyxl, python-pptx, chardet.
+"""
+    digest = text_sha256
+    parts = [digest[i * 2:(i + 1) * 2] for i in range(SHARD_DEPTH)]
+    return "/".join(parts + ["%s.txt" % digest])
 
 
 def path_to_filename(path):
-    """Deterministic, collision-free filename for the extracted-text file,
-    derived from the source path (not DB_ID -- see module docstring)."""
+    """B4.5's path-addressed name. RETAINED for `storage_mode` fallback.
+
+    Still reachable when a project sets `extraction.storage_mode` to
+    'path_addressed', which exists so an operator upgrading mid-project
+    is not forced to re-extract everything at once. New projects get
+    content addressing, which is the default in migration 006.
+    """
     h = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
     return f"{h}.txt"
 
@@ -122,16 +163,11 @@ def extract_xlsx_text(path):
 def extract_plain_text(path):
     with open(to_long_path(path), "rb") as f:
         raw = f.read()
-    detected = chardet.detect(raw)
-    encoding = detected.get("encoding") or "utf-8"
-    try:
-        text = raw.decode(encoding, errors="replace")
-    except (LookupError, TypeError):
-        text = raw.decode("utf-8", errors="replace")
+    text, _encoding = fo_text.decode_bytes(raw)
     return "PlainText", text
 
 
-def make_analyze_fn(extract_folder):
+def make_analyze_fn(extract_folder, content_addressed=True):
     def analyze_content(path):
         ext = Path(path).suffix.lower()
         if ext == ".pdf":
@@ -147,15 +183,41 @@ def make_analyze_fn(extract_folder):
         else:
             raise ValueError(f"Unsupported extension: {ext}")
 
-        filename = path_to_filename(path)
-        with open(extract_folder / filename, "w", encoding="utf-8") as f:
-            f.write(text)
+        # Content addressing: the artifact is named for what is IN it.
+        text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if content_addressed:
+            relpath = content_to_relpath(text_sha)
+        else:
+            relpath = path_to_filename(path)
 
+        target = extract_folder / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        # A hit here means another document already produced byte-for-byte
+        # this text. Writing it again would produce an identical file, so
+        # the write is skipped and the reuse is REPORTED rather than
+        # hidden -- a consumer counting artifacts should be able to tell
+        # deduplication from extraction failure.
+        reused = target.exists()
+        if not reused:
+            # Written to a temporary neighbour and renamed, so a crash
+            # mid-write cannot leave a truncated artifact sitting at a
+            # content-addressed name that later runs will trust (B5-G).
+            staging = target.with_suffix(".txt.partial")
+            with open(staging, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(staging, target)
+
+        # B6: counted, not materialised. len(text.split()) built a list
+        # of every token to produce one integer -- B5-E.F009 measured an
+        # 8 MB document costing ~110 MB of heap that way.
         return {
             "SourceType": source_type,
-            "ExtractedTextFile": filename,
+            "ExtractedTextFile": relpath,
+            "TextSha256": text_sha,
+            "ReusedExisting": "True" if reused else "False",
             "CharCount": str(len(text)),
-            "WordCount": str(len(text.split())),
+            "WordCount": str(fo_text.count_words(text)),
         }
     return analyze_content
 
@@ -179,29 +241,3 @@ def report_extra(results):
     for t, c in sorted(by_type.items(), key=lambda x: -x[1]):
         lines.append(f"    {t:<12}: {c}")
     return lines
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Extract full text content from every document in the inventory.")
-    parser.add_argument("--csv", required=True)
-    parser.add_argument("--output", required=True, help="Path for ContentIndex.csv")
-    parser.add_argument("--extract-folder", required=True, help="Folder to write extracted .txt files into")
-    parser.add_argument("--report")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--skip-cloud-only", action="store_true")
-    args = parser.parse_args()
-
-    extract_folder = Path(args.extract_folder)
-    extract_folder.mkdir(parents=True, exist_ok=True)
-
-    run_analysis(
-        csv_path=args.csv, output_path=args.output, report_path=args.report,
-        extensions=EXTENSIONS, checkpoint_fields=CHECKPOINT_FIELDS,
-        analyze_fn=make_analyze_fn(extract_folder),
-        force=args.force, skip_cloud_only=args.skip_cloud_only,
-        report_title="CONTENT EXTRACTION REPORT", extra_report_lines_fn=report_extra,
-    )
-
-
-if __name__ == "__main__":
-    main()

@@ -1,2 +1,8 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# The File Organizer verifies its own files byte-for-byte against
+# SOURCE_SHA256.csv on every launch (Test-Installation.ps1). That manifest is
+# computed on LF-terminated files, so every checkout MUST be LF on every
+# platform -- otherwise a Windows clone with core.autocrlf=true would smudge
+# the text files to CRLF and fail its own integrity check.
+* text=auto eol=lf
+*.png binary
+*.zip binary

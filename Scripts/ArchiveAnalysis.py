@@ -4,24 +4,10 @@ ArchiveAnalysis.py
 Part of: The File Organizer
 Version: 1.3.1
 
-Catalogs the CONTENTS of every .zip/.7z archive in the run's inventory CSV --
-purely an inventory of what's inside each archive. Comparing those
-contents against files already inventoried elsewhere (to catch, say, a
-zipped copy of something that also exists unzipped) is a Phase 2
-comparison step and is NOT done here.
-
-Produces two related CSVs, following the "each CSV is a table" pattern
-used throughout this project:
-  - ArchiveInventory.csv : one row per archive (DB_ID-keyed), with
-    aggregate stats -- entry count, total size, compression ratio.
-  - ArchiveContents.csv  : one row per file INSIDE each archive, linked
-    back to its parent archive via ArchiveDB_ID.
-
-This script has its own processing loop rather than using the shared
-run_analysis() orchestrator, since its output shape (two files, a
-variable number of child rows per archive) doesn't fit the one-row-per-
-file pattern every other *Analysis.py script uses. It still reuses the
-same low-level checkpoint and cloud-safety helpers.
+Catalogs the contents of .zip/.7z archives for the database-backed
+analyzer engine. The engine persists aggregate facts and bounded child-member
+rows directly to SQLite. The retired standalone CSV/checkpoint pipeline was
+removed in B6.1.
 
 Requires:
     .zip is handled by the standard library (no extra package needed)
@@ -29,23 +15,15 @@ Requires:
         if py7zr is missing, any .7z files encountered are logged as
         individual errors rather than blocking the whole run)
 
-Usage:
-    python ArchiveAnalysis.py --csv DuplicateHashInventory.csv --output ArchiveInventory.csv --contents-output ArchiveContents.csv --report ArchiveReport.txt
 """
 
-import argparse
-import csv
-import shutil
+import os
 import sys
-import time
 import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from file_organizer_common import (
-    find_rows_from_csv, get_key, load_checkpoint, append_checkpoint,
-    check_cloud_files, format_bytes, to_long_path,
-)
+from file_organizer_common import to_long_path
 
 try:
     import py7zr
@@ -54,235 +32,229 @@ except ImportError:
     HAS_PY7ZR = False
 
 EXTENSIONS = {".zip", ".7z"}
+
+#: How many members of ONE archive get their own row.
+#:
+#: B6. THE BOUND FOR B5-E.F006.
+#:
+#: A single 75 MB ZIP with 500,000 entries produced 500,000 database
+#: rows, ~358 MB of heap and ~26 seconds of work in B4.5, with no cap,
+#: no estimate and no progress granularity -- a file that looks small
+#: on disk and is not small to process.
+#:
+#: 10,000 is not a magic number; it is a judgement that a per-entry
+#: listing stops being useful long before it stops being expensive.
+#: Above it, B6 keeps the AGGREGATES -- which are what the report
+#: actually uses -- and records that the listing is capped, so an
+#: incomplete listing is visibly incomplete. --archive-member-cap 0
+#: restores unbounded behaviour for anyone who wants it deliberately.
+DEFAULT_MEMBER_CAP = 10000
+
+MODE_COMPLETE = "complete"
+MODE_CAPPED = "capped"
+MODE_SUMMARY = "summary_only"
+
 AGG_CHECKPOINT_FIELDS = ["Key", "EntryCount", "TotalUncompressedSize",
-                          "TotalCompressedSize", "CompressionRatioPercent", "Error"]
+                          "TotalCompressedSize", "CompressionRatioPercent",
+                          "AnalysisMode", "EntriesRecorded", "Truncated",
+                          "Error"]
 CONTENTS_FIELDS = ["ArchiveDB_ID", "ArchivePath", "EntryPath", "EntrySize", "EntryCompressedSize"]
 
 
-def list_zip_entries(path):
-    entries = []
+#: Above this entry count, an archive is summarised rather than listed.
+#:
+#: THE SECOND HALF OF THE B5-E.F006 FIX, AND WHY IT IS NEEDED.
+#:
+#: Capping our own retention was not sufficient. `zipfile.ZipFile`
+#: parses the ENTIRE central directory on open and builds one ZipInfo
+#: object per entry before any of our code runs. Measured on a
+#: 200,000-entry archive: 121.6 MB inside the standard library, versus
+#: 20.6 MB of our own retention. Capping only the second one takes the
+#: total from 142 MB to 121 MB -- a real improvement to the database
+#: row count, and close to nothing for peak memory.
+#:
+#: So an archive this large is not opened with ZipFile at all. Its
+#: entry count is read from the 22-byte End Of Central Directory
+#: record, and it is recorded in `summary_only` mode: counted,
+#: attributed, flagged, and not enumerated.
+#:
+#: This is a REAL LOSS OF DETAIL and it is recorded as one. The
+#: alternative is a hidden memory ceiling that depends on what happens
+#: to be inside a file that looks small on disk, which is what B5-E
+#: objected to.
+SUMMARY_ONLY_THRESHOLD = 100000
+
+_EOCD_SIGNATURE = b"PK\x05\x06"
+_ZIP64_EOCD_LOCATOR = b"PK\x06\x07"
+_ZIP64_EOCD_RECORD = b"PK\x06\x06"
+
+
+def peek_zip_entry_count(path):
+    r"""Entry count from the end-of-central-directory records, cheaply.
+
+    Returns an int, or None if the count could not be read without
+    parsing the directory itself -- in which case the caller opens the
+    archive normally. Guessing would be worse than not knowing: a wrong
+    count would either skip a listing that was affordable or attempt
+    one that was not.
+
+    Reads at most ~64 KB from the end of the file, plus one 56-byte
+    record if the archive is ZIP64.
+
+    ZIP64 IS THE CASE THAT MATTERS, so it is handled rather than
+    declined. The classic EOCD stores the entry count in two bytes, so
+    any archive with more than 65,535 entries writes a 0xFFFF
+    placeholder there and puts the real count in a ZIP64 record. An
+    implementation that reads only the classic record therefore fails
+    on precisely the archives large enough to be a problem -- which is
+    what a first draft of this function did, and what the 200,000-entry
+    fixture caught.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(to_long_path(path), "rb") as handle:
+            window = min(size, 65557 + 64)
+            handle.seek(size - window)
+            tail = handle.read(window)
+
+            index = tail.rfind(_EOCD_SIGNATURE)
+            if index < 0 or index + 22 > len(tail):
+                return None
+            count = int.from_bytes(tail[index + 10:index + 12], "little")
+            if count != 0xFFFF:
+                return count
+
+            # ZIP64. The locator gives the offset of the real record.
+            #
+            # 0xFFFF IS AMBIGUOUS. It is the ZIP64 placeholder, and it
+            # is also the literal count of an archive holding exactly
+            # 65,535 entries. The two are told apart by whether a ZIP64
+            # locator is present, not by the value alone -- a fixture at
+            # exactly 65,535 caught an earlier version treating the
+            # literal as a placeholder and giving up on a count it
+            # already had.
+            locator = tail.rfind(_ZIP64_EOCD_LOCATOR)
+            if locator < 0 or locator + 20 > len(tail):
+                return 0xFFFF
+            offset = int.from_bytes(tail[locator + 8:locator + 16], "little")
+            if offset <= 0 or offset >= size:
+                return None
+            handle.seek(offset)
+            record = handle.read(56)
+            if len(record) < 40 or not record.startswith(_ZIP64_EOCD_RECORD):
+                return None
+            return int.from_bytes(record[32:40], "little")
+    except OSError:
+        return None
+
+
+def iter_zip_entries(path):
+    """Yield one dict per non-directory ZIP entry. Streams."""
     with zipfile.ZipFile(to_long_path(path)) as zf:
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            entries.append({
+            yield {
                 "EntryPath": info.filename,
                 "EntrySize": info.file_size,
                 "EntryCompressedSize": info.compress_size,
-            })
-    return entries
+            }
 
 
-def list_7z_entries(path):
+def iter_7z_entries(path):
+    """Yield one dict per non-directory 7z entry. Streams."""
     if not HAS_PY7ZR:
         raise RuntimeError("py7zr not installed -- run: pip install py7zr")
-    entries = []
     with py7zr.SevenZipFile(to_long_path(path), mode="r") as z:
         for info in z.list():
             if info.is_directory:
                 continue
-            entries.append({
+            yield {
                 "EntryPath": info.filename,
                 "EntrySize": info.uncompressed or 0,
                 "EntryCompressedSize": info.compressed or 0,
-            })
-    return entries
+            }
 
 
-def analyze_archive(path):
+def analyze_archive(path, member_cap=DEFAULT_MEMBER_CAP,
+                    summary_threshold=SUMMARY_ONLY_THRESHOLD):
+    r"""Aggregate an archive, retaining at most `member_cap` member rows.
+
+    B6. THE FIX FOR B5-E.F006.
+
+    Returns (aggregates, retained_entries).
+
+    THE AGGREGATES ARE ALWAYS COMPLETE. Every entry is counted and
+    every byte is summed, however many there are, because that is
+    cheap -- an integer per entry, not a dict per entry. What the cap
+    bounds is the DETAIL: how many members get their own row.
+
+    That distinction is the whole design. B4.5's problem was not that
+    it looked at 500,000 entries; it is that it kept a dict for each of
+    them and then wrote 500,000 database rows. Counting them costs
+    nothing. Remembering them costs 358 MB.
+
+    So a capped archive still reports a truthful EntryCount, truthful
+    totals and a truthful compression ratio. It reports fewer member
+    rows, and it says so -- `AnalysisMode` and `Truncated` are written
+    into the artifact and into `archive_summary`, so a consumer that
+    needs a complete listing can detect that it does not have one.
+
+    member_cap=0 means unbounded, which is B4.5's behaviour, available
+    on request rather than by default.
+    """
     ext = Path(path).suffix.lower()
+
+    # Pre-flight. An archive with more entries than we would ever list
+    # is summarised WITHOUT opening it -- see SUMMARY_ONLY_THRESHOLD.
+    if ext == ".zip" and summary_threshold > 0:
+        peeked = peek_zip_entry_count(path)
+        if peeked is not None and peeked > summary_threshold:
+            return {
+                "EntryCount": str(peeked),
+                # Byte totals require the central directory, which is
+                # the thing we are declining to parse. Reporting 0
+                # would be a false total; empty is the honest answer to
+                # a question we did not ask.
+                "TotalUncompressedSize": "",
+                "TotalCompressedSize": "",
+                "CompressionRatioPercent": "",
+                "AnalysisMode": MODE_SUMMARY,
+                "EntriesRecorded": "0",
+                "Truncated": "True",
+            }, []
+
     if ext == ".zip":
-        entries = list_zip_entries(path)
+        source = iter_zip_entries(path)
     elif ext == ".7z":
-        entries = list_7z_entries(path)
+        source = iter_7z_entries(path)
     else:
         raise ValueError(f"Unsupported archive type: {ext}")
 
-    total_uncompressed = sum(e["EntrySize"] for e in entries)
-    total_compressed = sum(e["EntryCompressedSize"] for e in entries)
-    ratio = (1 - (total_compressed / total_uncompressed)) * 100 if total_uncompressed > 0 else 0
+    retained = []
+    total_entries = 0
+    total_uncompressed = 0
+    total_compressed = 0
+
+    for entry in source:
+        total_entries += 1
+        total_uncompressed += entry["EntrySize"]
+        total_compressed += entry["EntryCompressedSize"]
+        if member_cap <= 0 or len(retained) < member_cap:
+            retained.append(entry)
+
+    ratio = ((1 - (total_compressed / total_uncompressed)) * 100
+             if total_uncompressed > 0 else 0)
+    truncated = total_entries > len(retained)
+    mode = MODE_COMPLETE if not truncated else MODE_CAPPED
 
     agg = {
-        "EntryCount": str(len(entries)),
+        "EntryCount": str(total_entries),
         "TotalUncompressedSize": str(total_uncompressed),
         "TotalCompressedSize": str(total_compressed),
         "CompressionRatioPercent": f"{ratio:.1f}",
+        "AnalysisMode": mode,
+        "EntriesRecorded": str(len(retained)),
+        "Truncated": "True" if truncated else "False",
     }
-    return agg, entries
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Catalog the contents of every .zip/.7z archive in the inventory.")
-    parser.add_argument("--csv", required=True)
-    parser.add_argument("--output", required=True, help="Path for ArchiveInventory.csv (aggregate stats)")
-    parser.add_argument("--contents-output", required=True, help="Path for ArchiveContents.csv (per-entry detail)")
-    parser.add_argument("--report")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--skip-cloud-only", action="store_true")
-    args = parser.parse_args()
-
-    rows, _ = find_rows_from_csv(args.csv, EXTENSIONS)
-    total_found = len(rows)
-    if total_found == 0:
-        print("No archive files (.zip/.7z) found.")
-        return
-
-    output_path = Path(args.output)
-    contents_path = Path(args.contents_output)
-    checkpoint_path = output_path.with_suffix(".checkpoint.csv")
-    contents_checkpoint_path = contents_path.with_suffix(".checkpoint.csv")
-    pause_flag_path = output_path.parent.parent / "Logs" / "pause_requested.flag"
-
-    checkpoint_data = load_checkpoint(checkpoint_path)
-    if checkpoint_data:
-        print(f"Resuming -- {len(checkpoint_data)} archives already processed previously.")
-
-    rows_to_process = [r for r in rows if get_key(r) not in checkpoint_data]
-    rows_to_process, skipped_cloud = check_cloud_files(rows_to_process, args.force, args.skip_cloud_only)
-    skipped_keys = {get_key(r) for r in skipped_cloud}
-
-    total_to_process = len(rows_to_process)
-    print(f"Cataloging {total_to_process} archive(s)...")
-
-    agg_buffer = []
-    contents_buffer = []
-    agg_checkpoint_exists = checkpoint_path.exists()
-    contents_checkpoint_exists = contents_checkpoint_path.exists()
-    error_count = 0
-    start_time = time.time()
-
-    for i, row in enumerate(rows_to_process, start=1):
-        key = get_key(row)
-        try:
-            agg, entries = analyze_archive(row["Path"])
-            agg_buffer.append({"Key": key, **agg, "Error": ""})
-            for e in entries:
-                contents_buffer.append({
-                    "ArchiveDB_ID": row["DB_ID"], "ArchivePath": row["Path"],
-                    "EntryPath": e["EntryPath"], "EntrySize": e["EntrySize"],
-                    "EntryCompressedSize": e["EntryCompressedSize"],
-                })
-        except Exception as e:
-            error_count += 1
-            agg_buffer.append({"Key": key, "EntryCount": "", "TotalUncompressedSize": "",
-                                "TotalCompressedSize": "", "CompressionRatioPercent": "", "Error": str(e)})
-
-        # Flush after every archive (not batched) -- keeps the aggregate
-        # and contents checkpoints in sync at archive boundaries, which is
-        # what makes resuming safe here.
-        agg_checkpoint_exists = append_checkpoint(checkpoint_path, agg_buffer, agg_checkpoint_exists, AGG_CHECKPOINT_FIELDS)
-        if contents_buffer:
-            mode = "a" if contents_checkpoint_exists else "w"
-            try:
-                with open(contents_checkpoint_path, mode, newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=CONTENTS_FIELDS)
-                    if not contents_checkpoint_exists:
-                        writer.writeheader()
-                    writer.writerows(contents_buffer)
-                # Only clear/mark-exists on a confirmed-successful write --
-                # see file_organizer_common.py's append_checkpoint for why
-                # (a real OneDrive lock collision found during testing).
-                contents_checkpoint_exists = True
-                contents_buffer.clear()
-            except OSError as e:
-                print(f"  WARNING: Contents checkpoint write failed, will retry: {e}")
-
-        # Checked only after BOTH checkpoints are confirmed flushed
-        # together -- this is what makes resuming safe here, so pausing
-        # can't happen at a point where they'd be out of sync.
-        if pause_flag_path.exists():
-            try:
-                pause_flag_path.unlink()
-            except OSError:
-                pass
-            print("\nPaused by user request. Progress has been saved -- resume anytime.")
-            sys.exit(2)
-
-        print(f"  {i}/{total_to_process} processed ({time.time() - start_time:.1f}s elapsed)")
-
-    all_done = load_checkpoint(checkpoint_path)
-
-    output_fields = ["DB_ID", "FileName", "Path"] + [k for k in AGG_CHECKPOINT_FIELDS if k != "Key"]
-    results = []
-    for row in rows:
-        key = get_key(row)
-        base = {"DB_ID": row["DB_ID"], "FileName": row["FileName"], "Path": row["Path"]}
-        if key in skipped_keys:
-            results.append({**base, "EntryCount": "", "TotalUncompressedSize": "",
-                             "TotalCompressedSize": "", "CompressionRatioPercent": "", "Error": "SkippedCloudOnly"})
-        elif key in all_done:
-            d = all_done[key]
-            results.append({**base, **{k: d.get(k, "") for k in AGG_CHECKPOINT_FIELDS if k != "Key"}})
-        else:
-            results.append({**base, "EntryCount": "", "TotalUncompressedSize": "",
-                             "TotalCompressedSize": "", "CompressionRatioPercent": "", "Error": "NotProcessed"})
-
-    with open(output_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=output_fields)
-        writer.writeheader()
-        writer.writerows(results)
-
-    if contents_checkpoint_path.exists():
-        shutil.copy(contents_checkpoint_path, contents_path)
-    else:
-        with open(contents_path, "w", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=CONTENTS_FIELDS).writeheader()
-
-    for p in (checkpoint_path, contents_checkpoint_path):
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
-
-    elapsed = time.time() - start_time
-    succeeded = sum(1 for r in results if not r["Error"])
-    total_entries = sum(int(r["EntryCount"]) for r in results if r.get("EntryCount"))
-
-    print()
-    print(f"Done. {succeeded} succeeded, {error_count} failed. Total entries cataloged: {total_entries}")
-    print(f"Output: {output_path}")
-    print(f"Contents: {contents_path}")
-    print(f"Elapsed: {elapsed:.1f}s")
-
-    if args.report:
-        total_uncompressed = sum(int(r["TotalUncompressedSize"]) for r in results if r.get("TotalUncompressedSize"))
-        total_compressed = sum(int(r["TotalCompressedSize"]) for r in results if r.get("TotalCompressedSize"))
-        overall_savings_pct = (1 - (total_compressed / total_uncompressed)) * 100 if total_uncompressed > 0 else 0
-        lines = [
-            "=" * 70,
-            " THE FILE ORGANIZER -- ARCHIVE ANALYSIS REPORT",
-            f" Generated : {time.strftime('%Y-%m-%d %H:%M:%S')}",
-            "=" * 70, "",
-            "SUMMARY",
-            f"  Archives found              : {total_found}",
-            f"  Processed this run          : {total_to_process}",
-            f"  Succeeded                   : {succeeded}",
-            f"  Errors                      : {error_count}",
-            f"  Total entries cataloged     : {total_entries}",
-            f"  Total compressed size       : {format_bytes(total_compressed)}",
-            f"  Total uncompressed content  : {format_bytes(total_uncompressed)}",
-            f"  Overall space saved         : {format_bytes(total_uncompressed - total_compressed)} ({overall_savings_pct:.1f}%)",
-            f"  Processing time             : {elapsed:.1f}s",
-            "",
-            "NOTE",
-            "  This is a catalog only -- comparing archive contents against",
-            "  files already inventoried elsewhere (e.g. a zipped copy of",
-            "  something that also exists unzipped) is a Phase 2 step.",
-            "=" * 70,
-        ]
-        with open(args.report, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        print(f"Report: {args.report}")
-
-    if error_count > 0:
-        error_log = output_path.with_suffix(".errors.txt")
-        with open(error_log, "w", encoding="utf-8") as f:
-            for r in results:
-                if r["Error"] and r["Error"] not in ("SkippedCloudOnly", "NotProcessed"):
-                    f.write(f"{r['Path']} -- {r['Error']}\n")
-        print(f"Errors logged to: {error_log}")
-
-
-if __name__ == "__main__":
-    main()
+    return agg, retained

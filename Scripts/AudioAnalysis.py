@@ -5,7 +5,7 @@ Part of: The File Organizer
 Version: 1.0.1
 
 Extracts technical metadata (via ffprobe) and tag metadata (via Mutagen)
-for every audio file in the run's inventory CSV: duration, bitrate, codec,
+for every audio file selected by the database-backed analyzer engine: duration, bitrate, codec,
 sample rate, channel count, plus title/artist/album/year/track/genre tags.
 
 Requires:
@@ -14,16 +14,13 @@ Requires:
         winget install ffmpeg
         (or download from https://ffmpeg.org/download.html and add to PATH)
 
-Usage:
-    python AudioAnalysis.py --csv DuplicateHashInventory.csv --output AudioInventory.csv --report AudioReport.txt
 """
 
-import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from file_organizer_common import run_analysis, run_ffprobe, is_ffprobe_available
+from file_organizer_common import run_ffprobe, is_ffprobe_available
 
 try:
     from mutagen import File as MutagenFile
@@ -89,28 +86,3 @@ def report_extra(results):
     for c, n in sorted(by_codec.items(), key=lambda x: -x[1]):
         lines.append(f"    {c:<12}: {n}")
     return lines
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Extract technical + tag metadata for every audio file in the inventory.")
-    parser.add_argument("--csv", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--report")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--skip-cloud-only", action="store_true")
-    args = parser.parse_args()
-
-    if not is_ffprobe_available():
-        print("ERROR: ffprobe not found on PATH. Install ffmpeg (winget install ffmpeg) and retry.", file=sys.stderr)
-        sys.exit(1)
-
-    run_analysis(
-        csv_path=args.csv, output_path=args.output, report_path=args.report,
-        extensions=EXTENSIONS, checkpoint_fields=CHECKPOINT_FIELDS, analyze_fn=analyze_audio,
-        force=args.force, skip_cloud_only=args.skip_cloud_only,
-        report_title="AUDIO ANALYSIS REPORT", extra_report_lines_fn=report_extra,
-    )
-
-
-if __name__ == "__main__":
-    main()

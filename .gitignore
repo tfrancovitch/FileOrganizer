@@ -189,3 +189,13 @@ Projects/
 Scripts/DependencyCheckReport.txt
 Scripts/InstallationCheckReport.txt
 
+
+# --- The File Organizer: runtime + acceptance-test artifacts ---
+/Projects/*
+!/Projects/.gitkeep
+/Logs/
+*.log
+Scripts/DependencyCheckReport.txt
+Scripts/InstallationCheckReport.txt
+Scripts/_B6.1_originals/
+Scripts/_B6.2_pre_P1/
