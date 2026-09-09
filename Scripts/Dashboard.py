@@ -790,6 +790,8 @@ class Dashboard(tk.Tk):
         if projects:
             ttk.Button(button_row, text="Resume Scan", command=self.resume_scan_for_selected_project).pack(
                 side="left", padx=5)
+            ttk.Button(button_row, text="Explore & Understand", command=self.launch_phase2_selected_project).pack(
+                side="left", padx=5)
             ttk.Button(button_row, text="View Reports", command=self.view_selected_project_reports).pack(
                 side="left", padx=5)
             ttk.Button(button_row, text="Review Reports", command=self.open_selected_project_reports).pack(
@@ -804,6 +806,26 @@ class Dashboard(tk.Tk):
             messagebox.showinfo("No selection", "Select a project first.")
             return None
         return self.project_listbox.get(selection[0])
+
+    def launch_phase2_selected_project(self):
+        """Launch the separate widescreen Phase 2 analytical workspace.
+
+        Kept in a separate process so the verified Phase 1 scan dashboard
+        retains its existing window/control-flow semantics.
+        """
+        project_name = self._get_selected_project()
+        if not project_name:
+            return
+        launcher = SCRIPTS_DIR / "Phase2" / "launch.py"
+        project_dir = PROJECTS_DIR / project_name
+        if not launcher.is_file():
+            messagebox.showerror("Phase 2 unavailable", f"Phase 2 launcher not found:\n{launcher}")
+            return
+        try:
+            subprocess.Popen([sys.executable, str(launcher), str(project_dir)], cwd=str(SCRIPTS_DIR), creationflags=_NO_WINDOW)
+        except Exception as exc:
+            app_log_write("ERROR", f"Could not launch Phase 2 for {project_name}: {exc}")
+            messagebox.showerror("Could not open Understand", str(exc))
 
     def view_selected_project_reports(self):
         """Opens the inline report viewer for a project selected from the

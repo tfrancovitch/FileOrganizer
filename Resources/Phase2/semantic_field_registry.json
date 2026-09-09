@@ -1,0 +1,3716 @@
+{
+  "registry_schema": "fileorganizer.semantic-field-registry/1",
+  "registry_version": "1.1.1",
+  "semantic_contract": "fileorganizer.query-semantics/1",
+  "availability_states": {
+    "known": "A usable value is established by the applicable evidence.",
+    "null": "The applicable observation/analysis succeeded and explicitly yielded no value.",
+    "unknown": "The project cannot establish the value from available evidence.",
+    "unavailable": "The value cannot be reconstructed from the recorded evidence model (for example legacy UTC).",
+    "unsupported": "The applicable analyzer/capability does not support producing this value.",
+    "not_applicable": "The field does not conceptually apply to the item.",
+    "stale": "A value exists historically but is not authoritative for the current observation."
+  },
+  "entities": [
+    {
+      "entity_id": "project",
+      "definition": "One File Organizer project database and its evidence/analytical state."
+    },
+    {
+      "entity_id": "source_root",
+      "definition": "A root path selected for observation in a project; not automatically a custodian, device, or person."
+    },
+    {
+      "entity_id": "file",
+      "definition": "Query subject representing a File Organizer file location/current state or a historical observation, depending on temporal mode."
+    },
+    {
+      "entity_id": "folder",
+      "definition": "Derived analytical hierarchy node from source-root-relative paths plus explicit directory events; not a fabricated file observation."
+    },
+    {
+      "entity_id": "duplicate_group",
+      "definition": "An exact-content grouping: current derived truth or a specific historical duplicate-run snapshot."
+    },
+    {
+      "entity_id": "analysis_result",
+      "definition": "One analyzer result, or the current-relevant latest attempt under current temporal semantics."
+    },
+    {
+      "entity_id": "archive_member",
+      "definition": "A recorded member entry within an analyzed archive; not a filesystem file location."
+    },
+    {
+      "entity_id": "run",
+      "definition": "A recorded File Organizer execution/run context."
+    },
+    {
+      "entity_id": "analyzer_run",
+      "definition": "One analyzer execution within a File Organizer run."
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "current_analysis",
+      "from_entity": "file",
+      "to_entity": "analysis_result",
+      "semantics": "Latest attempt for each analyzer on file_state.current_observation_id; never silently fallback to older success."
+    },
+    {
+      "relation_id": "analysis_history",
+      "from_entity": "file",
+      "to_entity": "analysis_result",
+      "semantics": "All stored analyzer results linked to observations for the location."
+    },
+    {
+      "relation_id": "current_exact_duplicate_group",
+      "from_entity": "file",
+      "to_entity": "duplicate_group",
+      "semantics": "Group based only on authoritative current complete content identity."
+    },
+    {
+      "relation_id": "current_exact_duplicate_members",
+      "from_entity": "file",
+      "to_entity": "file",
+      "semantics": "Other/current locations in the same current exact-content group."
+    },
+    {
+      "relation_id": "archive_members",
+      "from_entity": "analysis_result",
+      "to_entity": "archive_member",
+      "semantics": "Recorded archive-member rows; negative absence requires complete archive evidence."
+    },
+    {
+      "relation_id": "source_root",
+      "from_entity": "file",
+      "to_entity": "source_root",
+      "semantics": "The source root containing the file location."
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "project.uid",
+      "label": "Project ID",
+      "entity": "project",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "project.project_uid",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "source_root.id",
+      "label": "Source Root ID",
+      "entity": "source_root",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "source_root.source_root_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "source_root.label",
+      "label": "Source Root",
+      "entity": "source_root",
+      "type": "string",
+      "origin": "observed",
+      "source": "source_root.label",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "source_root.path",
+      "label": "Source Root Path",
+      "entity": "source_root",
+      "type": "path",
+      "origin": "observed",
+      "source": "source_root.root_path",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": false,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "source_root.active",
+      "label": "Source Root Active",
+      "entity": "source_root",
+      "type": "boolean",
+      "origin": "current_projected",
+      "source": "source_root.is_active",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "coverage.root_availability",
+      "label": "Root Availability",
+      "entity": "source_root",
+      "type": "enum",
+      "origin": "reported",
+      "source": "run_source_root.availability / inventory_scan.root_availability",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Availability for the relevant run/scan context; not a permanent property of the root.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "source_root.filesystem",
+      "label": "Filesystem",
+      "entity": "source_root",
+      "type": "enum",
+      "origin": "reported",
+      "source": "run_source_root.filesystem",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "source_root.drive_type",
+      "label": "Drive Type",
+      "entity": "source_root",
+      "type": "enum",
+      "origin": "reported",
+      "source": "run_source_root.drive_type",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.id",
+      "label": "Location ID",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "file_path.file_path_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "Durable location identity under one source root; not logical-item identity across move/rename.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.relative",
+      "label": "Relative Path",
+      "entity": "file",
+      "type": "path",
+      "origin": "observed",
+      "source": "file_path.relative_path",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": false,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.file_name",
+      "label": "File Name",
+      "entity": "file",
+      "type": "string",
+      "origin": "observed",
+      "source": "file_path.file_name",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.extension",
+      "label": "Extension",
+      "entity": "file",
+      "type": "enum",
+      "origin": "observed",
+      "source": "file_path.extension_key",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.depth",
+      "label": "Path Depth",
+      "entity": "file",
+      "type": "integer",
+      "origin": "observed",
+      "source": "file_state.depth / file_path.depth",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.length",
+      "label": "Path Length",
+      "entity": "file",
+      "type": "integer",
+      "origin": "observed",
+      "source": "file_state.path_length",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.first_seen_utc",
+      "label": "First Seen by File Organizer",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "observed",
+      "source": "file_path.first_seen_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "path.last_seen_utc",
+      "label": "Last Seen by File Organizer",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "observed",
+      "source": "file_path.last_seen_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.relative_path",
+      "label": "Folder",
+      "entity": "folder",
+      "type": "path",
+      "origin": "derived",
+      "source": "derived from source_root + relative_path",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Analytical folder entity; not a fabricated filesystem observation.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.parent",
+      "label": "Parent Folder",
+      "entity": "file",
+      "type": "path",
+      "origin": "derived",
+      "source": "derived from file_path.relative_path",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.depth",
+      "label": "Folder Depth",
+      "entity": "folder",
+      "type": "integer",
+      "origin": "derived",
+      "source": "derived from normalized relative path",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.state",
+      "label": "Current File State",
+      "entity": "file",
+      "type": "enum",
+      "origin": "current_projected",
+      "source": "file_state.state",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.size_bytes",
+      "label": "Logical Size",
+      "entity": "file",
+      "type": "bytes",
+      "origin": "current_projected",
+      "source": "file_state.size_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Length of the current observed file location; not allocated disk space.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.allocated_size_bytes",
+      "label": "Allocated Size",
+      "entity": "file",
+      "type": "bytes",
+      "origin": "current_projected",
+      "source": "file_state.allocated_size_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown",
+        "unavailable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.is_offline_or_cloud",
+      "label": "Cloud/Offline Placeholder",
+      "entity": "file",
+      "type": "boolean",
+      "origin": "current_projected",
+      "source": "file_state.is_offline_or_cloud",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.attributes",
+      "label": "Filesystem Attributes",
+      "entity": "file",
+      "type": "string",
+      "origin": "current_projected",
+      "source": "file_state.attributes",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.is_reparse_point",
+      "label": "Reparse Point",
+      "entity": "file",
+      "type": "boolean",
+      "origin": "current_projected",
+      "source": "file_state.is_reparse_point",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.reparse_tag",
+      "label": "Reparse Tag",
+      "entity": "file",
+      "type": "integer",
+      "origin": "current_projected",
+      "source": "file_state.reparse_tag",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.volume_serial",
+      "label": "Volume Serial",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "current_projected",
+      "source": "file_state.volume_serial",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.file_index",
+      "label": "Filesystem File Index",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "current_projected",
+      "source": "file_state.file_index",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.hard_link_count",
+      "label": "Hard-Link Count",
+      "entity": "file",
+      "type": "integer",
+      "origin": "current_projected",
+      "source": "file_state.hard_link_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.physical_identity_known",
+      "label": "Physical Identity Known",
+      "entity": "file",
+      "type": "boolean",
+      "origin": "derived",
+      "source": "volume_serial IS NOT NULL AND file_index IS NOT NULL",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.created_utc",
+      "label": "Filesystem Created UTC",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "current_projected",
+      "source": "file_state.created_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unavailable",
+        "unknown"
+      ],
+      "notes": "True UTC only when timestamp_model supports it.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.created_local_naive",
+      "label": "Filesystem Created Local (Legacy/Naive)",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "current_projected",
+      "source": "file_state.created_local_naive",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "Wall-clock value without reliable UTC interpretation where applicable.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.created_state",
+      "label": "Filesystem Created Time State",
+      "entity": "file",
+      "type": "enum",
+      "origin": "current_projected",
+      "source": "file_state.created_time_state",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.modified_utc",
+      "label": "Filesystem Modified UTC",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "current_projected",
+      "source": "file_state.modified_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unavailable",
+        "unknown"
+      ],
+      "notes": "True UTC only when timestamp_model supports it.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.modified_local_naive",
+      "label": "Filesystem Modified Local (Legacy/Naive)",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "current_projected",
+      "source": "file_state.modified_local_naive",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "Wall-clock value without reliable UTC interpretation where applicable.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.modified_state",
+      "label": "Filesystem Modified Time State",
+      "entity": "file",
+      "type": "enum",
+      "origin": "current_projected",
+      "source": "file_state.modified_time_state",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.accessed_utc",
+      "label": "Filesystem Accessed UTC",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "current_projected",
+      "source": "file_state.accessed_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unavailable",
+        "unknown"
+      ],
+      "notes": "True UTC only when timestamp_model supports it.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.accessed_local_naive",
+      "label": "Filesystem Accessed Local (Legacy/Naive)",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "current_projected",
+      "source": "file_state.accessed_local_naive",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "Wall-clock value without reliable UTC interpretation where applicable.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.accessed_state",
+      "label": "Filesystem Accessed Time State",
+      "entity": "file",
+      "type": "enum",
+      "origin": "current_projected",
+      "source": "file_state.accessed_time_state",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.utc_offset_minutes",
+      "label": "Timestamp UTC Offset",
+      "entity": "file",
+      "type": "integer",
+      "origin": "current_projected",
+      "source": "file_state.utc_offset_minutes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unavailable",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "time.timestamp_model",
+      "label": "Timestamp Model",
+      "entity": "file",
+      "type": "enum",
+      "origin": "current_projected",
+      "source": "file_state.timestamp_model",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.id",
+      "label": "Observation ID",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "file_observation.file_observation_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.scan_id",
+      "label": "Inventory Scan ID",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "file_observation.inventory_scan_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.status",
+      "label": "Observation Status",
+      "entity": "file",
+      "type": "enum",
+      "origin": "observed",
+      "source": "file_observation.status",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.observed_utc",
+      "label": "Observed by File Organizer",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "observed",
+      "source": "file_observation.observed_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.change_kind",
+      "label": "Observed Change Kind",
+      "entity": "file",
+      "type": "enum",
+      "origin": "observed",
+      "source": "file_observation.change_kind",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.error_kind",
+      "label": "Observation Error Type",
+      "entity": "file",
+      "type": "enum",
+      "origin": "observed",
+      "source": "file_observation.error_kind",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.error_message",
+      "label": "Observation Error Message",
+      "entity": "file",
+      "type": "string",
+      "origin": "observed",
+      "source": "file_observation.error_message",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": false,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "observation.supersedes_id",
+      "label": "Superseded Observation ID",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "file_observation.supersedes_observation_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": false,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "content.id",
+      "label": "Content ID",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "file_state.content_id / content.content_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "stale"
+      ],
+      "notes": "Complete content identity only; authority requires current observation binding.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "content.sha256",
+      "label": "SHA-256",
+      "entity": "file",
+      "type": "hash",
+      "origin": "observed",
+      "source": "content.sha256",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "stale"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "content.size_bytes",
+      "label": "Content Size",
+      "entity": "file",
+      "type": "bytes",
+      "origin": "observed",
+      "source": "content.size_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "stale"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "hash.status",
+      "label": "Hash Status",
+      "entity": "file",
+      "type": "enum",
+      "origin": "reported",
+      "source": "file_state.hash_status",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "hash.authority",
+      "label": "Hash Authority",
+      "entity": "file",
+      "type": "enum",
+      "origin": "derived",
+      "source": "current observation/hash binding",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "At minimum: current, stale, absent/unknown as defined by semantic contract.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "hash.algorithm",
+      "label": "Hash Algorithm",
+      "entity": "file",
+      "type": "enum",
+      "origin": "reported",
+      "source": "hash_measurement.algorithm",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "hash.measurement_mode",
+      "label": "Hash Measurement Mode",
+      "entity": "file",
+      "type": "enum",
+      "origin": "reported",
+      "source": "file_state.hash_measurement_mode / hash_measurement.measurement_mode",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "hash.measured_utc",
+      "label": "Hash Measured",
+      "entity": "file",
+      "type": "datetime",
+      "origin": "reported",
+      "source": "hash_measurement.measured_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.content_id",
+      "label": "Duplicate Content ID",
+      "entity": "duplicate_group",
+      "type": "identifier",
+      "origin": "derived",
+      "source": "current duplicate projection content_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.location_count",
+      "label": "Duplicate Locations",
+      "entity": "duplicate_group",
+      "type": "integer",
+      "origin": "derived",
+      "source": "current duplicate projection",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.root_count",
+      "label": "Source Roots in Group",
+      "entity": "duplicate_group",
+      "type": "integer",
+      "origin": "derived",
+      "source": "current duplicate projection",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.physical_copy_count",
+      "label": "Physical Copies",
+      "entity": "duplicate_group",
+      "type": "integer",
+      "origin": "derived",
+      "source": "current duplicate projection",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.hard_link_alias_count",
+      "label": "Hard-Link Alias Locations",
+      "entity": "duplicate_group",
+      "type": "integer",
+      "origin": "derived",
+      "source": "current duplicate projection",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.physical_identity_complete",
+      "label": "Physical Identity Complete",
+      "entity": "duplicate_group",
+      "type": "boolean",
+      "origin": "derived",
+      "source": "current duplicate projection",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.size_bytes",
+      "label": "Bytes per Copy",
+      "entity": "duplicate_group",
+      "type": "bytes",
+      "origin": "derived",
+      "source": "content/file size",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.reclaimable_bytes",
+      "label": "Potentially Reclaimable Exact-Duplicate Bytes",
+      "entity": "duplicate_group",
+      "type": "bytes",
+      "origin": "derived",
+      "source": "current duplicate projection",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Unknown when physical identity is incomplete; not a deletion recommendation.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.result_id",
+      "label": "Analyzer Result ID",
+      "entity": "analysis_result",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "analyzer_result.analyzer_result_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.analyzer_key",
+      "label": "Analyzer",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer.analyzer_key",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.status",
+      "label": "Analyzer Result Status",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer_result.status / current-analysis semantic projection",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.title",
+      "label": "Reported Title",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.title",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "unsupported",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.author",
+      "label": "Reported Author",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.author",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "unsupported",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.content_created_reported",
+      "label": "Reported Content-Created Date",
+      "entity": "analysis_result",
+      "type": "datetime",
+      "origin": "reported",
+      "source": "analyzer_result.content_created_reported",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "unsupported",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.width_px",
+      "label": "Image/Media Width",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.width_px",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.height_px",
+      "label": "Image/Media Height",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.height_px",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.duration_seconds",
+      "label": "Media Duration",
+      "entity": "analysis_result",
+      "type": "duration",
+      "origin": "reported",
+      "source": "analyzer_result.duration_seconds",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.word_count",
+      "label": "Word Count",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.word_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.char_count",
+      "label": "Character Count",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.char_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.error_kind",
+      "label": "Analyzer Error Type",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer_result.error_kind",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.error_message",
+      "label": "Analyzer Error Message",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.error_message",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": false,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.analyzed_utc",
+      "label": "Analyzed",
+      "entity": "analysis_result",
+      "type": "datetime",
+      "origin": "reported",
+      "source": "analyzer_result.analyzed_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.pdf.page_count",
+      "label": "PDF Page Count",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:PageCount",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "P2.5 candidate for expression index or typed analytical fact.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.pdf.encrypted",
+      "label": "PDF Encrypted",
+      "entity": "analysis_result",
+      "type": "boolean",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Encrypted",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.image.format",
+      "label": "Image Format",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Format",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.camera.make",
+      "label": "Camera Make",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:CameraMake",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.camera.model",
+      "label": "Camera Model",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:CameraModel",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.audio.artist",
+      "label": "Audio Artist",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Artist",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.audio.album",
+      "label": "Audio Album",
+      "entity": "analysis_result",
+      "type": "string",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Album",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.audio.codec",
+      "label": "Audio Codec",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Codec",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.audio.bitrate",
+      "label": "Audio Bitrate",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Bitrate",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.video.codec",
+      "label": "Video Codec",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:VideoCodec",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.video.bitrate",
+      "label": "Video Bitrate",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Bitrate",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.text.line_count",
+      "label": "Text Line Count",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:LineCount",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.text.encoding",
+      "label": "Text Encoding",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "analyzer_result.detail_json:Encoding",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown",
+        "not_applicable"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.status",
+      "label": "Extracted Text Status",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "extracted_content.status",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.source_type",
+      "label": "Extracted Text Source Type",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "extracted_content.source_type",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.char_count",
+      "label": "Extracted Text Characters",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "extracted_content.char_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.word_count",
+      "label": "Extracted Text Words",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "extracted_content.word_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.sha256",
+      "label": "Extracted Text SHA-256",
+      "entity": "analysis_result",
+      "type": "hash",
+      "origin": "reported",
+      "source": "extracted_content.text_sha256",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Trustworthy only after P1-CORR-001 or verified backfill.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.artifact_exists",
+      "label": "Extracted Text Artifact Exists",
+      "entity": "analysis_result",
+      "type": "boolean",
+      "origin": "reported",
+      "source": "extracted_content.artifact_exists",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "text.storage_mode",
+      "label": "Extracted Text Storage Mode",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "extracted_content.storage_mode",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Trustworthy only after P1-CORR-001 or verified backfill.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "archive_member.entry_path",
+      "label": "Archive Member Path",
+      "entity": "archive_member",
+      "type": "path",
+      "origin": "reported",
+      "source": "archive_member.entry_path",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "archive_member.entry_name",
+      "label": "Archive Member Name",
+      "entity": "archive_member",
+      "type": "string",
+      "origin": "reported",
+      "source": "archive_member.entry_name",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "archive_member.extension",
+      "label": "Archive Member Extension",
+      "entity": "archive_member",
+      "type": "enum",
+      "origin": "reported",
+      "source": "archive_member.entry_extension_key",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "archive_member.size_bytes",
+      "label": "Archive Member Size",
+      "entity": "archive_member",
+      "type": "bytes",
+      "origin": "reported",
+      "source": "archive_member.entry_size_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "archive_member.compressed_size_bytes",
+      "label": "Archive Member Compressed Size",
+      "entity": "archive_member",
+      "type": "bytes",
+      "origin": "reported",
+      "source": "archive_member.entry_compressed_size_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.archive.entry_count",
+      "label": "Archive Entry Count",
+      "entity": "analysis_result",
+      "type": "integer",
+      "origin": "reported",
+      "source": "archive_summary.entry_total_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Trustworthy current completeness semantics require P1-CORR-002.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.archive.total_uncompressed_bytes",
+      "label": "Archive Uncompressed Bytes",
+      "entity": "analysis_result",
+      "type": "bytes",
+      "origin": "reported",
+      "source": "archive_summary.total_uncompressed_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.archive.total_compressed_bytes",
+      "label": "Archive Compressed Bytes",
+      "entity": "analysis_result",
+      "type": "bytes",
+      "origin": "reported",
+      "source": "archive_summary.total_compressed_bytes",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.archive.completeness",
+      "label": "Archive Listing Completeness",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "reported",
+      "source": "archive_summary.analysis_mode/truncated",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Values conceptually include complete, capped, summary_only; requires P1-CORR-002.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "coverage.scan_status",
+      "label": "Inventory Scan Status",
+      "entity": "run",
+      "type": "enum",
+      "origin": "reported",
+      "source": "inventory_scan.status",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "coverage.inaccessible_count",
+      "label": "Inaccessible Paths",
+      "entity": "run",
+      "type": "integer",
+      "origin": "reported",
+      "source": "inventory_scan.inaccessible_count / inaccessible_seen_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "coverage.inaccessible_truncated",
+      "label": "Inaccessible Listing Truncated",
+      "entity": "run",
+      "type": "boolean",
+      "origin": "reported",
+      "source": "inventory_scan.inaccessible_truncated",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "coverage.history_mode",
+      "label": "Observation History Mode",
+      "entity": "run",
+      "type": "enum",
+      "origin": "reported",
+      "source": "inventory_scan.history_mode",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.id",
+      "label": "Run ID",
+      "entity": "run",
+      "type": "identifier",
+      "origin": "observed",
+      "source": "run.run_id",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.kind",
+      "label": "Run Kind",
+      "entity": "run",
+      "type": "enum",
+      "origin": "reported",
+      "source": "run.run_kind",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.status",
+      "label": "Run Status",
+      "entity": "run",
+      "type": "enum",
+      "origin": "reported",
+      "source": "run.status",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.started_utc",
+      "label": "Run Started",
+      "entity": "run",
+      "type": "datetime",
+      "origin": "reported",
+      "source": "run.started_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.ended_utc",
+      "label": "Run Ended",
+      "entity": "run",
+      "type": "datetime",
+      "origin": "reported",
+      "source": "run.ended_utc",
+      "operators": [
+        "eq",
+        "ne",
+        "before",
+        "after",
+        "on",
+        "between",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.warning_count",
+      "label": "Run Warnings",
+      "entity": "run",
+      "type": "integer",
+      "origin": "reported",
+      "source": "run.warning_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.error_count",
+      "label": "Run Errors",
+      "entity": "run",
+      "type": "integer",
+      "origin": "reported",
+      "source": "run.error_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.finalized",
+      "label": "Run Finalized",
+      "entity": "run",
+      "type": "boolean",
+      "origin": "reported",
+      "source": "run.finalized",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.in_current_exact_duplicate_group",
+      "label": "In Current Exact Duplicate Group",
+      "entity": "file",
+      "type": "boolean",
+      "origin": "derived",
+      "source": "current exact-duplicate projection / authoritative current content identity",
+      "operators": [
+        "is_true",
+        "is_false",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "True only for present locations participating in an authoritative current exact duplicate group.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "file.physical_object_key",
+      "label": "Physical Object Key",
+      "entity": "file",
+      "type": "identifier",
+      "origin": "derived",
+      "source": "normalized (volume_serial,file_index) where both are known",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "unknown"
+      ],
+      "notes": "Composite analytical identifier; never a logical-item identity.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.file_name_variant_count",
+      "label": "Filename Variants",
+      "entity": "duplicate_group",
+      "type": "integer",
+      "origin": "derived",
+      "source": "current exact-duplicate member filenames",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Count of distinct current member filenames within the exact-content group.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.extension_variant_count",
+      "label": "Extension Variants",
+      "entity": "duplicate_group",
+      "type": "integer",
+      "origin": "derived",
+      "source": "current exact-duplicate member extensions",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Count of distinct current member extensions within the exact-content group.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "duplicate.logical_bytes_represented",
+      "label": "Logical Bytes Represented",
+      "entity": "duplicate_group",
+      "type": "bytes",
+      "origin": "derived",
+      "source": "duplicate.size_bytes * duplicate.location_count",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Logical bytes represented by all locations; not reclaimable physical storage.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "analysis.author_state",
+      "label": "Reported Author Evidence State",
+      "entity": "analysis_result",
+      "type": "enum",
+      "origin": "derived",
+      "source": "semantic availability state of analysis.author",
+      "operators": [
+        "eq",
+        "ne",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Values use P2.6 evidence vocabulary such as known, null, unknown, unsupported, not_applicable.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.top_level",
+      "label": "Top-Level Folder",
+      "entity": "file",
+      "type": "path",
+      "origin": "derived",
+      "source": "first path segment beneath source root",
+      "operators": [
+        "eq",
+        "ne",
+        "contains",
+        "starts_with",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": true,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Analytical hierarchy value; not a fabricated filesystem observation.",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "run.duration_ms",
+      "label": "Run Duration",
+      "entity": "run",
+      "type": "duration",
+      "origin": "reported",
+      "source": "run.duration_ms",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known",
+        "null"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.location_count_direct",
+      "label": "Direct File Locations",
+      "entity": "folder",
+      "type": "integer",
+      "origin": "derived",
+      "source": "derived from current file locations whose parent is this folder",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.location_count_recursive",
+      "label": "Recursive File Locations",
+      "entity": "folder",
+      "type": "integer",
+      "origin": "derived",
+      "source": "derived from current file locations in this folder subtree",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.logical_bytes_direct",
+      "label": "Direct Logical Bytes",
+      "entity": "folder",
+      "type": "bytes",
+      "origin": "derived",
+      "source": "sum of logical bytes for direct child file locations",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "",
+      "phase2_v1": true
+    },
+    {
+      "field_id": "folder.logical_bytes_recursive",
+      "label": "Recursive Logical Bytes",
+      "entity": "folder",
+      "type": "bytes",
+      "origin": "derived",
+      "source": "sum of logical bytes for file locations in this folder subtree",
+      "operators": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "between",
+        "in",
+        "not_in",
+        "is_null",
+        "is_not_null"
+      ],
+      "groupable": true,
+      "facetable": false,
+      "sortable": true,
+      "availability_states": [
+        "known"
+      ],
+      "notes": "Overlapping parent/child folder totals are expected; do not sum folders to calculate project total.",
+      "phase2_v1": true
+    }
+  ],
+  "validation": {
+    "unique_field_ids": true,
+    "field_count": 132,
+    "p2_4_fixture_field_count": 17,
+    "p2_4_fixture_fields_all_resolved": true,
+    "registry_sha256": "9959f756296611388fb75761d75b7f8a59ba8f0189499134f56d5edd68e4ab64",
+    "p2_7_report_refinement": "12 report-driven semantic fields added total"
+  }
+}

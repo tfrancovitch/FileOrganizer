@@ -1,0 +1,2154 @@
+{
+  "catalog_schema": "fileorganizer.standard-reports/1",
+  "catalog_version": "1.0.0",
+  "semantic_registry_version": "1.1.1",
+  "query_schema": "fileorganizer.query/1",
+  "report_count": 31,
+  "reports": [
+    {
+      "report_id": "STO-001",
+      "title": "Largest Files",
+      "family": "Storage",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "E-001"
+      ],
+      "purpose": "Find the current File Locations consuming the most logical bytes.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [
+        {
+          "name": "N",
+          "type": "integer",
+          "default": 100,
+          "role": "semantic_limit"
+        }
+      ],
+      "default_representation": "ranked_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Largest current files",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "file.size_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ],
+        "semantic_limit": 100
+      }
+    },
+    {
+      "report_id": "STO-002",
+      "title": "Largest Folders",
+      "family": "Storage",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "E-002",
+        "B-004"
+      ],
+      "purpose": "Rank analytical folders by recursive logical bytes.",
+      "counting_unit": "Folder / Recursive Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [
+        {
+          "name": "N",
+          "type": "integer",
+          "default": 100,
+          "role": "semantic_limit"
+        }
+      ],
+      "default_representation": "ranked_folder_table",
+      "caveats": [
+        "Parent and child folder totals overlap by design; do not sum ranked folder totals to derive project total."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Largest folders recursively",
+        "subject": {
+          "entity": "folder",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "folder.logical_bytes_recursive"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ],
+        "semantic_limit": 100
+      }
+    },
+    {
+      "report_id": "STO-003",
+      "title": "Storage by Extension",
+      "family": "Storage",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "C-002",
+        "C-004",
+        "E-005",
+        "O-002"
+      ],
+      "purpose": "Show which filename extensions account for the most current locations and logical bytes.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Storage by extension",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          },
+          {
+            "id": "logical_bytes",
+            "function": "sum",
+            "field": "file.size_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "logical_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "STO-004",
+      "title": "Storage by Source Root",
+      "family": "Storage",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "B-014",
+        "E-006"
+      ],
+      "purpose": "Compare current corpus size across observed source roots.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Storage by source root",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "root",
+            "field": "source_root.id",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          },
+          {
+            "id": "logical_bytes",
+            "function": "sum",
+            "field": "file.size_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "logical_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "STO-005",
+      "title": "Storage by Modified Year",
+      "family": "Storage",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "D-002",
+        "D-009",
+        "E-008"
+      ],
+      "purpose": "Show current locations and logical bytes by trustworthy filesystem-modified year.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "timeline_bar_table",
+      "caveats": [
+        "Legacy/local-naive or otherwise unavailable UTC values remain separate evidence-state buckets."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Storage by modified year",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "year",
+            "field": "time.modified_utc",
+            "bucket": {
+              "kind": "date_part",
+              "part": "year"
+            },
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          },
+          {
+            "id": "logical_bytes",
+            "function": "sum",
+            "field": "file.size_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "group",
+              "id": "year"
+            },
+            "direction": "asc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "CMP-001",
+      "title": "Files by Extension",
+      "family": "Composition",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "C-001",
+        "C-003"
+      ],
+      "purpose": "Describe the current corpus composition by filename extension.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Files by extension",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "CMP-002",
+      "title": "Files by Source Root",
+      "family": "Composition",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "A-004",
+        "B-015"
+      ],
+      "purpose": "Describe how current File Locations are distributed across source roots.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Files by source root",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "root",
+            "field": "source_root.id",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "CMP-003",
+      "title": "Rare and Uncommon Extensions",
+      "family": "Composition",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "A-008",
+        "C-005",
+        "C-006"
+      ],
+      "purpose": "Surface extensions represented by only a small number of current locations.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [
+        {
+          "name": "max_count",
+          "type": "integer",
+          "default": 5,
+          "role": "query_parameter"
+        }
+      ],
+      "default_representation": "table",
+      "caveats": [
+        "The stored default query uses 5; implementation should bind the report parameter into the HAVING threshold."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Rare extensions",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "direction": "asc"
+          }
+        ],
+        "having": {
+          "condition": {
+            "left": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "op": "lte",
+            "value": {
+              "kind": "parameter",
+              "name": "max_count"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "max_count",
+            "type": "integer",
+            "required": true,
+            "default": 5,
+            "description": "Maximum current location count for an extension to be considered rare"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-001",
+      "title": "Exact Duplicate Summary",
+      "family": "Duplicates",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "A-014",
+        "A-015",
+        "F-004"
+      ],
+      "purpose": "Summarize the scale of authoritative current exact duplication.",
+      "counting_unit": "Exact Duplicate Group / Logical Bytes / Potentially Reclaimable Exact-Duplicate Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "summary_cards",
+      "caveats": [
+        "Potentially reclaimable bytes are analytical, not a deletion recommendation or guaranteed free-space result."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Exact duplicate summary",
+        "subject": {
+          "entity": "duplicate_group",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "aggregates": [
+          {
+            "id": "groups",
+            "function": "count"
+          },
+          {
+            "id": "logical_bytes_represented",
+            "function": "sum",
+            "field": "duplicate.logical_bytes_represented",
+            "evidence_policy": "known_only_with_disclosure"
+          },
+          {
+            "id": "potential_reclaimable_bytes",
+            "function": "sum",
+            "field": "duplicate.reclaimable_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-002",
+      "title": "Largest Exact Duplicate Groups",
+      "family": "Duplicates",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "E-003",
+        "E-004",
+        "F-006"
+      ],
+      "purpose": "Rank current exact-content groups by potentially reclaimable physical bytes.",
+      "counting_unit": "Exact Duplicate Group / Potentially Reclaimable Exact-Duplicate Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [
+        {
+          "name": "N",
+          "type": "integer",
+          "default": 100,
+          "role": "semantic_limit"
+        }
+      ],
+      "default_representation": "ranked_duplicate_group_table",
+      "caveats": [
+        "Groups with incomplete physical identity sort after known reclaim values."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Largest exact duplicate groups",
+        "subject": {
+          "entity": "duplicate_group",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "duplicate.reclaimable_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ],
+        "semantic_limit": 100
+      }
+    },
+    {
+      "report_id": "DUP-003",
+      "title": "Duplicate Member Locations by Folder",
+      "family": "Duplicates",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "B-010",
+        "B-012"
+      ],
+      "purpose": "Show where current exact-duplicate member locations are concentrated.",
+      "counting_unit": "Duplicate Location / Duplicate-Member Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [
+        "This intentionally does not attribute reclaimable bytes to a folder; doing so would require a keep/delete allocation decision."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Duplicate member locations by folder",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "file.in_current_exact_duplicate_group"
+            },
+            "op": "is_true"
+          }
+        },
+        "group_by": [
+          {
+            "id": "folder",
+            "field": "folder.parent",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "duplicate_locations",
+            "function": "count"
+          },
+          {
+            "id": "duplicate_member_logical_bytes",
+            "function": "sum",
+            "field": "file.size_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "duplicate_member_logical_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-004",
+      "title": "Exact Duplicate Groups Spanning Source Roots",
+      "family": "Duplicates",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "B-013",
+        "F-007"
+      ],
+      "purpose": "Find exact-content groups whose member locations occur in more than one source root.",
+      "counting_unit": "Exact Duplicate Group",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "duplicate_group_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Cross-root exact duplicate groups",
+        "subject": {
+          "entity": "duplicate_group",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "duplicate.root_count"
+            },
+            "op": "gt",
+            "value": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "duplicate.reclaimable_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-005",
+      "title": "Filename Divergence in Exact Duplicate Groups",
+      "family": "Duplicates",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "F-009",
+        "F-023",
+        "G-005"
+      ],
+      "purpose": "Find byte-identical content stored under multiple filenames.",
+      "counting_unit": "Exact Duplicate Group / Filename Variant Count",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "duplicate_group_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Filename divergence in exact duplicate groups",
+        "subject": {
+          "entity": "duplicate_group",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "duplicate.file_name_variant_count"
+            },
+            "op": "gt",
+            "value": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "duplicate.file_name_variant_count"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-006",
+      "title": "Extension Divergence in Exact Duplicate Groups",
+      "family": "Duplicates",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "F-011"
+      ],
+      "purpose": "Find byte-identical content stored under multiple filename extensions.",
+      "counting_unit": "Exact Duplicate Group / Extension Variant Count",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "duplicate_group_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Extension divergence in exact duplicate groups",
+        "subject": {
+          "entity": "duplicate_group",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "duplicate.extension_variant_count"
+            },
+            "op": "gt",
+            "value": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "duplicate.extension_variant_count"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-007",
+      "title": "Duplicate Participation by Source Root",
+      "family": "Duplicates",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "F-032",
+        "E-021",
+        "O-018"
+      ],
+      "purpose": "Compare exact-duplicate participation within each source root without assigning reclaimable savings to a specific root.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "stacked_bar_plus_table",
+      "caveats": [
+        "Participation is objective; per-root reclaimable-space attribution is not."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Duplicate participation by source root",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "root",
+            "field": "source_root.id",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "duplicate_member",
+            "field": "file.in_current_exact_duplicate_group",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          },
+          {
+            "id": "logical_bytes",
+            "function": "sum",
+            "field": "file.size_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "group",
+              "id": "root"
+            },
+            "direction": "asc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "DUP-008",
+      "title": "Duplicate Participation by Extension",
+      "family": "Duplicates",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "C-020",
+        "C-021"
+      ],
+      "purpose": "Show which extensions contribute most to exact-duplicate participation.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "stacked_bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Duplicate participation by extension",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "duplicate_member",
+            "field": "file.in_current_exact_duplicate_group",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          },
+          {
+            "id": "logical_bytes",
+            "function": "sum",
+            "field": "file.size_bytes",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "group",
+              "id": "extension"
+            },
+            "direction": "asc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "META-001",
+      "title": "Reported Author Distribution",
+      "family": "Metadata",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "H-007",
+        "H-009",
+        "H-010",
+        "O-009"
+      ],
+      "purpose": "Show reported Author values from current document analysis.",
+      "counting_unit": "Current Analyzer Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [
+        "Reported Author is analyzer metadata, not independently verified authorship."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Reported Author distribution",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "all": [
+            {
+              "condition": {
+                "left": {
+                  "kind": "field",
+                  "id": "analysis.analyzer_key"
+                },
+                "op": "in",
+                "values": [
+                  {
+                    "kind": "literal",
+                    "value": "office"
+                  },
+                  {
+                    "kind": "literal",
+                    "value": "pdf"
+                  }
+                ]
+              }
+            },
+            {
+              "condition": {
+                "left": {
+                  "kind": "field",
+                  "id": "analysis.author"
+                },
+                "op": "is_not_null"
+              }
+            }
+          ]
+        },
+        "group_by": [
+          {
+            "id": "author",
+            "field": "analysis.author",
+            "nonvalue_policy": "exclude_nonknown"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "documents",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "documents"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "META-002",
+      "title": "Reported Author Availability",
+      "family": "Metadata",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "H-008",
+        "Y-005"
+      ],
+      "purpose": "Distinguish known Author values, explicit nulls, and unknown/unavailable Author evidence.",
+      "counting_unit": "Current Analyzer Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Reported Author evidence state",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "analysis.analyzer_key"
+            },
+            "op": "in",
+            "values": [
+              {
+                "kind": "literal",
+                "value": "office"
+              },
+              {
+                "kind": "literal",
+                "value": "pdf"
+              }
+            ]
+          }
+        },
+        "group_by": [
+          {
+            "id": "author_state",
+            "field": "analysis.author_state",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "documents",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "documents"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "META-003",
+      "title": "Camera Make and Model Distribution",
+      "family": "Metadata",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "H-012",
+        "H-013",
+        "O-011"
+      ],
+      "purpose": "Describe stored camera metadata for current image/RAW analysis.",
+      "counting_unit": "Current Analyzer Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "pivot_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Camera make/model distribution",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "analysis.analyzer_key"
+            },
+            "op": "in",
+            "values": [
+              {
+                "kind": "literal",
+                "value": "image"
+              },
+              {
+                "kind": "literal",
+                "value": "raw_image"
+              }
+            ]
+          }
+        },
+        "group_by": [
+          {
+            "id": "make",
+            "field": "analysis.camera.make",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "model",
+            "field": "analysis.camera.model",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "images",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "images"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "META-004",
+      "title": "PDF Page Count Distribution",
+      "family": "Metadata",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "H-016",
+        "H-017"
+      ],
+      "purpose": "Show the distribution of current PDF page counts.",
+      "counting_unit": "Current PDF Analyzer Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "histogram_plus_table",
+      "caveats": [],
+      "dependencies": [
+        "P2.5 physical strategy may use JSON, expression index, or typed analytical fact."
+      ],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "PDF page-count distribution",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "analysis.analyzer_key"
+            },
+            "op": "eq",
+            "value": {
+              "kind": "literal",
+              "value": "pdf"
+            }
+          }
+        },
+        "group_by": [
+          {
+            "id": "page_band",
+            "field": "analysis.pdf.page_count",
+            "bucket": {
+              "kind": "numeric_ranges",
+              "boundaries": [
+                1,
+                10,
+                25,
+                50,
+                100,
+                250,
+                500,
+                1000
+              ]
+            },
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "documents",
+            "function": "count"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "META-005",
+      "title": "Extracted Text Coverage",
+      "family": "Metadata",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "J-012",
+        "X-010",
+        "Y-002"
+      ],
+      "purpose": "Show how much current analyzable document evidence has stored extracted text and what failed or yielded empty text.",
+      "counting_unit": "Current Content-Extraction Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [
+        "P1-CORR-001 must be resolved before enhanced text identity/storage fields are trusted."
+      ],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Extracted text coverage",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "analysis.analyzer_key"
+            },
+            "op": "eq",
+            "value": {
+              "kind": "literal",
+              "value": "content_extraction"
+            }
+          }
+        },
+        "group_by": [
+          {
+            "id": "text_status",
+            "field": "text.status",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "documents",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "documents"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "AGE-001",
+      "title": "Oldest Current Files",
+      "family": "Age",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "D-004"
+      ],
+      "purpose": "Rank current locations by trustworthy filesystem-modified UTC time.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "ranked_table",
+      "caveats": [
+        "Unavailable/legacy local-naive UTC values remain separate and do not silently enter the true-UTC ranking."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Oldest current files",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "time.modified_utc"
+            },
+            "direction": "asc",
+            "nulls": "last"
+          }
+        ],
+        "semantic_limit": 100
+      }
+    },
+    {
+      "report_id": "AGE-002",
+      "title": "Old Large Files",
+      "family": "Age",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "D-018"
+      ],
+      "purpose": "Find large current files last modified before a chosen cutoff.",
+      "counting_unit": "File Location / Logical Bytes",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [
+        {
+          "name": "cutoff",
+          "type": "datetime"
+        },
+        {
+          "name": "min_bytes",
+          "type": "bytes"
+        }
+      ],
+      "default_representation": "ranked_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Old large files",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "parameters": [
+          {
+            "name": "cutoff",
+            "type": "datetime",
+            "required": true
+          },
+          {
+            "name": "min_bytes",
+            "type": "bytes",
+            "required": true
+          }
+        ],
+        "where": {
+          "all": [
+            {
+              "condition": {
+                "left": {
+                  "kind": "field",
+                  "id": "time.modified_utc"
+                },
+                "op": "before",
+                "value": {
+                  "kind": "parameter",
+                  "name": "cutoff"
+                }
+              }
+            },
+            {
+              "condition": {
+                "left": {
+                  "kind": "field",
+                  "id": "file.size_bytes"
+                },
+                "op": "gte",
+                "value": {
+                  "kind": "parameter",
+                  "name": "min_bytes"
+                }
+              }
+            }
+          ]
+        },
+        "sort": [
+          {
+            "ref": {
+              "kind": "field",
+              "id": "file.size_bytes"
+            },
+            "direction": "desc",
+            "nulls": "last"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "QUAL-001",
+      "title": "Current Analyzer Failures",
+      "family": "Data Quality",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "L-001",
+        "I-016",
+        "I-017",
+        "O-023"
+      ],
+      "purpose": "Show current analyzer failures by analyzer and extension with drill-down to affected locations.",
+      "counting_unit": "Current Analyzer Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "pivot_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Current analyzer failures",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "analysis.status"
+            },
+            "op": "eq",
+            "value": {
+              "kind": "literal",
+              "value": "error"
+            }
+          }
+        },
+        "group_by": [
+          {
+            "id": "analyzer",
+            "field": "analysis.analyzer_key",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "failures",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "failures"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "QUAL-002",
+      "title": "Current Location Evidence Problems",
+      "family": "Data Quality",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "A-020",
+        "L-002",
+        "B-030"
+      ],
+      "purpose": "Show current locations whose state prevents a normal present-file conclusion.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "pivot_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Current inaccessible or unverified locations",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "inaccessible",
+            "unverified"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "state",
+            "field": "file.state",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "root",
+            "field": "source_root.id",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "QUAL-003",
+      "title": "Cloud and Offline Placeholders",
+      "family": "Data Quality",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "A-019",
+        "B-029",
+        "M-007",
+        "O-015"
+      ],
+      "purpose": "Show current paths identified as cloud-only/offline without hydrating them.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "pivot_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Cloud/offline placeholders",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "file.is_offline_or_cloud"
+            },
+            "op": "is_true"
+          }
+        },
+        "group_by": [
+          {
+            "id": "root",
+            "field": "source_root.id",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "QUAL-004",
+      "title": "Stale Hashes",
+      "family": "Data Quality",
+      "tier": "core",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "M-009",
+        "O-016",
+        "Q-011"
+      ],
+      "purpose": "Show current locations whose stored hash/content identity is no longer authoritative for the current observation.",
+      "counting_unit": "File Location",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "pivot_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Stale hashes",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "current"
+          },
+          "current_file_states": [
+            "present"
+          ]
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "hash.authority"
+            },
+            "op": "eq",
+            "value": {
+              "kind": "literal",
+              "value": "stale"
+            }
+          }
+        },
+        "group_by": [
+          {
+            "id": "root",
+            "field": "source_root.id",
+            "nonvalue_policy": "separate_states"
+          },
+          {
+            "id": "extension",
+            "field": "path.extension",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "locations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "locations"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "QUAL-005",
+      "title": "Run and Coverage Health History",
+      "family": "Data Quality",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "M-004",
+        "M-005"
+      ],
+      "purpose": "Summarize run completion, warnings, and errors across project history.",
+      "counting_unit": "Run / Warning Count / Error Count",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "summary_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Run health history",
+        "subject": {
+          "entity": "run",
+          "temporal": {
+            "mode": "history"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "status",
+            "field": "run.status",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "runs",
+            "function": "count"
+          },
+          {
+            "id": "warnings",
+            "function": "sum",
+            "field": "run.warning_count",
+            "evidence_policy": "known_only_with_disclosure"
+          },
+          {
+            "id": "errors",
+            "function": "sum",
+            "field": "run.error_count",
+            "evidence_policy": "known_only_with_disclosure"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "runs"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "QUAL-006",
+      "title": "Archive Listing Completeness",
+      "family": "Data Quality",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "Y-003"
+      ],
+      "purpose": "Show which current archive analyses have complete, capped, summary-only, or unknown member-list coverage.",
+      "counting_unit": "Current Archive Analyzer Result",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [
+        "P1-CORR-002 must be resolved before completeness is authoritative."
+      ],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Archive listing completeness",
+        "subject": {
+          "entity": "analysis_result",
+          "temporal": {
+            "mode": "current"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "analysis.analyzer_key"
+            },
+            "op": "eq",
+            "value": {
+              "kind": "literal",
+              "value": "archive"
+            }
+          }
+        },
+        "group_by": [
+          {
+            "id": "completeness",
+            "field": "analysis.archive.completeness",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "archives",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "archives"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "HIS-001",
+      "title": "Observed Change History",
+      "family": "History",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "D-022",
+        "N-014"
+      ],
+      "purpose": "Summarize recorded file-location changes over project history.",
+      "counting_unit": "File Observation",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "bar_plus_table",
+      "caveats": [],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Historical observed changes",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "history"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "where": {
+          "condition": {
+            "left": {
+              "kind": "field",
+              "id": "observation.change_kind"
+            },
+            "op": "is_not_null"
+          }
+        },
+        "group_by": [
+          {
+            "id": "change_kind",
+            "field": "observation.change_kind",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "observations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "observations"
+            },
+            "direction": "desc"
+          }
+        ]
+      }
+    },
+    {
+      "report_id": "HIS-002",
+      "title": "Locations with Multiple Historical Observations",
+      "family": "History",
+      "tier": "advanced",
+      "status": "adopt",
+      "question_catalog_refs": [
+        "D-022",
+        "D-023"
+      ],
+      "purpose": "Find File Locations that accumulated multiple stored observation states.",
+      "counting_unit": "File Location / File Observation",
+      "coverage_policy": "allow_with_disclosure",
+      "scope_behavior": "inherit_or_project",
+      "parameters": [],
+      "default_representation": "ranked_table",
+      "caveats": [
+        "This is location history; it does not establish move/rename continuity as one Logical Item."
+      ],
+      "dependencies": [],
+      "query_ast": {
+        "query_schema": "fileorganizer.query/1",
+        "semantic_contract": "fileorganizer.query-semantics/1",
+        "label": "Locations with multiple historical observations",
+        "subject": {
+          "entity": "file",
+          "temporal": {
+            "mode": "history"
+          }
+        },
+        "scope": {
+          "kind": "project"
+        },
+        "group_by": [
+          {
+            "id": "location",
+            "field": "path.id",
+            "nonvalue_policy": "separate_states"
+          }
+        ],
+        "aggregates": [
+          {
+            "id": "observations",
+            "function": "count"
+          }
+        ],
+        "sort": [
+          {
+            "ref": {
+              "kind": "aggregate",
+              "id": "observations"
+            },
+            "direction": "desc"
+          }
+        ],
+        "having": {
+          "condition": {
+            "left": {
+              "kind": "aggregate",
+              "id": "observations"
+            },
+            "op": "gt",
+            "value": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        }
+      }
+    }
+  ],
+  "deferred_or_rejected": [
+    {
+      "title": "Potentially Reclaimable Bytes by Folder or Source Root",
+      "disposition": "REJECT AS STANDARD METRIC",
+      "reason": "Reclaimable physical bytes are a group-level property. Assigning the saving to one folder/root requires choosing which physical copy survives, which is a Phase 3 decision. Use duplicate-member locations/bytes by folder/root instead."
+    },
+    {
+      "title": "Files by Media Class",
+      "disposition": "DEFER",
+      "reason": "P2.6 reserves Media Class but no final deterministic classification rule/version is yet adopted. Extension and analyzer-specific reports already cover the initial need."
+    },
+    {
+      "title": "Generic Metadata Completeness Matrix",
+      "disposition": "DEFER",
+      "reason": "The initial library includes concrete Author and Extracted-Text evidence-state reports. A generic field-state pivot should wait until implementation proves a clean generic state-of-field query surface."
+    },
+    {
+      "title": "Long-Unmodified Folders by Median Date",
+      "disposition": "DEFER",
+      "reason": "Median/percentile aggregation is not part of Query AST v1 and the value of this report is not high enough to expand the aggregate contract before real use."
+    },
+    {
+      "title": "Old Downloads",
+      "disposition": "CONSOLIDATE",
+      "reason": "A hard-coded Downloads report is a special case of Old Large Files executed within a selected scope. P2.8 should make scope selection easy rather than create folder-name-specific analytical code."
+    },
+    {
+      "title": "Similar / Near-Duplicate Images",
+      "disposition": "DEFER TO PHASE 3",
+      "reason": "Similarity is not exact duplication and feeds human adjudication/Image Game decisions."
+    },
+    {
+      "title": "Semantic Search / Topic Reports",
+      "disposition": "DEFER TO PHASE 6+",
+      "reason": "Phase 2 literal search is evidence retrieval; semantic model interpretation remains outside the initial Phase 2 product."
+    }
+  ],
+  "validation": {
+    "all_report_query_asts_valid": true,
+    "all_report_fields_in_semantic_registry": true,
+    "all_question_refs_valid": true,
+    "no_reclaimable_bytes_allocated_to_folder_root_extension": true,
+    "pass": true
+  }
+}
