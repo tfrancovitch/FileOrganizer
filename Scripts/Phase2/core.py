@@ -88,6 +88,27 @@ def require_phase2_schema(conn: sqlite3.Connection):
     return version
 
 
+def stamp_core_version(conn: sqlite3.Connection) -> bool:
+    """Record which analytical core actually touched this project.
+
+    Migration 008 writes the literal 'P2.9', so a P2.9.1 overlay applied on top
+    of it leaves the database misreporting its own provenance. Traceability is a
+    Phase 2 requirement, so correct the stamp once a writable connection exists.
+
+    Returns False on a read-only connection rather than raising: reporting is a
+    legitimate read-only activity and must not fail over a provenance stamp.
+    """
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_meta(key,value,updated_utc) VALUES('phase2.core_version',?,?)",
+            (VERSION, utc_now()),
+        )
+        conn.commit()
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
 def project_info(conn: sqlite3.Connection) -> dict:
     row = conn.execute(
         "SELECT project_id, project_uid, name, created_utc FROM project ORDER BY project_id LIMIT 1"

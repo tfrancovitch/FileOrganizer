@@ -6,7 +6,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox, simpledialog
 
-from .core import connect, require_phase2_schema, project_info, utc_now
+from .core import connect, require_phase2_schema, project_info, stamp_core_version, utc_now
 from .coverage import evidence_health
 from .derived import ensure_duplicate_projection
 from .fts import FtsManager, FtsUnavailable
@@ -38,6 +38,7 @@ class Phase2App(tk.Tk):
         self.project_dir=Path(project_dir).resolve()
         self.conn=connect(self.project_dir,write=True)
         require_phase2_schema(self.conn)
+        stamp_core_version(self.conn)
         self.store=SavedQueryStore(self.conn)
         self.fts=FtsManager(self.conn,self.project_dir)
         self.engine=QueryEngine(self.conn,saved_store=self.store,fts_manager=self.fts)
