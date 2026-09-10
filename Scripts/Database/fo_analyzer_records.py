@@ -181,6 +181,7 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
         if spec.kind == "archive":
             members, warned = self._write_archive_members(
                 analyzer_run_id, outcome, all_paths)
+            self._write_archive_summaries(analyzer_run_id, outcome, all_paths)
             counts["archive_members"] = members
             if members:
                 artifacts.append(spec.secondary_artifact)
@@ -250,23 +251,63 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
                        "analyzer result and were not persisted." % orphaned)
         return len(rows), bool(orphaned)
 
+    def _write_archive_summaries(self, analyzer_run_id, outcome, all_paths):
+        """Persist complete/capped/summary-only semantics calculated by ArchiveAnalysis."""
+        result_ids = self._result_ids_by_path(analyzer_run_id, set(all_paths))
+        try:
+            cap_row = self.conn.execute(
+                "SELECT value FROM app_meta WHERE key='archive.member_cap'").fetchone()
+            cap = int(cap_row[0]) if cap_row and cap_row[0] not in (None, "") else None
+        except Exception:
+            cap = None
+        rows = []
+        for result in outcome.results:
+            result_id = result_ids.get(result.path)
+            if result_id is None:
+                continue
+            f = result.fields
+            total = _int_or_none(f.get("EntryCount"))
+            recorded = _int_or_none(f.get("EntriesRecorded"))
+            if recorded is None:
+                recorded = len(result.extra or [])
+            mode = (f.get("AnalysisMode") or "").strip()
+            if mode not in ("complete", "capped", "summary_only"):
+                if total is not None and recorded == total:
+                    mode = "complete"
+                elif recorded == 0 and (total or 0) > 0:
+                    mode = "summary_only"
+                else:
+                    mode = "capped"
+            trunc = str(f.get("Truncated") or "").strip().lower() in ("1", "true", "yes")
+            if total is not None and recorded < total:
+                trunc = True
+            rows.append((result_id, mode, total, recorded, cap, 1 if trunc else 0,
+                         _int_or_none(f.get("TotalUncompressedSize")),
+                         _int_or_none(f.get("TotalCompressedSize"))))
+        if rows:
+            self.conn.executemany(
+                "INSERT INTO archive_summary(analyzer_result_id,project_id,analysis_mode,"
+                "entry_total_count,entry_recorded_count,entry_cap,truncated,"
+                "total_uncompressed_bytes,total_compressed_bytes) "
+                "VALUES(?,1,?,?,?,?,?,?,?) ON CONFLICT(analyzer_result_id) DO UPDATE SET "
+                "analysis_mode=excluded.analysis_mode,entry_total_count=excluded.entry_total_count,"
+                "entry_recorded_count=excluded.entry_recorded_count,entry_cap=excluded.entry_cap,"
+                "truncated=excluded.truncated,total_uncompressed_bytes=excluded.total_uncompressed_bytes,"
+                "total_compressed_bytes=excluded.total_compressed_bytes", rows)
+            self.conn.commit()
+        return len(rows)
+
     def _write_extracted_content(self, analyzer_run_id, outcome, spec,
                                  all_paths, results=None):
-        r"""Extraction metadata -> extracted_content (REFERENCES ONLY).
+        r"""Persist references plus content-addressed extraction identity.
 
-        Records that extraction happened, which observation it belongs
-        to, where the artifact is, and the counts the extractor
-        produced. It does NOT read, copy, hash or store the extracted
-        text -- that storage architecture is a later revision, and
-        pre-empting it here is the one decision B4 is explicitly told
-        not to make.
+        P2.9.1 preserves the P2.9 fix for the B6.2 writer gap: the extractor already produced
+        TextSha256/ReusedExisting, but the persistence path dropped them.
         """
         folder_relpath = "Inventory/" + spec.secondary_artifact
         extract_folder = outcome_extract_folder(outcome)
         result_ids = self._result_ids_by_path(analyzer_run_id, set(all_paths))
-
         rows = []
-        # Explicit list when called from the incremental sink.
         for result in (outcome.results if results is None else results):
             result_id = result_ids.get(result.path)
             if result_id is None:
@@ -274,48 +315,53 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
             filename = (result.fields.get("ExtractedTextFile") or "").strip()
             error_text = (result.error or "").strip()
             char_count = _int_or_none(result.fields.get("CharCount"))
-
             if error_text in ("SkippedCloudOnly", "NotProcessed"):
                 status = "skipped"
             elif error_text:
                 status = "error"
             elif char_count == 0:
-                # Ran, succeeded, and the document genuinely had no
-                # extractable text -- a scanned PDF, most often.
-                # Distinct from an error, and the distinction is the
-                # useful part.
                 status = "empty"
             else:
                 status = "extracted"
-
-            exists = None
-            size = None
+            exists = None; size = None
             if filename and extract_folder:
                 candidate = os.path.join(str(extract_folder), filename)
                 try:
-                    if os.path.isfile(candidate):
-                        exists = 1
-                        size = os.path.getsize(candidate)
-                    else:
-                        exists = 0
+                    if os.path.isfile(candidate): exists = 1; size = os.path.getsize(candidate)
+                    else: exists = 0
                 except OSError:
                     exists = 0
-
-            rows.append((
-                result_id, _text_or_none(result.fields.get("SourceType")),
-                folder_relpath,
-                (folder_relpath + "/" + filename) if filename else None,
-                filename or None, char_count,
-                _int_or_none(result.fields.get("WordCount")), exists, size,
-                status))
-
+            text_sha = _text_or_none(result.fields.get("TextSha256"))
+            reused_raw = str(result.fields.get("ReusedExisting") or "").strip().lower()
+            reused = 1 if reused_raw in ("1", "true", "yes") else 0
+            normalized_name = filename.replace("\\", "/")
+            storage_mode = ("content_addressed" if text_sha and
+                            normalized_name.lower().endswith((text_sha + ".txt").lower())
+                            and len(normalized_name.rsplit("/", 1)[-1]) == 68
+                            else "path_addressed")
+            rows.append((result_id, _text_or_none(result.fields.get("SourceType")), folder_relpath,
+                         (folder_relpath + "/" + filename) if filename else None, filename or None,
+                         char_count, _int_or_none(result.fields.get("WordCount")), exists, size, status,
+                         text_sha, storage_mode, reused, 1))
         if rows:
             self.conn.executemany(
-                "INSERT OR IGNORE INTO extracted_content (project_id, "
-                "analyzer_result_id, source_type, extract_folder_relpath, "
-                "extracted_relpath, extracted_filename, char_count, "
-                "word_count, artifact_exists, artifact_bytes, status) "
-                "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                "INSERT INTO extracted_content(project_id,analyzer_result_id,source_type,"
+                "extract_folder_relpath,extracted_relpath,extracted_filename,char_count,word_count,"
+                "artifact_exists,artifact_bytes,status,text_sha256,storage_mode,reused_existing,reuse_known) "
+                "VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(analyzer_result_id) DO UPDATE SET "
+                "source_type=excluded.source_type,extract_folder_relpath=excluded.extract_folder_relpath,"
+                "extracted_relpath=excluded.extracted_relpath,extracted_filename=excluded.extracted_filename,"
+                "char_count=excluded.char_count,word_count=excluded.word_count,"
+                "artifact_exists=excluded.artifact_exists,artifact_bytes=excluded.artifact_bytes,"
+                "status=excluded.status,text_sha256=excluded.text_sha256,storage_mode=excluded.storage_mode,"
+                "reused_existing=excluded.reused_existing,reuse_known=excluded.reuse_known", rows)
+            self.conn.execute(
+                "UPDATE extracted_content AS ec SET dedup_of_extracted_content_id=("
+                " SELECT MIN(prior.extracted_content_id) FROM extracted_content prior"
+                " WHERE prior.text_sha256=ec.text_sha256 AND prior.extracted_content_id<ec.extracted_content_id"
+                " AND prior.storage_mode='content_addressed')"
+                " WHERE ec.text_sha256 IS NOT NULL AND ec.storage_mode='content_addressed'")
             self.conn.commit()
         return len(rows)
 

@@ -169,7 +169,8 @@ ANALYZER_SPECS = [
         "archive", "Archive Analysis", "ArchiveInventory.csv",
         promoted={},
         detail=["EntryCount", "TotalUncompressedSize", "TotalCompressedSize",
-                "CompressionRatioPercent"],
+                "CompressionRatioPercent", "AnalysisMode", "EntriesRecorded",
+                "Truncated"],
         script_name="ArchiveAnalysis.ps1", engine_name="ArchiveAnalysis.py",
         secondary_artifact="ArchiveContents.csv", kind="archive"),
 
@@ -177,7 +178,8 @@ ANALYZER_SPECS = [
         "content_extraction", "Content Extraction", "ContentIndex.csv",
         promoted={"word_count": ("WordCount", _int_or_none),
                   "char_count": ("CharCount", _int_or_none)},
-        detail=["SourceType", "ExtractedTextFile"],
+        detail=["SourceType", "ExtractedTextFile", "TextSha256",
+                "ReusedExisting"],
         script_name="ContentExtraction.ps1", engine_name="ContentExtraction.py",
         secondary_artifact="ExtractedText", kind="extraction"),
 ]

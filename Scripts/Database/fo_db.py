@@ -129,7 +129,7 @@ APP_VERSION = "B6.1"
 #: B6.1 requires schema 7. Migration 006 introduced current-state separation;
 #: migration 007 completes the A-F reconciliation/current projection. See the
 #: two migration files and B5_A-F_RECONCILIATION.md for rationale.
-APP_SCHEMA_VERSION = 7
+APP_SCHEMA_VERSION = 8
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"
