@@ -1,0 +1,183 @@
+# The File Organizer — Stage Map
+
+**What this is:** every stage the product runs, in order, with what it reads, what
+it writes, and whether it opens a file. One click is rarely one process, and this
+is the reference for which processes a click actually starts.
+
+**Last verified:** 2026-09-10, against the running application and the B6.2 code
+in `FileOrganizer-Phase1-RC-B6.1`.
+
+**Companion documents**
+- `FileOrganizer-Phase2\The_File_Organizer_Project_Plan_Phases_1-8plus.docx` — the phase model
+- `FileOrganizer-Phase2\The_File_Organizer_Phase_2_Living_Project_Plan_P2.11_TESTING_v1.3.md` — current Phase 2 plan
+- `FileOrganizer-Phase2\CLAUDE_WORKFLOW_DECISIONS.md` — the workflow decisions this map reflects
+
+---
+
+## Reading this map
+
+| Column | Meaning |
+|---|---|
+| **Stage key** | The identity recorded in `run_stage`. Historic `.ps1` names are kept deliberately: they are the accepted identity across every run record since R2, and the stage's `command` field records which engine actually ran. |
+| **Opens files?** | Whether the stage reads file *contents*. This is the main driver of how long a stage takes. |
+| **Writes** | The evidence tables the stage populates. |
+
+Four **run kinds** group the stages: `prescan`, `duplicate_analysis`,
+`exhaustive_identity`, `content_analysis`. Each is one row in `run`.
+
+---
+
+## Run kind 1 — `prescan`
+
+**One button. Four recorded stages.** This always runs in full; the last two are
+close to free and are what make the next screen's numbers possible.
+
+| # | Stage key | What it does | Opens files? | Writes |
+|---|---|---|---|---|
+| 1 | `PreliminaryInventory.ps1` | Walks the source roots recording name, size, dates, attributes, **and file type**. Records unreadable paths rather than failing. | **No** — metadata only | `file_path`, `file_observation`, `inventory_scan` |
+| 2 | `InventoryIngest` | Persists the walk into the current-state projection | No | `file_state` |
+| 3 | `PotentialDuplicates.ps1` | Groups files by size. Anything with a unique size **cannot** have a duplicate and is set aside. | No — arithmetic on data already held | size-group candidates |
+| 4 | `TimeEstimates.ps1` | Samples up to 15 real files (capped at 50 MB), measures throughput, applies a pessimistic factor | Yes — a bounded sample | estimates in `settings.json` |
+
+**After a prescan you can already answer:** how many files, how much space, by
+type, by folder, by age, largest files, largest folders, what could not be read.
+
+**You cannot yet answer** anything about duplicates or file contents.
+
+> Stage 1 runs at roughly 800–1,200 files/sec. Stage 2 ingests 100,000 rows in
+> about 35 ms — the database has never been the bottleneck.
+
+---
+
+## The three doors
+
+After the prescan the user chooses what to invest next. **None of these is final**
+— all three remain available from the query interface afterwards.
+
+| Door | Run kind | Cost | What it buys |
+|---|---|---|---|
+| **Find My Duplicates** | `duplicate_analysis` | Opens only size-collision candidates | Answers the duplicate question **completely** |
+| **Full Fingerprinting** | `exhaustive_identity` | Opens every file | Gives **every** file a verifiable content identity |
+| **Go to the query interface** | — | Nothing | Everything the prescan already knows |
+
+**The real difference between the first two is not thoroughness.** Find My
+Duplicates finds every duplicate there is. Full Fingerprinting additionally gives
+non-duplicates a content identity, which is what later enables **verifying a file
+after a move**, **detecting that content changed on a re-scan**, and deduplicating
+against a different corpus.
+
+---
+
+## Run kind 2 — `duplicate_analysis` ("Find My Duplicates")
+
+**One button. Four internal sub-stages**, recorded under stage key
+`PartialHash.ps1`.
+
+| # | Sub-stage | What it does | Opens files? |
+|---|---|---|---|
+| 1 | Select size candidates | Narrows to files sharing a size with another file | No |
+| 2 | Partial hash | Hashes the first N bytes of **candidates only** | Yes — partial read |
+| 3 | Escalate | Groups by partial hash; discards anything now alone | No |
+| 4 | Full hash and confirm | Full hash of the survivors | Yes — full read |
+
+Writes `hash_measurement`, `content`, `duplicate_group`, `duplicate_member`, and
+sets each file's `hash_status`:
+
+| `hash_status` | Meaning |
+|---|---|
+| `size_unique` | **Proven not a duplicate without ever being opened.** A positive finding, not missing data. |
+| `confirmed_duplicate` | Opened, hashed, matched another file |
+| `unique_by_hash` | Opened, hashed, matched nothing |
+
+> Measured on 240 files (200 uniquely sized, 40 in 20 same-size pairs): the funnel
+> narrowed 240 → 40, and only those 40 were ever opened. 0.17 s versus 1.60 s for
+> the exhaustive run.
+
+---
+
+## Run kind 3 — `exhaustive_identity` ("Full Fingerprinting")
+
+**One button. One stage, no tiering** — stage key `FullHashInventory.ps1`. Every
+file is opened and fully hashed. Same tables as above; the `size_unique` files
+become `unique_by_hash`.
+
+> Running this *after* Find My Duplicates re-reads everything rather than topping
+> up the files that were skipped. Worth knowing before offering it as an upgrade.
+
+---
+
+## Run kind 4 — `content_analysis` (the file-type buckets)
+
+**One stage per analyzer selected.** Each analyzer declares which extensions it
+applies to, and reports `no_applicable_files` as a distinct, successful state.
+
+| Stage key | Bucket | Handles | Produces |
+|---|---|---|---|
+| `ImageAnalysis.ps1` | Images | JPEG, PNG and similar | Perceptual hashes — finds *visually* similar images |
+| `RawImageAnalysis.ps1` | RAW camera images | CR2, NEF, ARW, DNG | EXIF |
+| `PDFAnalysis.ps1` | PDFs | `.pdf` | Page count, metadata, encryption status |
+| `OfficeAnalysis.ps1` | Office documents | `.docx .xlsx .pptx` + legacy `.doc .xls .ppt` | Document properties |
+| `AudioAnalysis.ps1` | Audio | needs ffprobe | Technical and tag metadata |
+| `VideoAnalysis.ps1` | Video | needs ffprobe | Technical metadata |
+| `TextFileAnalysis.ps1` | Text / Markdown | `.txt .md` | Word counts, tags, links |
+| `ArchiveAnalysis.ps1` | Archives | `.zip .7z` | **Lists members without extracting** |
+| `ContentExtraction.ps1` | Text extraction | `.pdf .docx .pptx .xlsx .txt .md` | Extracted-text artifacts |
+
+Writes `analyzer_run`, `analyzer_result`, plus `archive_member` /
+`archive_summary` and `extracted_content`.
+
+**These do not require any fingerprinting.** Verified: analysis and extraction ran
+successfully on a project with zero hashes. The current interface implies an order
+the engine does not require.
+
+**RAW and non-RAW are already separate buckets.** Selecting a narrower set than a
+bucket — "only `.jpg`" — is not possible today: an analyzer run takes analyzer
+keys, not a file filter. That is planned as a later refinement.
+
+---
+
+## Run kind 5 — text indexing (Phase 2, on demand)
+
+Not a Phase 1 run. Builds a full-text index **from the extracted-text artifacts**,
+never from source files. Triggered on the first text search rather than
+automatically, so the first search after an extraction is slow.
+
+Writes `p2_fts_text`, `p2_fts_text_map`, `p2_derived_index`.
+
+**Three separately skippable decisions:**
+
+1. **Analyse a bucket** — properties and metadata. Fast.
+2. **Extract text** — produces the artifacts. Slow.
+3. **Index the text** — makes it searchable. Slow.
+
+You may do 1 without 2, and 2 without 3.
+
+> **Coverage limit worth knowing:** extraction handles six formats. Text inside a
+> `.csv`, `.json`, `.log`, or an extensionless text file is never extracted and
+> therefore never searchable — and today the search returns zero results without
+> saying so.
+
+---
+
+## What each level lets you answer
+
+| After | Duplicates | Content identity | File properties | Text search |
+|---|---|---|---|---|
+| Prescan | — | — | Type, size, dates only | — |
+| + Find My Duplicates | **Complete** | Candidates only | " | — |
+| + Full Fingerprinting | **Complete** | **Every file** | " | — |
+| + bucket analysis | " | " | **Full** for chosen buckets | — |
+| + extraction | " | " | " | Artifacts exist |
+| + indexing | " | " | " | **Searchable** |
+
+---
+
+## Where the record of all this lives
+
+Every stage writes to the project database, not to a log folder:
+
+- `run` — one row per run: version, host, environment snapshot, timing, status
+- `run_stage` — one row per stage: exit code, attempts, checkpoints, durations
+- `event` — severity, category, file path, error type, whether it was retryable
+
+That is the audit trail, and it is already populated on every run.
