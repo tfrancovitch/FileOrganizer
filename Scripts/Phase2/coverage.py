@@ -137,24 +137,45 @@ def evidence_health(conn, scope=None):
     # current file location. This retains the latest-attempt semantics.
     ar_clause, ar_bind = _file_scope_clause(scope, "fs", "fp")
     ar_extra = (" AND ("+ar_clause+")" if ar_clause else "")
+    # "Latest attempt per (current location, analyzer) that ended in error",
+    # expressed as a correlated NOT EXISTS rather than a ROW_NUMBER() window.
+    #
+    # Both shapes return the same count, but the window ranks every current
+    # analyzer row in the project before discarding all but the newest of each
+    # partition; NOT EXISTS starts from the error rows, which are normally a
+    # small minority. P2.5 section 7 measured 159ms vs 38.5ms at 100k files and
+    # 1646.7ms vs 411.7ms at 1M, and recommended the correlated strategy;
+    # fts.exists_sql_for_current_file() already uses it. Measured here at 100k
+    # files / 91,112 analyzer rows: 293.92ms -> 40.53ms, same answer.
+    #
+    # The subquery correlates on analyzer_key, not analyzer_id, to match the
+    # PARTITION BY it replaces -- analyzer_key is not declared UNIQUE, so two
+    # analyzer rows could share a key and must still rank as one series.
+    # It is deliberately not scope-filtered: every row sharing a
+    # file_observation_id shares its file_path_id, so scope membership is
+    # identical for the whole series and filtering it would change nothing.
     result["current_analyzer_failures"] = conn.execute(
         """
-        WITH current_ar AS (
-          SELECT ar.analyzer_result_id, ar.status, a.analyzer_key,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY fo.file_path_id,a.analyzer_key
-                   ORDER BY ar.analyzed_utc DESC,ar.analyzer_result_id DESC) rn
-            FROM analyzer_result ar
-            JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
-            JOIN analyzer a ON a.analyzer_id=rr.analyzer_id
-            JOIN file_observation fo ON fo.file_observation_id=ar.file_observation_id
-            JOIN file_state fs ON fs.file_path_id=fo.file_path_id
-                              AND fs.current_observation_id=ar.file_observation_id
-            JOIN file_path fp ON fp.file_path_id=fs.file_path_id
-           WHERE 1=1
+        SELECT COUNT(*)
+          FROM analyzer_result ar
+          JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
+          JOIN analyzer a ON a.analyzer_id=rr.analyzer_id
+          JOIN file_observation fo ON fo.file_observation_id=ar.file_observation_id
+          JOIN file_state fs ON fs.file_path_id=fo.file_path_id
+                            AND fs.current_observation_id=ar.file_observation_id
+          JOIN file_path fp ON fp.file_path_id=fs.file_path_id
+         WHERE ar.status='error'
         """ + ar_extra + """
-        )
-        SELECT COUNT(*) FROM current_ar WHERE rn=1 AND status='error'
+           AND NOT EXISTS (
+               SELECT 1
+                 FROM analyzer_result n
+                 JOIN analyzer_run nr ON nr.analyzer_run_id=n.analyzer_run_id
+                 JOIN analyzer na ON na.analyzer_id=nr.analyzer_id
+                WHERE n.file_observation_id=ar.file_observation_id
+                  AND na.analyzer_key=a.analyzer_key
+                  AND (n.analyzed_utc>ar.analyzed_utc
+                       OR (n.analyzed_utc=ar.analyzed_utc
+                           AND n.analyzer_result_id>ar.analyzer_result_id)))
         """, ar_bind
     ).fetchone()[0]
 
