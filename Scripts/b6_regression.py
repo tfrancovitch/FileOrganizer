@@ -955,10 +955,17 @@ def test_schema_version():
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     tables = {row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    check("007", "schema 7 with B6.1 reconciliation state",
-          version == 7 and integrity == "ok"
+    # The expected version is whatever fo_db declares, not a literal. This
+    # asserted `version == 7` until the P2.9.1 overlay added migration 008 and
+    # moved APP_SCHEMA_VERSION to 8 -- at which point a correct schema started
+    # failing a test whose real subject is "a new project lands on the current
+    # schema, intact, with the B6.1 reconciliation tables present".
+    expected = fo_db.APP_SCHEMA_VERSION
+    check("007", "new project lands on the current schema, with B6.1 state",
+          version == expected and integrity == "ok"
           and {"file_state", "archive_summary"} <= tables,
-          "user_version %d, integrity %s" % (version, integrity))
+          "user_version %d (expected %d), integrity %s"
+          % (version, expected, integrity))
     conn.close()
 
 
