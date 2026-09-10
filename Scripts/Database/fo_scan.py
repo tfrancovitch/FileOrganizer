@@ -215,6 +215,11 @@ class ScanStatistics(object):
         self.empty_file_count = 0
         self.true_link_skipped_count = 0
         self.cloud_placeholder_folder_count = 0
+        # Physical identity: how many files paid the per-file stat, and how many
+        # were skipped because their size was unique (see collision_sizes).
+        # Both stay 0 + resolved==file_count when no filter is in play.
+        self.identity_resolved_count = 0
+        self.identity_skipped_count = 0
         self.long_path_count = 0
         self.hidden_count = 0
         self.system_count = 0
@@ -355,9 +360,67 @@ class ScanStatistics(object):
 # The walk
 # ---------------------------------------------------------------------------
 
+def collision_sizes(root_path, should_continue=None):
+    r"""Sizes that occur on more than one file under `root_path`.
+
+    A hardlink is two names for ONE file, so both names always report the same
+    size. A file whose size is unique within the scanned corpus therefore cannot
+    be hardlinked to anything else in that corpus, and resolving its physical
+    identity cannot change any answer the product gives. This set is what lets
+    `scan()` skip the per-file `os.stat` for those files -- the "candidate-only
+    narrowing" P1-RESULTS.md section 6 prescribes when a cold walk drags.
+
+    Costs one extra traversal, but a cheap one: `os.scandir` only, no per-file
+    open, ~2 us/file of raw traversal against the ~36 us/file the stat it avoids
+    would cost. Holds distinct sizes rather than files, so memory tracks the
+    number of distinct sizes, not the corpus.
+
+    LIMIT, and it is a real one: a file hardlinked to a target OUTSIDE the
+    scanned corpus, whose size happens to be unique inside it, is not a
+    candidate here and will report identity unknown rather than
+    `hard_link_count = 2`. Unknown is not wrong, but it is less than the
+    unnarrowed walk knows. Callers wanting identity on every file pass no
+    filter to `scan()`.
+    """
+    seen = set()
+    collided = set()
+    stack = [str(root_path)]
+    while stack:
+        if should_continue is not None and not should_continue():
+            break
+        current = stack.pop()
+        try:
+            entries = os.scandir(win_meta.to_extended_path(current))
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    attributes = win_meta.stat_attributes(entry_stat)
+                    if win_meta.is_directory(attributes):
+                        tag = win_meta.stat_reparse_tag(entry_stat)
+                        if not win_meta.is_true_link(attributes, tag):
+                            stack.append(win_meta.join_child(current, entry.name))
+                        continue
+                    size = int(entry_stat.st_size)
+                except OSError:
+                    continue
+                if size in seen:
+                    collided.add(size)
+                else:
+                    seen.add(size)
+    return collided
+
+
 def scan(root_path, next_db_id=1, statistics=None, progress=None,
-         should_continue=None):
+         should_continue=None, identity_size_filter=None):
     r"""Walk one source root, yielding an InventoryRecord per file.
+
+    `identity_size_filter`, when given, is a container of sizes (see
+    `collision_sizes`); physical identity is resolved only for files whose size
+    is in it, and every other file reports identity unknown. Passing None -- the
+    default -- keeps the B6.2 behaviour of resolving identity for every file.
 
     A GENERATOR ON PURPOSE. B2 does not implement pause/resume, but it
     is required not to make it harder, and a generator is what keeps
@@ -425,8 +488,21 @@ def scan(root_path, next_db_id=1, statistics=None, progress=None,
                 # the path. The DirEntry stat is WIN32_FIND_DATA-backed on
                 # Windows and carries no file index or link count; see
                 # win_meta.physical_identity_for_path.
-                volume_serial, file_index, hard_link_count = \
-                    win_meta.physical_identity_for_path(full_path, entry_stat)
+                #
+                # With a filter in play, only size-collision candidates pay that
+                # stat: a unique size cannot be one of a hardlinked pair inside
+                # this corpus, so the stat could not change an answer. See
+                # collision_sizes for the cost and the external-hardlink limit.
+                if (identity_size_filter is None
+                        or int(entry_stat.st_size) in identity_size_filter):
+                    volume_serial, file_index, hard_link_count = \
+                        win_meta.physical_identity_for_path(full_path, entry_stat)
+                    if statistics is not None:
+                        statistics.identity_resolved_count += 1
+                else:
+                    volume_serial = file_index = hard_link_count = None
+                    if statistics is not None:
+                        statistics.identity_skipped_count += 1
                 reparse_tag = win_meta.stat_reparse_tag(entry_stat)
                 allocated = win_meta.allocated_size_bytes(full_path, entry_stat)
 

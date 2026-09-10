@@ -105,6 +105,24 @@ _ERRORS_TXT_LINE = re.compile(
     r"^(?P<kind>DIRECTORY ACCESS ERROR|FILE ERROR):\s*(?P<path>.*?)\s+--\s+(?P<message>.*)$")
 
 
+def _narrow_identity_enabled(settings_path):
+    r"""Is candidate-only physical-identity narrowing turned on for this project?
+
+    Reads `NarrowPhysicalIdentity` from settings.json. Absent or false keeps the
+    B6.2 behaviour of resolving identity for every file, so no existing project
+    changes behaviour by being opened with this build.
+
+    Never raises: an unreadable or malformed settings file means "not enabled",
+    which is the safe direction -- it costs time, not accuracy.
+    """
+    import json
+    try:
+        with open(settings_path, "r", encoding="utf-8-sig") as handle:
+            return bool((json.load(handle) or {}).get("NarrowPhysicalIdentity"))
+    except Exception:
+        return False
+
+
 def utc_now():
     return fo_runs.utc_now()
 
@@ -1488,7 +1506,25 @@ class RunCoordinator(object):
                               category="inventory")
 
                 try:
-                    records = fo_scan.scan(root, next_db_id, statistics)
+                    # Candidate-only narrowing (P1-RESULTS.md section 6). When
+                    # enabled, one cheap scandir-only pre-pass collects the sizes
+                    # that occur more than once, and only those files pay the
+                    # per-file stat that resolves physical identity. Off by
+                    # default: it trades identity on uniquely-sized files -- and
+                    # detection of hardlinks whose target sits outside the
+                    # corpus -- for roughly half the per-file opens.
+                    identity_filter = None
+                    if (self.project_dir
+                            and _narrow_identity_enabled(
+                                self.project_dir / "settings.json")):
+                        identity_filter = fo_scan.collision_sizes(root)
+                        self.note("info",
+                                  "Physical identity narrowed to %d size-collision "
+                                  "group(s); uniquely-sized files report identity "
+                                  "unknown." % len(identity_filter),
+                                  category="inventory")
+                    records = fo_scan.scan(root, next_db_id, statistics,
+                                           identity_size_filter=identity_filter)
                     # Errors are handed to ingest_records, which
                     # applies the recorded cap and writes both the SEEN
                     # and the STORED counts (B5-E.F044). B4.5 ingested
