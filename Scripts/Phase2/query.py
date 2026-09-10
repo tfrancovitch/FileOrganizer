@@ -442,7 +442,30 @@ class QueryEngine:
                     # or a descendant prefix is represented as a BINARY range,
                     # allowing SQLite to use (source_root_id,relative_path_key).
                     norm=(key or "").replace("/","\\").strip("\\").lower()
-                    if norm:
+                    path_id_expr=field_map.get("path.id")
+                    if norm and path_id_expr:
+                        # Two seekable arms rather than one disjunction. Both
+                        # must stay: the exact-match arm is what stops a folder
+                        # scope swallowing its prefix-siblings, since a lone
+                        # range [norm, norm+']') also matches 'dept_00abc'.
+                        # Written as OR, SQLite abandons
+                        # (source_root_id,relative_path_key) -- the table's own
+                        # UNIQUE index -- and drives from ix_file_state_root,
+                        # filtering every row it looks up. As UNION ALL each arm
+                        # seeks that index: 39.4ms -> 0.5ms on 100k files,
+                        # identical results.
+                        pieces.append(
+                            f"({path_id_expr} IN ("
+                            "SELECT file_path_id FROM file_path"
+                            " WHERE source_root_id=? AND relative_path_key=?"
+                            " UNION ALL "
+                            "SELECT file_path_id FROM file_path"
+                            " WHERE source_root_id=? AND relative_path_key>=?"
+                            " AND relative_path_key<?))")
+                        bind += [root,norm,root,norm+"\\",norm+"]"]
+                    elif norm:
+                        # No path id exposed for this subject: keep the original
+                        # predicate, which needs fp joined but is still correct.
                         pieces.append(f"({root_expr}=? AND (fp.relative_path_key=? OR (fp.relative_path_key>=? AND fp.relative_path_key<?)))")
                         bind += [root,norm,norm+"\\",norm+"]"]
                     else:

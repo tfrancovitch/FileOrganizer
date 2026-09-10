@@ -94,8 +94,21 @@ def _file_scope_clause(scope, fs_alias="fs", fp_alias="fp"):
         for f in scope.get("folders") or []:
             root=int(f["source_root_id"]); norm=(f.get("relative_path_key") or "").replace("/","\\").strip("\\").lower()
             if norm:
-                pieces.append(f"({fs_alias}.source_root_id=? AND ({fp_alias}.relative_path_key=? OR ({fp_alias}.relative_path_key>=? AND {fp_alias}.relative_path_key<?)))")
-                bind += [root,norm,norm+"\\",norm+"]"]
+                # Same two-seekable-arms shape as QueryEngine._scope_sql: an OR
+                # over (source_root_id, relative_path_key) makes SQLite abandon
+                # that index, a UNION ALL lets each arm seek it. Both arms are
+                # required -- a lone range would also match a prefix-sibling
+                # folder such as dept_00abc. Referring to file_path only inside
+                # the subquery also drops the outer join for the state counts.
+                pieces.append(
+                    f"({fs_alias}.file_path_id IN ("
+                    "SELECT file_path_id FROM file_path"
+                    " WHERE source_root_id=? AND relative_path_key=?"
+                    " UNION ALL "
+                    "SELECT file_path_id FROM file_path"
+                    " WHERE source_root_id=? AND relative_path_key>=?"
+                    " AND relative_path_key<?))")
+                bind += [root,norm,root,norm+"\\",norm+"]"]
             else:
                 pieces.append(f"({fs_alias}.source_root_id=?)"); bind.append(root)
         return ("("+" OR ".join(pieces)+")" if pieces else "1=0"), bind
