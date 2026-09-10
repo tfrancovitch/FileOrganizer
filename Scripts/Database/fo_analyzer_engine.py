@@ -247,6 +247,9 @@ class AnalyzerOutcome(object):
         self.excluded_count = 0
         self.elapsed_sec = 0.0
         self.failure_reason = ""
+        #: True when the run stopped early at the user's request. Distinct from
+        #: failure: the results already recorded are valid and are kept.
+        self.cancelled = False
         self._succeeded = 0
         self._errors = 0
         self._skipped = 0
@@ -556,11 +559,15 @@ class AnalyzerEngine(object):
     """Runs the analyzers in-process over one run's inventory."""
 
     def __init__(self, progress=None, logger=None, hash_size=DEFAULT_IMAGE_HASH_SIZE,
-                 skip_cloud_only=False):
+                 skip_cloud_only=False, should_continue=None):
         self.progress = progress
         self.logger = logger
         self.hash_size = hash_size
         self.skip_cloud_only = skip_cloud_only
+        #: Optional callable returning False to stop. Checked between files, so
+        #: work already done is always kept. None means run to completion, which
+        #: is the behaviour every existing caller gets.
+        self.should_continue = should_continue
 
     def _log(self, severity, message):
         if self.logger is not None:
@@ -671,6 +678,14 @@ class AnalyzerEngine(object):
 
         total = len(applicable)
         for index, entry in enumerate(applicable, start=1):
+            # Cooperative cancellation, checked between files so a stop never
+            # interrupts a file mid-analysis. Everything already analysed is
+            # kept: a cancelled run is a shorter run, not a failed one.
+            if self.should_continue is not None and not self.should_continue():
+                outcome.cancelled = True
+                self._log("INFO", "%s: stopped after %d of %d file(s) at the "
+                                  "user's request." % (adapter.label, index - 1, total))
+                break
             result = AnalyzerResult(entry)
             if self.skip_cloud_only and entry.is_offline_or_cloud:
                 # run_analysis's own vocabulary for this, preserved so

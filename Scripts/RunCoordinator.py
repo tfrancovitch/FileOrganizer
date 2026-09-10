@@ -374,6 +374,11 @@ class RunCoordinator(object):
         self.app_log = app_log or fo_log.get_app_log(str(self.app_root))
 
         self.project_dir = (self.app_root / "Projects" / project_name) if project_name else None
+        #: Optional callable returning False to stop the current stage. Checked
+        #: between files by the scan, hash and analyzer engines, so a stop never
+        #: interrupts one file and everything already done is kept. None means
+        #: run to completion -- the behaviour every existing caller gets.
+        self.should_continue = None
         self.run_uid = None
         self.run_id = None
         self.run_kind = None
@@ -1524,6 +1529,7 @@ class RunCoordinator(object):
                                   "unknown." % len(identity_filter),
                                   category="inventory")
                     records = fo_scan.scan(root, next_db_id, statistics,
+                                           should_continue=self.should_continue,
                                            identity_size_filter=identity_filter)
                     # Errors are handed to ingest_records, which
                     # applies the recorded cap and writes both the SEEN
@@ -1794,7 +1800,8 @@ class RunCoordinator(object):
                 # one triggers a download, and this is a read-only tool.
                 # Matches the analyzer engine's default. Recorded as
                 # hash_status 'skipped_cloud_only', no digest.
-                skip_cloud_only=True)
+                skip_cloud_only=True,
+                should_continue=self.should_continue)
 
             if mode == "candidates":
                 outcome = self._run_candidates_only(engine, entries)
@@ -2152,7 +2159,8 @@ class RunCoordinator(object):
                     key, done, total),
                 logger=lambda severity, message: self.note(
                     severity.lower(), message, category="analyzers"),
-                skip_cloud_only=skip_cloud_only)
+                skip_cloud_only=skip_cloud_only,
+                should_continue=self.should_continue)
 
             context = {"extract_folder": str(inventory_dir / "ExtractedText")}
 
