@@ -91,7 +91,8 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
     # -- entry point --------------------------------------------------
 
     def ingest_records(self, records, target_path, timestamp_format,
-                       scan_errors=None, root_available=True, path_events=None):
+                       scan_errors=None, root_available=True, path_events=None,
+                       complete=None):
         r"""Persist an iterable of engine records. Returns a summary dict.
 
         `records` is consumed as an ITERABLE, never materialised, so the
@@ -104,6 +105,14 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         not be reached, this records the scan with that fact and marks
         NOTHING missing -- because nothing was observed to be missing,
         only unobserved.
+
+        `complete` says whether the walk visited everything. A callable
+        is consulted AFTER the records have been consumed (the walk only
+        knows it was stopped once it returns); a bool is taken as is;
+        None means complete. An incomplete walk gets the same treatment
+        as an unreachable root for the one thing that matters: nothing
+        is marked vanished, because an unvisited file is unobserved, not
+        absent.
         """
         self.ensure_schema()
         started = utc_now()
@@ -136,14 +145,21 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         self.ingest_path_events(path_events or [], resolver)
 
         # Vanished detection. ONLY for a root that was actually
-        # available and actually walked. See B5-H: absence of evidence
-        # is not evidence of absence, and this is the one place in the
-        # product that could confuse the two.
+        # available and actually walked TO THE END. See B5-H: absence of
+        # evidence is not evidence of absence, and this is the one place
+        # in the product that could confuse the two.
+        walked_completely = complete() if callable(complete) else (
+            True if complete is None else bool(complete))
         vanished = 0
-        if root_available:
+        if root_available and walked_completely:
             for root_id, scan_id in list(self.scan_ids.items()):
                 vanished += self.projector.mark_vanished(root_id, scan_id)
             self.conn.commit()
+        elif root_available:
+            self._warn(
+                "The walk was stopped after %d file(s). Files it had not reached "
+                "are NOT in this inventory, and nothing was marked missing on "
+                "the strength of a walk that did not finish." % total_rows)
 
         if resolver.unmatched:
             self._warn(

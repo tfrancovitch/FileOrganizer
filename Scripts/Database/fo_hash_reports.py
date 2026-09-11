@@ -155,6 +155,27 @@ def _header(title, project_name, run_folder, generated):
             ""]
 
 
+def _stopped_block(lines, outcome):
+    """Say, at the top, when a report describes a run that was stopped.
+
+    Every count below it is still true of the files that were read, but
+    the report as a whole is not the complete answer it normally is, and
+    a reader must not have to notice that from a status they have never
+    seen before.
+    """
+    if not getattr(outcome, "cancelled", False):
+        return
+    lines.append("RUN STOPPED BY THE USER -- THIS IS NOT A COMPLETE ANSWER")
+    lines.append("  Files never opened (NotAttempted)   : %s"
+                 % format_count(outcome.not_attempted_count))
+    lines.append("  Files read, verdict withheld        : %s"
+                 % format_count(outcome.unresolved_count))
+    lines.append("  Digests obtained are kept. 'Unique' and 'ruled out' verdicts are")
+    lines.append("  withheld wherever a same-size or same-hash peer was never read.")
+    lines.append("  Run it again to finish; a run starts over from the first file.")
+    lines.append("")
+
+
 def _group_listing(lines, groups, max_groups=MAX_GROUPS_SHOWN,
                    suffix_for=None, csv_name=None, id_column=None,
                    qualifier=""):
@@ -333,6 +354,7 @@ def partial_hash_report(project_name, run_folder, generated, outcome,
                   if elapsed_seconds and elapsed_seconds > 0 else 0)
 
     lines = _header("PARTIAL HASH REPORT", project_name, run_folder, generated)
+    _stopped_block(lines, outcome)
     lines.append("SUMMARY")
     lines.append("  Candidate files (total)            : %s"
                  % format_count(outcome.candidate_count))
@@ -449,6 +471,7 @@ def duplicate_hash_inventory_report(project_name, run_folder, generated,
                                     prelim_total_bytes=None):
     lines = _header("DUPLICATE HASH INVENTORY REPORT", project_name,
                     run_folder, generated)
+    _stopped_block(lines, outcome)
     lines.append("SCAN SUMMARY (recomputed independently from DuplicateHashInventory.csv)")
     total_files, total_bytes = _inventory_summary_block(lines, meta_rows)
     lines.append("")
@@ -505,6 +528,7 @@ def full_hash_inventory_report(project_name, run_folder, generated, outcome,
     difference is the point: every file here was actually hashed."""
     lines = _header("FULL HASH INVENTORY REPORT", project_name, run_folder,
                     generated)
+    _stopped_block(lines, outcome)
     lines.append("SCAN SUMMARY (recomputed independently from FullHashInventory.csv)")
     total_files, total_bytes = _inventory_summary_block(lines, meta_rows)
     lines.append("")

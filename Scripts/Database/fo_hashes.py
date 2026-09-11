@@ -45,12 +45,19 @@ _SELECTIVE_STATUS = {
     "ConfirmedDuplicate": "confirmed_duplicate",
     "SkippedCloudOnly": "skipped_cloud_only",
     "Error": "error",
+    # Only a run that was STOPPED produces these. 'not_attempted' was never
+    # opened; 'unresolved' was read (its digest is kept) but a same-size or
+    # same-partial-hash peer was not, so no uniqueness verdict is claimed.
+    "NotAttempted": "not_attempted",
+    "Unresolved": "unresolved",
 }
 _EXHAUSTIVE_STATUS = {
     "UniqueByHash": "unique_by_hash",
     "ConfirmedDuplicate": "confirmed_duplicate",
     "SkippedCloudOnly": "skipped_cloud_only",
     "Error": "error",
+    "NotAttempted": "not_attempted",
+    "Unresolved": "unresolved",
 }
 
 

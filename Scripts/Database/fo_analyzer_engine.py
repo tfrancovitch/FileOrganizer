@@ -288,6 +288,7 @@ class AnalyzerOutcome(object):
                 "succeeded": self.succeeded_count,
                 "errors": self.error_count,
                 "skipped": self.skipped_count,
+                "cancelled": self.cancelled,
                 "elapsed_sec": round(self.elapsed_sec, 2)}
 
 

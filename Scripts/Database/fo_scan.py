@@ -237,6 +237,10 @@ class ScanStatistics(object):
         # Coverage facts that cannot be reconstructed from file rows.
         # Tuples are (event_kind, absolute_path, reparse_tag).
         self.path_events = []
+        #: True when scan() returned because should_continue said stop.
+        #: The walk is then INCOMPLETE, and whoever persists it must not
+        #: treat unvisited files as gone -- see ingest_records(complete=).
+        self.stopped = False
         self._order = 0
 
     # -- accumulation --------------------------------------------------
@@ -564,6 +568,10 @@ def scan(root_path, next_db_id=1, statistics=None, progress=None,
         stack.extend(reversed(subdirectories))
 
         if should_continue is not None and not should_continue():
+            # Checked between directories, so every record yielded so far
+            # is complete. The flag is the only way the caller can tell a
+            # walk that stopped from one that ran out of directories.
+            statistics.stopped = True
             return
 
 

@@ -379,6 +379,15 @@ class RunCoordinator(object):
         #: interrupts one file and everything already done is kept. None means
         #: run to completion -- the behaviour every existing caller gets.
         self.should_continue = None
+        #: Set by each engine stage; read through last_stage_stopped().
+        self._last_stage_stopped = False
+        #: Optional callable progress(stage_label, done, total) for a caller
+        #: that shows a progress bar. total is None when the engine cannot
+        #: know it in advance (the inventory walk). Same contract as
+        #: should_continue: None means nothing extra happens, and every
+        #: existing caller is unchanged. The run log keeps its own coarse
+        #: progress lines regardless.
+        self.progress = None
         self.run_uid = None
         self.run_id = None
         self.run_kind = None
@@ -793,6 +802,11 @@ class RunCoordinator(object):
             return "interrupted"
         if "paused" in statuses:
             return "paused"
+        # A stage stopped at the user's request stops the run: what it did
+        # is kept, but the run did not do what it set out to do, and saying
+        # "completed" would claim that it had.
+        if "cancelled" in statuses:
+            return "cancelled"
         # A failure in a stage registered as non-fatal is downgraded to a
         # warning for the purpose of the RUN's status. The stage row
         # still says 'failed' and its error events are still recorded --
@@ -1179,6 +1193,18 @@ class RunCoordinator(object):
 
     # -- inventory engine (Beta B2) -----------------------------------
 
+    def last_stage_stopped(self):
+        r"""True if the most recent engine stage stopped at the user's request.
+
+        The engines return the same (success, stdout, stderr, returncode)
+        tuple whether they finished or were stopped -- a stop is not a
+        failure, and everything already done was kept -- so a caller
+        that wants to record the stage as 'cancelled' rather than
+        'completed' asks here, after the call returns. Reset by the next
+        engine stage.
+        """
+        return bool(getattr(self, "_last_stage_stopped", False))
+
     def run_inventory(self, settings_path):
         r"""Run the Python inventory engine for this run.
 
@@ -1212,6 +1238,7 @@ class RunCoordinator(object):
         with its reason on stderr, exactly as a failed subprocess was.
         """
         self._inventory_result = None
+        self._last_stage_stopped = False
         try:
             return self._run_inventory(settings_path)
         except Exception as exc:                # noqa: BLE001
@@ -1342,6 +1369,7 @@ class RunCoordinator(object):
             "elapsed_sec": elapsed, "csv_path": str(csv_path),
             "persistence": persisted,
         }
+        self._last_stage_stopped = bool(statistics.stopped)
 
         stdout = fo_scan.console_summary(
             root if len(roots) == 1 else "%s (+%d more source folder(s))"
@@ -1395,6 +1423,16 @@ class RunCoordinator(object):
                 combined["reason"] = outcome["reason"]
             statuses.append(outcome.get("status"))
             cursor = statistics.file_count + next_db_id
+            if statistics.stopped:
+                # The user stopped the walk. The roots not yet started keep
+                # whatever state their last scan gave them -- they were not
+                # scanned by this run, and are not recorded as if they were.
+                remaining = roots[roots.index(root) + 1:]
+                if remaining:
+                    combined["warnings"].append(
+                        "%d source folder(s) were not scanned because the run "
+                        "was stopped: %s" % (len(remaining), "; ".join(remaining)))
+                break
 
         # B4.4: the aggregate is derived from the statuses that actually
         # came back. It used to start at "skipped" and take the worst of
@@ -1402,6 +1440,7 @@ class RunCoordinator(object):
         # a fully successful run could never climb out of the sentinel it
         # started in. That mislabelled ordinary SINGLE-root runs too.
         combined["status"] = self._aggregate_status(statuses)
+        combined["stopped"] = bool(statistics.stopped)
         if not statuses:
             # Nothing was processed at all. Say why rather than defaulting.
             combined["reason"] = combined["reason"] or (
@@ -1528,7 +1567,14 @@ class RunCoordinator(object):
                                   "group(s); uniquely-sized files report identity "
                                   "unknown." % len(identity_filter),
                                   category="inventory")
+                    # The walk cannot know its total in advance, so the
+                    # progress hook receives (label, files so far, None).
+                    scan_progress = None
+                    if self.progress is not None:
+                        scan_progress = lambda count: self._forward_progress(
+                            "inventory", count, None)
                     records = fo_scan.scan(root, next_db_id, statistics,
+                                           progress=scan_progress,
                                            should_continue=self.should_continue,
                                            identity_size_filter=identity_filter)
                     # Errors are handed to ingest_records, which
@@ -1540,9 +1586,17 @@ class RunCoordinator(object):
                         records, target_path, timestamp_format,
                         scan_errors=statistics.errors,
                         root_available=root_available,
-                        path_events=statistics.path_events)
+                        path_events=statistics.path_events,
+                        # Consulted after the generator is exhausted, which
+                        # is the first moment the walk knows it was stopped.
+                        complete=lambda: not statistics.stopped)
                     inaccessible = summary["inaccessible"]
-                    status = ingestor.finish()
+                    # A walk the user stopped is recorded as 'interrupted':
+                    # the schema's word for a scan whose gaps are an
+                    # artefact of the scan and not of the filesystem.
+                    # Coverage then reads incomplete, as it must.
+                    status = ingestor.finish(
+                        "interrupted" if statistics.stopped else None)
                 except Exception as exc:
                     ingestor.fail("%s: %s" % (type(exc).__name__, exc))
                     raise
@@ -1773,6 +1827,7 @@ class RunCoordinator(object):
             directory.mkdir(parents=True, exist_ok=True)
 
         started = time.monotonic()
+        self._last_stage_stopped = False
         with self._db() as conn:
             if conn is None:
                 return False, "", ("ERROR: no project database is available, so the "
@@ -1826,6 +1881,7 @@ class RunCoordinator(object):
         self._update_hash_settings(settings_path, settings, outcome, mode)
         self._hash_result = {"mode": mode, "elapsed_sec": elapsed,
                              "summary": outcome.summary()}
+        self._last_stage_stopped = bool(getattr(outcome, "cancelled", False))
         return True, self._hash_console_summary(outcome, mode, elapsed), "", 0
 
     def _run_candidates_only(self, engine, entries):
@@ -1847,6 +1903,20 @@ class RunCoordinator(object):
         outcome.candidate_count = len(candidates)
         return outcome
 
+    def _forward_progress(self, label, done, total):
+        """Hand progress to the caller's hook, if there is one.
+
+        A hook that raises must not be able to fail a run, so the call
+        is guarded; the run log is written separately and stays
+        authoritative.
+        """
+        if self.progress is None:
+            return
+        try:
+            self.progress(label, done, total)
+        except Exception:                                       # noqa: BLE001
+            pass
+
     def _hash_progress(self, stage, done, total):
         """Forward engine progress to the run log.
 
@@ -1859,6 +1929,7 @@ class RunCoordinator(object):
         if self.run_log and total:
             self.run_log.info("%s: %d of %d" % (stage, done, total),
                               stage="HashEngine")
+        self._forward_progress(stage, done, total)
 
     def _write_hash_reports(self, settings, run_folder_name, outcome, mode,
                             entries, reports_dir, logs_dir, elapsed):
@@ -1965,6 +2036,12 @@ class RunCoordinator(object):
             settings["LastPotentialDuplicatesMaxReclaim"] = sum(
                 members[0].size * (len(members) - 1)
                 for members in by_group.values())
+        elif getattr(outcome, "cancelled", False):
+            # A stopped run keeps its measurements but does not earn a
+            # "last completed" stamp: the dashboard reads these fields as
+            # "duplicate detection has been done for this project", and
+            # after a stop it has not.
+            return
         elif mode == "exhaustive":
             settings["LastFullHashInventoryScan"] = now
         else:
@@ -2133,6 +2210,7 @@ class RunCoordinator(object):
             directory.mkdir(parents=True, exist_ok=True)
 
         started = time.monotonic()
+        self._last_stage_stopped = False
         outcomes = []
         with self._db() as conn:
             if conn is None:
@@ -2191,6 +2269,7 @@ class RunCoordinator(object):
         elapsed = time.monotonic() - started
         self._analyzer_result = {"elapsed_sec": elapsed,
                                  "outcomes": [o.summary() for o in outcomes]}
+        self._last_stage_stopped = any(getattr(o, "cancelled", False) for o in outcomes)
         self._update_analyzer_settings(settings_path, settings, outcomes)
 
         failed = [o for o in outcomes
@@ -2228,6 +2307,7 @@ class RunCoordinator(object):
         if self.run_log and total:
             self.run_log.info("%s: %d of %d" % (key, done, total),
                               stage="AnalyzerEngine")
+        self._forward_progress(key, done, total)
 
     def _update_analyzer_settings(self, settings_path, settings, outcomes):
         r"""Write back the Last*Scan fields the wrappers stamped.
@@ -2242,6 +2322,10 @@ class RunCoordinator(object):
         changed = False
         for outcome in outcomes:
             if outcome.status == fo_analyzer_engine.STATUS_FAILED:
+                continue
+            if getattr(outcome, "cancelled", False):
+                # Stopped early: its results are kept, but "last scanned"
+                # would claim the whole bucket was done, and it was not.
                 continue
             field = fo_analyzer_engine.SETTINGS_FIELD.get(outcome.key)
             if field:

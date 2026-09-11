@@ -139,6 +139,18 @@ FINAL_RULED_OUT_FULL = "RuledOutByFullHash"
 FINAL_CONFIRMED = "ConfirmedDuplicate"
 FINAL_UNIQUE_BY_HASH = "UniqueByHash"
 
+# Two statuses that exist only because a run can be STOPPED.
+#
+# A stop is checked between files, so every file is either fully read or
+# never opened. "Never opened" must not be spelled 'Error' -- nothing went
+# wrong with it -- and the files that WERE read cannot all keep their normal
+# verdicts either: "unique" and "ruled out" are claims about every peer
+# having been examined, and after a stop some peers were not. A digest is
+# still a digest (identity is kept), but a uniqueness verdict resting on
+# unread peers is withheld rather than stated.
+STATUS_NOT_ATTEMPTED = "NotAttempted"        # stopped before this file was opened
+STATUS_UNRESOLVED = "Unresolved"             # read, but a peer was not, so no verdict
+
 
 class HashEngineError(Exception):
     """The engine could not run at all. Never raised for one bad file."""
@@ -346,6 +358,9 @@ class EngineOutcome(object):
         self.partial_hashed = 0
         self.full_hashed = 0
         self.errors = []                        # (path, kind, message)
+        #: True when the run was stopped at the user's request before every
+        #: file was read. Distinct from failure: everything read is kept.
+        self.cancelled = False
 
     # -- derived counts, computed rather than tallied ------------------
     #
@@ -387,6 +402,16 @@ class EngineOutcome(object):
     def error_count(self):
         return sum(1 for r in self.results if r.failed)
 
+    @property
+    def not_attempted_count(self):
+        """Files a stopped run never opened."""
+        return self.count_final(STATUS_NOT_ATTEMPTED)
+
+    @property
+    def unresolved_count(self):
+        """Files read by a stopped run whose verdict was withheld."""
+        return self.count_final(STATUS_UNRESOLVED)
+
     def summary(self):
         return {
             "mode": self.mode,
@@ -403,6 +428,9 @@ class EngineOutcome(object):
             "full_hashed": self.full_hashed,
             "bytes_read": self.bytes_read,
             "errors": self.error_count,
+            "cancelled": self.cancelled,
+            "not_attempted": self.not_attempted_count,
+            "unresolved": self.unresolved_count,
         }
 
 
@@ -466,14 +494,26 @@ class HashEngine(object):
         #: download it, and this is a read-only tool. Such a file is
         #: recorded with hash_status 'skipped_cloud_only' and no digest.
         self.skip_cloud_only = bool(skip_cloud_only)
-        #: Not used in B3 and deliberately present. B3 does not
-        #: implement pause/resume but is required not to make it
-        #: harder; a per-file check between two files is the cheapest
-        #: seam that keeps that promise, and leaving it here costs one
-        #: branch. Nothing in B3 passes it.
+        #: Optional callable returning False to stop. Checked BETWEEN files
+        #: in every hashing loop, never during one, so a file is either
+        #: fully read or never opened. B3 accepted this hook and stored it
+        #: without ever consulting it; RunCoordinator began passing it in
+        #: the cancellation change, and a Cancel that was silently ignored
+        #: here would have been a control that lied. None means run to
+        #: completion -- the behaviour every existing caller gets.
         self.should_continue = should_continue
 
     # -- plumbing ------------------------------------------------------
+
+    def _stop_requested(self):
+        """True when the caller has asked the run to stop."""
+        if self.should_continue is None:
+            return False
+        try:
+            return not self.should_continue()
+        except Exception:                                       # noqa: BLE001
+            # A broken hook must not be able to stop a run by accident.
+            return False
 
     def _log(self, severity, message):
         if self.logger is not None:
@@ -586,8 +626,18 @@ class HashEngine(object):
                          key=lambda r: (r.size_group_id, r.db_id))
 
         # --- stage 2: partial hash ---
+        # A stop is honoured between files. Files after the stop are left
+        # exactly as constructed -- no digest, no error -- and
+        # _assign_partial_groups tells them apart from failures.
         total = len(ordered)
+        attempted = set()
         for index, result in enumerate(ordered, start=1):
+            if self._stop_requested():
+                outcome.cancelled = True
+                self._log("INFO", "Partial hash: stopped after %d of %d file(s) "
+                                  "at the user's request." % (index - 1, total))
+                break
+            attempted.add(result.key)
             ok, read = self._hash_one(result, "partial")
             if ok:
                 outcome.partial_hashed += 1
@@ -598,13 +648,20 @@ class HashEngine(object):
             if index % 200 == 0 or index == total:
                 self._report_progress("partial_hash", index, total)
 
-        self._assign_partial_groups(ordered)
+        self._assign_partial_groups(ordered, attempted)
 
         # --- stage 3: full hash, only where the algorithm demands it ---
         needs_full = [r for r in ordered
                       if r.partial_status == STATUS_NEEDS_FULL]
         total = len(needs_full)
+        full_attempted = set()
         for index, result in enumerate(needs_full, start=1):
+            if self._stop_requested():
+                outcome.cancelled = True
+                self._log("INFO", "Full hash: stopped after %d of %d file(s) "
+                                  "at the user's request." % (index - 1, total))
+                break
+            full_attempted.add(result.key)
             ok, read = self._hash_one(result, "full")
             if ok:
                 outcome.full_hashed += 1
@@ -616,10 +673,11 @@ class HashEngine(object):
                 self._report_progress("full_hash", index, total)
 
         # --- stage 4: final verdicts and groups ---
-        outcome.groups = self._finalize_selective(ordered, results)
+        outcome.groups = self._finalize_selective(ordered, results,
+                                                  full_attempted)
         return outcome
 
-    def _assign_partial_groups(self, ordered):
+    def _assign_partial_groups(self, ordered, attempted=None):
         """Bucket candidates by (SizeGroupID, PartialHash) and assign
         PartialHashGroupID plus the partial-stage status.
 
@@ -628,9 +686,22 @@ class HashEngine(object):
         anything, and bucketing it under a None key would invent a
         group of "files we could not read", which R6 does not do and
         which would be a false duplicate claim.
+
+        `attempted` is the set of keys the partial pass actually opened.
+        None (the default, and every pre-existing caller) means all of
+        them. A file outside that set was never opened because the run
+        was stopped: it is NotAttempted, not Error, and its size group is
+        incomplete -- so a lone survivor in that group is Unresolved
+        rather than RuledOut, because "ruled out" asserts that every
+        same-size peer was read and none matched.
         """
         buckets = {}
+        incomplete_groups = set()
         for result in ordered:
+            if attempted is not None and result.key not in attempted:
+                result.partial_status = STATUS_NOT_ATTEMPTED
+                incomplete_groups.add(result.size_group_id)
+                continue
             if result.failed or result.partial_hash is None:
                 result.partial_status = STATUS_ERROR
                 continue
@@ -640,7 +711,10 @@ class HashEngine(object):
         next_group_id = 1
         for _key, members in buckets.items():           # insertion order
             if len(members) == 1:
-                members[0].partial_status = STATUS_RULED_OUT
+                if members[0].size_group_id in incomplete_groups:
+                    members[0].partial_status = STATUS_UNRESOLVED
+                else:
+                    members[0].partial_status = STATUS_RULED_OUT
                 members[0].partial_group_id = None
                 members[0].needed_full_hash = 0
                 continue
@@ -659,7 +733,7 @@ class HashEngine(object):
                 member.partial_status = status
                 member.needed_full_hash = 1 if status == STATUS_NEEDS_FULL else 0
 
-    def _finalize_selective(self, ordered, all_results):
+    def _finalize_selective(self, ordered, all_results, full_attempted=None):
         """Assign FinalStatus and DuplicateGroupID.
 
         ORDER OF NUMBERING IS THE CONTRACT. Groups settled at the
@@ -667,9 +741,23 @@ class HashEngine(object):
         then the full-hash groups in first-appearance order. This is
         what FullHash.ps1 does (its section 8a runs before its 8c) and
         reproducing the accepted DuplicateGroupID values depends on it.
+
+        `full_attempted` is the set of keys the full-hash pass opened;
+        None means all of them. After a stop, an escalated file outside
+        that set is NotAttempted, and a lone full-hash survivor whose
+        partial group has such a member is Unresolved, not RuledOut.
         """
         groups = []
         next_group_id = 1
+
+        # Partial groups the full pass did not finish. A ruled-out verdict
+        # inside one would rest on a peer that was never read.
+        incomplete_partial_groups = set()
+        if full_attempted is not None:
+            for result in ordered:
+                if (result.partial_status == STATUS_NEEDS_FULL
+                        and result.key not in full_attempted):
+                    incomplete_partial_groups.add(result.partial_group_id)
 
         # 8a -- already whole-file confirmed at the partial stage.
         confirmed_buckets = {}
@@ -687,10 +775,15 @@ class HashEngine(object):
                 group_id, members[0].size, members, "PartialHash",
                 sha256=members[0].partial_hash))
 
-        # 8b -- ruled out at the partial stage.
+        # 8b -- ruled out at the partial stage; or left without a verdict
+        #       because the stopped partial pass never read a peer.
         for result in ordered:
             if result.partial_status == STATUS_RULED_OUT:
                 result.final_status = FINAL_RULED_OUT_PARTIAL
+            elif result.partial_status == STATUS_UNRESOLVED:
+                result.final_status = STATUS_UNRESOLVED
+            elif result.partial_status == STATUS_NOT_ATTEMPTED:
+                result.final_status = STATUS_NOT_ATTEMPTED
 
         # 8c -- narrow the escalated files by full hash.
         sub_buckets = {}
@@ -701,7 +794,10 @@ class HashEngine(object):
                     (result.partial_group_id, result.full_hash), []).append(result)
         for _key, members in sub_buckets.items():
             if len(members) == 1:
-                members[0].final_status = FINAL_RULED_OUT_FULL
+                if members[0].partial_group_id in incomplete_partial_groups:
+                    members[0].final_status = STATUS_UNRESOLVED
+                else:
+                    members[0].final_status = FINAL_RULED_OUT_FULL
                 members[0].duplicate_group_id = None
                 continue
             group_id = next_group_id
@@ -713,10 +809,16 @@ class HashEngine(object):
                 group_id, members[0].size, members, "FullHash",
                 sha256=members[0].full_hash))
 
-        # 8d -- anything escalated that never got a verdict failed.
+        # 8d -- anything escalated that never got a verdict either failed,
+        #       or was never opened because the full pass was stopped.
         for result in ordered:
             if result.final_status is None:
-                result.final_status = STATUS_ERROR
+                if (full_attempted is not None
+                        and result.key not in full_attempted
+                        and not result.failed):
+                    result.final_status = STATUS_NOT_ATTEMPTED
+                else:
+                    result.final_status = STATUS_ERROR
 
         # The merge: every non-candidate was never a duplicate suspect.
         for result in all_results:
@@ -745,7 +847,14 @@ class HashEngine(object):
 
         hashable = [r for r in results if r.key not in cloud_skip]
         total = len(hashable)
+        attempted = set()
         for index, result in enumerate(hashable, start=1):
+            if self._stop_requested():
+                outcome.cancelled = True
+                self._log("INFO", "Full hash inventory: stopped after %d of %d "
+                                  "file(s) at the user's request." % (index - 1, total))
+                break
+            attempted.add(result.key)
             ok, read = self._hash_one(result, "full")
             if ok:
                 outcome.full_hashed += 1
@@ -760,6 +869,9 @@ class HashEngine(object):
         for result in results:
             if result.final_status == STATUS_SKIPPED_CLOUD:
                 continue
+            if outcome.cancelled and result.key not in attempted:
+                result.final_status = STATUS_NOT_ATTEMPTED
+                continue
             if result.failed or not result.full_hash:
                 result.final_status = STATUS_ERROR
                 continue
@@ -769,7 +881,13 @@ class HashEngine(object):
         next_group_id = 1
         for _digest, members in buckets.items():
             if len(members) == 1:
-                members[0].final_status = FINAL_UNIQUE_BY_HASH
+                # "Unique by hash" means hashed and matched NOTHING -- a
+                # claim about the whole inventory. After a stop, some of
+                # the inventory was never read, so the claim is withheld.
+                # The digest itself is kept: identity does not depend on
+                # what the other files turned out to be.
+                members[0].final_status = (STATUS_UNRESOLVED if outcome.cancelled
+                                           else FINAL_UNIQUE_BY_HASH)
                 continue
             group_id = next_group_id
             next_group_id += 1
