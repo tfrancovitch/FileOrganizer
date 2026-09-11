@@ -104,6 +104,11 @@ CATEGORY_STAGES = [
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+#: `python Dashboard.py --classic` keeps the pre-merge screens (New Project,
+#: Continue Project, Choose Run Type, the category checklist) as a fallback
+#: during the transition to the one window. Nothing else uses them.
+CLASSIC_MODE = "--classic" in sys.argv[1:]
+
 
 # ----------------------------------------------------------------------
 # Beta R2 -- application-level logging helpers
@@ -274,6 +279,11 @@ class Dashboard(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.current_project = None
+        #: Set when startup checks pass and the one window should open next.
+        self.hand_off = False
+        #: Set by the Stop button; read by the active coordinator's
+        #: should_continue hook between files.
+        self.stop_requested = threading.Event()
         self.progress_queue = queue.Queue()
         self.scan_thread = None  # tracks the currently running scan thread, if any -- see on_close
         self.scan_is_pausable = False
@@ -404,7 +414,7 @@ class Dashboard(tk.Tk):
         offers an honest choice rather than silently either abandoning a
         background process or freezing indefinitely."""
         self.clear_container()
-        ttk.Label(self.container, text="Pausing before close...",
+        ttk.Label(self.container, text="Stopping before close...",
                   font=("Segoe UI", 12, "bold")).pack(pady=(80, 10))
         ttk.Label(
             self.container,
@@ -419,7 +429,7 @@ class Dashboard(tk.Tk):
             close_anyway = messagebox.askyesno(
                 "Still finishing",
                 "The current file is taking longer than usual to reach a "
-                "safe pausing point.\n\n"
+                "safe stopping point.\n\n"
                 "Close anyway? A background process may keep running "
                 "briefly if you do.\n\n"
                 "Choose 'No' to keep waiting.",
@@ -461,7 +471,7 @@ class Dashboard(tk.Tk):
                     self.startup_status_var.set(item[1])
                 elif kind == "startup_ok":
                     self.startup_progress.stop()
-                    self.show_main_menu()
+                    self._after_startup_checks()
                     return
                 elif kind == "startup_warning":
                     self.startup_progress.stop()
@@ -470,7 +480,7 @@ class Dashboard(tk.Tk):
                         item[1] + "\n\nContinue anyway?",
                     )
                     if proceed:
-                        self.show_main_menu()
+                        self._after_startup_checks()
                     else:
                         self.destroy()
                     return
@@ -540,8 +550,29 @@ class Dashboard(tk.Tk):
         app_log_write("INFO", "Startup checks passed.")
         self.progress_queue.put(("startup_ok",))
 
+    def _after_startup_checks(self):
+        r"""Startup checks passed: hand the process to the one window.
+
+        Decision 1 (2026-09-10): the Dashboard and Explore & Understand
+        merge into one window, and a person should not know they were
+        ever separate programs. That window is Phase2.gui.Phase2App. This
+        class keeps the part that must run before any window is worth
+        opening -- the integrity check, the dependency check and the
+        stale-run reconciliation -- and then gets out of the way.
+
+        Same process, one window at a time: this root is destroyed and
+        __main__ opens the Dashboard afterwards. The classic screens below
+        remain reachable with `--classic` for the transition, and nothing
+        else.
+        """
+        if CLASSIC_MODE:
+            self.show_main_menu()
+            return
+        self.hand_off = True
+        self.destroy()
+
     # ------------------------------------------------------------------
-    # Screen: Main Menu
+    # Screen: Main Menu (classic mode only -- see _after_startup_checks)
     # ------------------------------------------------------------------
     def show_main_menu(self):
         self.clear_container()
@@ -984,27 +1015,27 @@ class Dashboard(tk.Tk):
         # in PreliminaryInventory.ps1/PotentialDuplicates.ps1 to wait for.
         self.scan_is_pausable = mode in ("duplicate_hash", "full_run", "categories")
         if self.scan_is_pausable:
-            ttk.Button(frame, text="Pause", command=self._request_pause).pack(pady=(0, 10))
+            ttk.Button(frame, text="Stop", command=self._request_pause).pack(pady=(0, 10))
 
         self.after(150, self._poll_progress_queue)
 
     def _request_pause(self):
-        """Writes the pause flag file the running script is polling for
-        at its own checkpoint-flush points -- see PartialHash.ps1 etc.
-        Safe to call from the main thread even while a background thread
-        is blocked inside subprocess.run(), since this only touches the
-        filesystem, not the subprocess itself."""
-        settings = load_settings(self.current_project) or {}
-        run = settings.get("CurrentRun")
-        if not run:
-            return
-        logs_folder = PROJECTS_DIR / self.current_project / "Runs" / run / "Logs"
-        try:
-            logs_folder.mkdir(parents=True, exist_ok=True)
-            (logs_folder / "pause_requested.flag").touch()
-            self._log("Pause requested -- will stop at the next checkpoint (may take a few seconds).")
-        except OSError as e:
-            messagebox.showwarning("Could not pause", f"Could not write the pause flag:\n{e}")
+        r"""Ask the running stage to stop after the file it is on.
+
+        This used to write Logs\pause_requested.flag, which the PowerShell
+        stage scripts polled at their checkpoints. Those scripts are gone
+        -- every stage is an in-process Python engine now -- and nothing
+        read the flag, so for a while this button wrote a file, logged a
+        reassuring line, and changed nothing. A control that lies about
+        what it did is worse than no control.
+
+        The mechanism that works is the coordinator's should_continue
+        hook, checked by every engine between files. The stop event set
+        here feeds it (see _begin_run). Everything already done is kept,
+        and the stage and run are recorded as cancelled.
+        """
+        self.stop_requested.set()
+        self._log("Stop requested -- the current file finishes, nothing after it starts.")
 
     def _log(self, message):
         self.progress_queue.put(("log", message))
@@ -1060,10 +1091,10 @@ class Dashboard(tk.Tk):
         self.clear_container()
         frame = self.container
 
-        ttk.Label(frame, text="Paused", font=("Segoe UI", 16, "bold")).pack(pady=(60, 10))
+        ttk.Label(frame, text="Stopped", font=("Segoe UI", 16, "bold")).pack(pady=(60, 10))
         ttk.Label(
             frame,
-            text=f"Project: {self.current_project}\n\nProgress has been saved. You can resume this scan\nanytime from Continue Project.",
+            text=f"Project: {self.current_project}\n\nEverything done before the stop is kept and recorded.\nRunning the same stage again starts over from its first file.",
             font=("Segoe UI", 10), justify="center",
         ).pack(pady=(0, 35))
 
@@ -1087,6 +1118,9 @@ class Dashboard(tk.Tk):
         except Exception as exc:
             app_log_write("ERROR", f"Could not begin a run record ({run_kind}): {exc}")
             return None
+        # The Stop button's event, read by every engine between files.
+        self.stop_requested.clear()
+        coordinator.should_continue = lambda: not self.stop_requested.is_set()
         self.active_coordinator = coordinator
         return coordinator
 
@@ -1100,6 +1134,16 @@ class Dashboard(tk.Tk):
         finally:
             if self.active_coordinator is coordinator:
                 self.active_coordinator = None
+
+    @staticmethod
+    def _stage_stopped(coordinator):
+        """Whether the stage that just returned stopped at the user's request."""
+        if coordinator is None:
+            return False
+        try:
+            return bool(coordinator.last_stage_stopped())
+        except Exception:
+            return False
 
     @staticmethod
     def _stage_context(coordinator, script_name, label):
@@ -1347,12 +1391,18 @@ class Dashboard(tk.Tk):
                                      "Hash & Duplicate Pass") as stage:
                 success, stdout, stderr, returncode = \
                     coordinator.run_duplicate_hash(settings_path)
+                stopped = success and self._stage_stopped(coordinator)
                 stage.record(returncode, stdout, stderr,
-                             status=None if success else "failed")
+                             status="cancelled" if stopped else (None if success else "failed"))
             if not success:
                 self._finish_run(coordinator, status="failed",
                                  notes="Hash & Duplicate Pass failed.")
                 self._error("Duplicate detection failed.\n\n" + stderr[:500])
+                return
+            if stopped:
+                self._finish_run(coordinator, status="cancelled",
+                                 notes="Stopped by the user.")
+                self._paused()
                 return
             self._log("  done.")
             self._stage("Duplicate detection complete.", 100)
@@ -1377,12 +1427,18 @@ class Dashboard(tk.Tk):
                                      "Full Hash Inventory (every file)") as stage:
                 success, stdout, stderr, returncode = \
                     coordinator.run_full_hash_inventory(settings_path)
+                stopped = success and self._stage_stopped(coordinator)
                 stage.record(returncode, stdout, stderr,
-                             status=None if success else "failed")
+                             status="cancelled" if stopped else (None if success else "failed"))
             if not success:
                 self._finish_run(coordinator, status="failed",
                                  notes="Full Hash Inventory failed.")
                 self._error("Full Run failed.\n\n" + stderr[:500])
+                return
+            if stopped:
+                self._finish_run(coordinator, status="cancelled",
+                                 notes="Stopped by the user.")
+                self._paused()
                 return
             self._log("  done.")
             self._stage("Full Run complete.", 100)
@@ -1444,8 +1500,20 @@ class Dashboard(tk.Tk):
                         coordinator.run_analyzers(
                             settings_path, [key],
                             stage_handles={key: stage.run_stage_id})
-                    status = stage.record(returncode, stdout, stderr)
+                    stopped = success and self._stage_stopped(coordinator)
+                    if stopped:
+                        status = stage.record(returncode, stdout, stderr, status="cancelled")
+                    else:
+                        status = stage.record(returncode, stdout, stderr)
 
+                if stopped:
+                    # Stopped at the user's request: everything this and the
+                    # earlier categories produced is kept, and nothing after
+                    # it starts. Recorded as cancelled, shown as stopped.
+                    self._finish_run(coordinator, status="cancelled",
+                                     notes="Stopped by the user.")
+                    self._paused()
+                    return
                 if returncode == 2:
                     # Unlike a per-category failure (which correctly continues
                     # to the next one, since categories are independent), a
@@ -1828,3 +1896,9 @@ class Dashboard(tk.Tk):
 if __name__ == "__main__":
     app = Dashboard()
     app.mainloop()
+    if app.hand_off:
+        # One process, one window at a time: the checks ran in this root,
+        # and the Dashboard proper opens in a fresh one.
+        sys.path.insert(0, str(SCRIPTS_DIR / "Database"))
+        from Phase2.gui import Phase2App
+        Phase2App(None).mainloop()
