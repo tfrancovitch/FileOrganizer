@@ -115,7 +115,15 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
         row = {"DB_ID": "" if result.db_id is None else str(result.db_id),
                "FileName": result.file_name or "",
                "Path": result.path,
-               "Error": result.error or ""}
+               "Error": result.error or "",
+               # The CURRENT observation this file was loaded under (see
+               # load_entries). Carried through so persistence attaches the
+               # result to it directly instead of re-finding it by path in
+               # the newest scan's observation rows -- which, in
+               # history.mode=changes, do not exist for an unchanged file,
+               # so every result for one after a re-scan was being stored
+               # as 'unmatched'.
+               "ObservationID": "" if result.key is None else str(result.key)}
         for name, value in result.fields.items():
             row[name] = "" if value is None else str(value)
         return row

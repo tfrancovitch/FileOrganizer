@@ -446,6 +446,19 @@ class AnalyzerPersistenceBase(object):
     def _prepare_rows(self, spec, rows, artifact_name, now):
         """Turn a batch of CSV rows into analyzer_result parameter dicts."""
         paths = [(r.get("Path") or "").strip() for r in rows]
+        # A row from the in-process engine names the CURRENT observation it
+        # was analysed under (fo_analyzer_records._row_from_result). Seed the
+        # resolver's cache with it, so the path lookup below -- which only
+        # sees the newest scan's observation rows, and in history.mode=
+        # changes an unchanged file has none there -- is neither needed nor
+        # able to overrule it. CSV rows have no such column and resolve by
+        # path exactly as before.
+        for row, absolute in zip(rows, paths):
+            known = _int_or_none(row.get("ObservationID"))
+            if known is not None and absolute and absolute not in self.resolver.cache:
+                self.resolver.cache[absolute] = {
+                    "file_observation_id": known,
+                    "legacy_db_id": _int_or_none(row.get("DB_ID"))}
         self.resolver.lookup([p for p in paths if p])
         prepared = []
 
