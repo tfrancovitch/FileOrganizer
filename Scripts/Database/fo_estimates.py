@@ -339,6 +339,339 @@ def calibrate(conn, inventory_scan_ids, drive_type=None, analyzer_count=0):
     }
 
 
+# ---------------------------------------------------------------------------
+# Analysis, extraction and indexing -- Phase 2 build item 4
+#
+# The placeholder above (file_count * analyzer_count * PERSIST_SECONDS_PER_FILE)
+# priced an analyzer run as a database write. It did not model opening a
+# PDF, parsing a DOCX, hashing an image perceptually or building an index --
+# the stages that actually take the time -- and extraction and indexing had
+# no estimate at all. With blocking work, an estimate that leaves out whole
+# stages is wrong in a direction the user cannot see (B5-E.F013 again).
+#
+# The approach mirrors calibrate(): count the applicable files EXACTLY from
+# the inventory, run the REAL analyzer on a bounded per-type sample spread
+# across the size range, model files as well as bytes, keep the pessimistic
+# factor, and return a breakdown a person can take apart.
+#
+# Sampling reads source files. That is a read and nothing else, and cloud-
+# only files are never sampled (axiom 14). Extraction sampling writes its
+# artifacts to a temporary folder that is deleted afterwards -- never into
+# the project's Runs folder, which is evidence.
+# ---------------------------------------------------------------------------
+
+#: Files sampled per analyzer, and the most bytes a sample may read.
+ANALYZER_SAMPLE_FILES = 6
+ANALYZER_SAMPLE_BYTE_CAP = 24 * 1024 * 1024
+
+#: Floors for an analyzer whose sample could not be measured at all --
+#: deliberately pessimistic, and labelled as guesses in the breakdown.
+FALLBACK_ANALYZER_SECONDS_PER_FILE = 0.05
+FALLBACK_ANALYZER_BYTES_PER_SEC = 2 * 1024 * 1024
+
+#: Indexing tracks text volume, not file count. Measured 2026-09-10: index
+#: build ~1.6 ms per text on short documents; the per-byte figure covers
+#: the FTS5 tokeniser on long ones. Both pessimistic by the local factor.
+INDEX_SECONDS_PER_TEXT = 0.0016
+INDEX_BYTES_PER_SEC = 20 * 1024 * 1024
+
+
+def present_files(conn):
+    r"""Every CURRENT present file as (path, size, cloud, extension), by size.
+
+    Read once and filtered per analyzer, so estimating nine analyzers costs
+    one pass over the inventory rather than nine.
+    """
+    out = []
+    for row in conn.execute(
+            "SELECT fs.size_bytes, COALESCE(fs.is_offline_or_cloud,0) AS cloud, "
+            "       LOWER(COALESCE(fp.extension_key,'')) AS ext, fp.relative_path, sr.root_path "
+            "FROM file_state fs "
+            "JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+            "JOIN source_root sr ON sr.source_root_id=fs.source_root_id "
+            "WHERE fs.state='present' "
+            "ORDER BY fs.size_bytes"):
+        ext = row["ext"]
+        if ext and not ext.startswith("."):
+            ext = "." + ext
+        root = (row["root_path"] or "").rstrip("\\")
+        relative = (row["relative_path"] or "").lstrip("\\")
+        if os.name == "nt":
+            full = (root + "\\" + relative) if relative else root
+        else:
+            full = os.path.join(root, relative.replace("\\", os.sep)) if relative else root
+        out.append((full, int(row["size_bytes"] or 0), bool(row["cloud"]), ext))
+    return out
+
+
+def applicable_files(conn, key, files=None):
+    r"""Every CURRENT present file an analyzer would process, plus totals.
+
+    Returns (rows, count, bytes). Applicability comes from the engine's own
+    adapter -- its declared extension set and exclusions -- so this cannot
+    drift from what a run would do. The rows carry (path, size, cloud) so a
+    sample can be drawn without a second query.
+    """
+    import fo_analyzer_engine
+    adapter = fo_analyzer_engine.ADAPTER_BY_KEY.get(key)
+    if adapter is None:
+        return [], 0, 0
+    extensions = adapter.extensions()
+    exclusions = adapter.exclusions()
+    if files is None:
+        files = present_files(conn)
+    rows = []
+    total_bytes = 0
+    for full, size, cloud, ext in files:
+        if ext in exclusions or ext not in extensions:
+            continue
+        rows.append((full, size, cloud))
+        total_bytes += size
+    return rows, len(rows), total_bytes
+
+
+def spread_sample(rows, count=ANALYZER_SAMPLE_FILES):
+    r"""Up to `count` local, non-empty files at evenly spaced size ranks.
+
+    The rows arrive ordered by size. Taking the first N would sample the
+    smallest files only, and per-file cost dominates there; spreading the
+    picks across the size range lets the two costs be separated the way
+    calibrate() separates them for hashing.
+    """
+    eligible = [r for r in rows if r[1] > 0 and not r[2]]
+    if not eligible:
+        return []
+    if len(eligible) <= count:
+        return list(eligible)
+    step = len(eligible) / float(count)
+    picks = []
+    for i in range(count):
+        picks.append(eligible[int(i * step + step / 2.0)])
+    return picks
+
+
+def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
+    r"""Run the real analyzer over the sample. Returns a measurement dict.
+
+    {files_used, bytes_read, elapsed, text_bytes, error} -- error carries a
+    reason when the analyzer cannot run at all (missing package, import
+    failure), which is itself a fact the estimate must report: a run that
+    would fail at once takes no time and does no work.
+    """
+    import shutil
+    import tempfile
+    import fo_analyzer_engine
+
+    out = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
+           "error": None}
+    adapter = fo_analyzer_engine.ADAPTER_BY_KEY.get(key)
+    if adapter is None:
+        out["error"] = "unknown analyzer"
+        return out
+    missing = fo_analyzer_engine.missing_dependencies(key)
+    if missing:
+        out["error"] = ("missing Python package(s): %s. Install with: pip install %s"
+                        % (", ".join(missing), fo_analyzer_engine.dependency_hint(key)))
+        return out
+    if not sample:
+        return out
+
+    scratch = None
+    context = {"hash_size": fo_analyzer_engine.DEFAULT_IMAGE_HASH_SIZE}
+    if key == "content_extraction":
+        # The extraction closure writes artifacts. They go to a folder that
+        # is deleted below -- an estimate must not leave evidence behind.
+        scratch = tempfile.mkdtemp(prefix="fo_estimate_")
+        context["extract_folder"] = scratch
+    try:
+        try:
+            analyze = adapter.analyze_fn(context)
+        except Exception as exc:                                # noqa: BLE001
+            out["error"] = "%s: %s" % (type(exc).__name__, exc)
+            return out
+        # Warm up, untimed. The first SUCCESSFUL call pays for lazy library
+        # setup -- Pillow's plugin registration, imagehash importing scipy on
+        # its first perceptual hash -- which is a once-per-process cost, not
+        # a per-file one. Measured here at ~540 ms on the first image and
+        # ~1.5 ms on every later one; left in the timing it would inflate a
+        # 10,000-image estimate by hours. A file that fails to open never
+        # reaches the lazy paths, so the warm-up keeps going until one works.
+        for path, _size, _cloud in sample[:4]:
+            try:
+                analyze(fo_analyzer_engine.openable_path(path))
+                break
+            except Exception:                                   # noqa: BLE001
+                continue
+        started = time.perf_counter()
+        for path, size, _cloud in sample:
+            if out["bytes_read"] >= byte_cap:
+                break
+            try:
+                payload = analyze(fo_analyzer_engine.openable_path(path))
+            except Exception:                                   # noqa: BLE001
+                # An unreadable or malformed sample file is a fact about that
+                # file, not about throughput. It costs the same time as a
+                # readable one, which is why it still counts as used.
+                payload = None
+            out["files_used"] += 1
+            out["bytes_read"] += size
+            if key == "content_extraction" and isinstance(payload, dict):
+                try:
+                    out["text_bytes"] += int(payload.get("CharCount") or 0)
+                except (TypeError, ValueError):
+                    pass
+        out["elapsed"] = time.perf_counter() - started
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+    return out
+
+
+def _pessimistic_seconds(count, total_bytes, measurement, safety):
+    r"""max(bytes / rate, files * per_file), both from the sample, then the
+    safety factor -- the same shape calibrate() uses for hashing, and for
+    the same reason: a small file is mostly per-file cost, a large one is
+    mostly bytes, and adding the two double-counts the common case."""
+    files_used = measurement["files_used"]
+    elapsed = measurement["elapsed"]
+    if files_used and elapsed > 0:
+        per_file = elapsed / files_used
+        rate = (measurement["bytes_read"] / elapsed) if measurement["bytes_read"] else None
+        guessed = False
+    else:
+        per_file = FALLBACK_ANALYZER_SECONDS_PER_FILE
+        rate = FALLBACK_ANALYZER_BYTES_PER_SEC
+        guessed = True
+    by_files = count * per_file
+    by_bytes = (total_bytes / rate) if rate else 0.0
+    work = max(by_files, by_bytes) / safety if safety > 0 else max(by_files, by_bytes)
+    overhead = count * (PERSIST_SECONDS_PER_FILE + EXPORT_SECONDS_PER_FILE)
+    return {"per_file_seconds": per_file, "bytes_per_sec": rate, "guessed": guessed,
+            "by_files_seconds": by_files, "by_bytes_seconds": by_bytes,
+            "overhead_seconds": overhead, "seconds": work + overhead}
+
+
+def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_FILES):
+    r"""Estimate one analysis run, analyzer by analyzer. Returns a breakdown.
+
+    {
+      "analyzers": [ {key, label, applicable, bytes, cloud_skipped, sample:{...},
+                      per_file_seconds, bytes_per_sec, guessed, seconds, error} ... ],
+      "total_seconds", "text", "safety"
+    }
+    Every count is measured from the inventory; every rate from a sample of
+    this project's own files, run through the real analyzer.
+    """
+    import fo_analyzer_engine
+    safety = SAFETY_FACTOR_NETWORK if drive_type == "Network" else SAFETY_FACTOR_LOCAL
+    out = {"analyzers": [], "total_seconds": 0.0, "safety": safety}
+    files = present_files(conn)
+    for key in keys:
+        adapter = fo_analyzer_engine.ADAPTER_BY_KEY.get(key)
+        label = adapter.label if adapter else key
+        rows, count, total_bytes = applicable_files(conn, key, files)
+        cloud = sum(1 for r in rows if r[2])
+        item = {"key": key, "label": label, "applicable": count, "bytes": total_bytes,
+                "cloud_skipped": cloud, "sample": None, "seconds": 0.0, "error": None,
+                "guessed": False, "per_file_seconds": None, "bytes_per_sec": None}
+        if count == 0:
+            out["analyzers"].append(item)
+            continue
+        measurement = measure_analyzer(key, spread_sample(rows, sample_files))
+        item["sample"] = measurement
+        if measurement["error"]:
+            item["error"] = measurement["error"]
+            out["analyzers"].append(item)
+            continue
+        model = _pessimistic_seconds(count - cloud, total_bytes, measurement, safety)
+        item.update(model)
+        out["total_seconds"] += model["seconds"]
+        out["analyzers"].append(item)
+    out["text"] = format_duration(out["total_seconds"])
+    return out
+
+
+def estimate_indexing(conn, drive_type=None):
+    r"""Estimate a text-index build from what extraction actually produced.
+
+    Indexing reads extracted-text artifacts, never source files, so the
+    inputs are the extracted_content rows: how many distinct texts, and how
+    many bytes of text. Cost is modelled per text and per byte, whichever
+    dominates, and made pessimistic.
+    """
+    safety = SAFETY_FACTOR_NETWORK if drive_type == "Network" else SAFETY_FACTOR_LOCAL
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT text_sha256), COALESCE(SUM(artifact_bytes),0) "
+        "FROM extracted_content WHERE status='extracted' AND artifact_exists=1 "
+        "AND text_sha256 IS NOT NULL").fetchone()
+    texts = int(row[0] or 0)
+    text_bytes = int(row[1] or 0)
+    by_texts = texts * INDEX_SECONDS_PER_TEXT
+    by_bytes = text_bytes / float(INDEX_BYTES_PER_SEC)
+    seconds = max(by_texts, by_bytes) / safety if safety > 0 else max(by_texts, by_bytes)
+    return {"texts": texts, "text_bytes": text_bytes, "by_texts_seconds": by_texts,
+            "by_bytes_seconds": by_bytes, "seconds": seconds, "safety": safety,
+            "text": format_duration(seconds)}
+
+
+def _mb(value):
+    return "%.1f MB" % (float(value or 0) / (1024.0 * 1024.0))
+
+
+def describe_analysis(breakdown):
+    """The estimate, taken apart, for the screen shown before a run starts."""
+    lines = []
+    runnable = [a for a in breakdown["analyzers"] if a["applicable"] and not a["error"]]
+    for a in breakdown["analyzers"]:
+        if a["applicable"] == 0:
+            lines.append("%-26s no applicable files -- nothing to do" % a["label"])
+            continue
+        head = "%-26s %s files, %s" % (a["label"], "{:,}".format(a["applicable"]), _mb(a["bytes"]))
+        if a["error"]:
+            lines.append(head)
+            lines.append("    CANNOT RUN: %s" % a["error"])
+            continue
+        lines.append(head + "   ->  %s" % format_duration(a["seconds"]))
+        sample = a["sample"] or {}
+        if a["guessed"]:
+            lines.append("    no file could be sampled; this is a flat guess, not a measurement")
+        else:
+            lines.append("    sampled %d file(s), %s in %.2f s: %.1f ms/file, %s/s"
+                         % (sample["files_used"], _mb(sample["bytes_read"]), sample["elapsed"],
+                            a["per_file_seconds"] * 1000.0,
+                            _mb(a["bytes_per_sec"]) if a["bytes_per_sec"] else "n/a"))
+        if a["cloud_skipped"]:
+            lines.append("    %d cloud-only file(s) will be skipped, never opened"
+                         % a["cloud_skipped"])
+    lines.append("")
+    if runnable:
+        lines.append("Estimated time: %s" % breakdown["text"])
+        lines.append("Measured on this project's own files with the real analyzers, then made")
+        lines.append("deliberately pessimistic (factor %s). Includes analysis, database persistence"
+                     % breakdown["safety"])
+        lines.append("and export. A run that finishes early is a pleasant surprise.")
+    else:
+        lines.append("Nothing here can run: no applicable files, or a missing dependency.")
+    return "\n".join(lines)
+
+
+def describe_indexing(breakdown):
+    lines = ["Index text: builds a literal full-text index from the extracted-text"
+             " artifacts already in the project. No source file is opened.", ""]
+    lines.append("Distinct extracted texts : %s" % "{:,}".format(breakdown["texts"]))
+    lines.append("Text to index            : %s" % _mb(breakdown["text_bytes"]))
+    lines.append("")
+    if breakdown["texts"] == 0:
+        lines.append("Nothing has been extracted yet, so there is nothing to index.")
+    else:
+        lines.append("Estimated time: %s" % breakdown["text"])
+        lines.append("Modelled per text and per byte of text (whichever dominates), made")
+        lines.append("deliberately pessimistic (factor %s). The index is all-or-nothing: a"
+                     % breakdown["safety"])
+        lines.append("stopped build leaves nothing behind.")
+    return "\n".join(lines)
+
+
 def console_summary(values):
     """The lines TimeEstimates.ps1 printed, reproduced."""
     megabyte = 1024.0 * 1024.0
