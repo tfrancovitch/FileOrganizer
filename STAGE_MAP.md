@@ -4,8 +4,15 @@
 it writes, and whether it opens a file. One click is rarely one process, and this
 is the reference for which processes a click actually starts.
 
-**Last verified:** 2026-09-10, against the running application and the B6.2 code
-in `FileOrganizer-Phase1-RC-B6.1`.
+**Last verified:** 2026-09-11, against the running application (the one-window
+Dashboard) and the code in `FileOrganizer-Phase1-RC-B6.1`.
+
+**Where the clicks are now.** Every stage below is started from the Dashboard
+(`Scripts\Phase2\gui.py` + `hub.py`) through the blocking runner
+(`Scripts\Phase2\runner.py`), which drives `RunCoordinator` exactly as the old
+dashboard did. The stage keys, run kinds and tables are unchanged; what changed is
+that every run shows an estimate first, owns the window while it runs, and has a
+Cancel. `Dashboard.py --classic` still reaches the pre-merge screens.
 
 **Companion documents**
 - `FileOrganizer-Phase2\The_File_Organizer_Project_Plan_Phases_1-8plus.docx` — the phase model
@@ -38,6 +45,13 @@ close to free and are what make the next screen's numbers possible.
 | 2 | `InventoryIngest` | Persists the walk into the current-state projection | No | `file_state` |
 | 3 | `PotentialDuplicates.ps1` | Groups files by size. Anything with a unique size **cannot** have a duplicate and is set aside. | No — arithmetic on data already held | size-group candidates |
 | 4 | `TimeEstimates.ps1` | Samples up to 15 real files (capped at 50 MB), measures throughput, applies a pessimistic factor | Yes — a bounded sample | estimates in `settings.json` |
+
+**Stopping it.** Cancel is checked between directories. The files walked so far
+are recorded; the scan row is `interrupted` (the schema's word for gaps that are an
+artefact of the scan); **nothing is marked missing** on the strength of a walk that
+did not finish; the run is `cancelled`; the hub says "at least N files" and offers
+the Pre-Scan again. Roots not yet started are not scanned. There is no resume — the
+next Pre-Scan walks from the beginning.
 
 **After a prescan you can already answer:** how many files, how much space, by
 type, by folder, by age, largest files, largest folders, what could not be read.
@@ -88,6 +102,18 @@ sets each file's `hash_status`:
 | `size_unique` | **Proven not a duplicate without ever being opened.** A positive finding, not missing data. |
 | `confirmed_duplicate` | Opened, hashed, matched another file |
 | `unique_by_hash` | Opened, hashed, matched nothing |
+| `ruled_out_partial` / `ruled_out_full` | Opened; a same-size peer's hash differed |
+| `not_attempted` | **Only after a stop.** Never opened — not an error, nothing went wrong with it |
+| `unresolved` | **Only after a stop.** Read, digest kept, but a same-size or same-partial-hash peer was not read, so no uniqueness verdict is claimed |
+
+**Stopping it.** Cancel is checked between files in both the partial and the full
+pass. Positive findings stand — identical files are identical whatever else was
+unread — but "unique" and "ruled out" are claims about every peer having been
+examined, so they are withheld wherever a peer was not (`unresolved`). The report
+opens with a RUN STOPPED block; the hub says the duplicate question is not fully
+answered and offers Find My Duplicates again; `settings.json` does not get a
+"last completed" stamp. A later complete run re-reads every candidate and replaces
+the verdicts — verified to return the exact ground-truth groups after a stopped run.
 
 > Measured on 240 files (200 uniquely sized, 40 in 20 same-size pairs): the funnel
 > narrowed 240 → 40, and only those 40 were ever opened. 0.17 s versus 1.60 s for
@@ -103,6 +129,10 @@ become `unique_by_hash`.
 
 > Running this *after* Find My Duplicates re-reads everything rather than topping
 > up the files that were skipped. Worth knowing before offering it as an upgrade.
+
+**Stopping it.** Same rule: files never reached are `not_attempted`; a hashed file
+whose digest matched nothing among the hashed files is `unresolved`, not
+`unique_by_hash`, because the claim would rest on files never read.
 
 ---
 
@@ -134,6 +164,22 @@ the engine does not require.
 bucket — "only `.jpg`" — is not possible today: an analyzer run takes analyzer
 keys, not a file filter. That is planned as a later refinement.
 
+**Stopping it.** Cancel is checked between files. Every file already analysed is
+kept (its results are current evidence); the stage and run are `cancelled`; the
+bucket's `Last…Scan` stamp is not written; the hub shows "N of M have current
+analysis" with Analyze offered. Running the bucket again starts from its first
+file.
+
+**The estimate before it starts** (`fo_estimates.estimate_analysis`) counts the
+applicable files exactly from the inventory, runs the real analyzer over up to 6
+files spread across the size range (24 MB cap), models files and bytes, and
+applies the pessimistic factor. Extraction's sample writes to a temporary folder
+that is deleted — never into `Runs\`.
+
+**A re-scan no longer detaches results.** Results are attached to the current
+observation the engine loaded the file under, not re-found by path in the newest
+scan's rows (which, in `history.mode=changes`, do not exist for an unchanged file).
+
 ---
 
 ## Run kind 5 — text indexing (Phase 2, on demand)
@@ -143,6 +189,12 @@ never from source files. Triggered on the first text search rather than
 automatically, so the first search after an extraction is slow.
 
 Writes `p2_fts_text`, `p2_fts_text_map`, `p2_derived_index`.
+
+Now also a button — **Index text** — in the hub and on the analyze screen, run
+through the same blocking runner with an estimate first
+(`fo_estimates.estimate_indexing`, from the distinct texts and bytes extraction
+produced). Not a `run` row: nothing is collected from a source file. A stopped
+build leaves no half index.
 
 **Three separately skippable decisions:**
 

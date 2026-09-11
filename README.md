@@ -129,10 +129,16 @@ database can actually be created on this machine.
 
 ## Using it
 
+One window. `TheFileOrganizer.bat` runs the startup checks, then opens on
+**Projects**: open one, or create one. Every step that does work shows an
+estimate before it starts, owns the window while it runs, and has a **Cancel**
+that stops between files and keeps everything already done.
+
 ### 1. Create a project
 
-Choose **Create a new project**, pick the folder you want to inventory, and
-name it.
+On the Projects screen, pick the folder you want to inventory, name the project
+(or leave it blank to auto-name), and press **Create project and run the
+Pre-Scan**.
 
 One folder is the ordinary case. If you want a single project to cover more
 than one location — say `C:\\Documents` and `E:\\Photos` — browse to each and
@@ -160,26 +166,49 @@ next step will take.
 
 Nothing is hashed in full yet.
 
-### 3. Choose a run type
+### 3. The three doors
 
-**Duplicate Run** — the normal choice. Only files that share an exact size can
-possibly be duplicates, so only those are hashed. Small files are settled with
-a single 64 KB read; larger ones are escalated to a full SHA-256 only when
-their first 64 KB already match. Most projects hash a small fraction of their
-bytes.
+After the Pre-Scan, three choices — none of them final; all three stay
+available from the hub.
 
-**Full Run** — a complete SHA-256 for *every* file. Slower, and the right choice
-when you want a full content record rather than only the duplicates.
+**Find My Duplicates** — answers the duplicate question *completely*. Only
+files that share an exact size can possibly be duplicates, so only those are
+opened. Small files are settled with a single 64 KB read; larger ones are
+escalated to a full SHA-256 only when their first 64 KB already match. A file
+whose size nothing else has is proven not a duplicate without ever being
+opened — that is a finding, not a gap.
+
+**Full Fingerprinting** — also finds every duplicate, and gives *every* file a
+verifiable content identity. That identity is what later lets a file be
+verified after a move, and a change be detected on a re-scan. The difference
+from the first door is not thoroughness.
+
+**Go to the Dashboard** — everything the Pre-Scan already knows.
 
 > A partial hash is treated as complete content identity **only** when the
 > whole file fits inside the 64 KB window. For anything larger, matching first
 > bytes is a screening result and never proof.
 
-### 4. Analyzers (optional)
+### 4. The hub
 
-Pick any categories you want. Each runs independently — one failing does not
-stop the others, and a category with no applicable files is a success, not an
-error.
+The landing view says, line by line, what the project can answer and what a
+run would change: what is here, which files are identical, duplicates, each
+analyzer bucket, text extracted, search inside files. A button on a line runs
+the thing that would improve it.
+
+**Choose what to analyze** lives here too: one row per bucket with a measured
+count of applicable files, and separate rows for extracting text and indexing
+it, because those are the slow ones and each can be skipped. Each analyzer
+runs independently — one failing does not stop the others, and a bucket with
+no applicable files is a success, not an error.
+
+### Stopping a run
+
+Cancel is honoured between files, never during one, so nothing is left
+half-written. What was done is kept and recorded; what was not is spelled
+out — the hub says "at least N files" after a stopped walk, "not fully
+answered" after stopped fingerprinting, "N of M have current analysis" after a
+stopped bucket. Running the stage again starts from its first file.
 
 ### 5. Results
 

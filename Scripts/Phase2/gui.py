@@ -72,7 +72,12 @@ class Phase2App(tk.Tk):
         self._busy_widgets=[]
 
         self.title("The File Organizer")
-        self.geometry("1280x820")
+        # Fit the screen: at 125% display scaling a fixed 1280x820 is taller
+        # than a 1080-pixel display once the title bar and taskbar are counted,
+        # and the bottom of the window was simply cut off.
+        width=min(1280,max(1000,self.winfo_screenwidth()-120))
+        height=min(820,max(650,self.winfo_screenheight()-160))
+        self.geometry(f"{width}x{height}")
         self.minsize(1000,650)
         self.protocol("WM_DELETE_WINDOW",self.close)
         self._style()
