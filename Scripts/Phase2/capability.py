@@ -65,6 +65,23 @@ def _scalar(conn, sql, args=(), default=0):
         return default
 
 
+def _incomplete_root_count(conn):
+    """Active source roots whose LATEST scan did not run to completion.
+
+    The same reading coverage_summary() makes for the evidence strip: a
+    latest scan that is not completed / completed_with_warnings, or whose
+    root was not available, leaves that root's inventory incomplete.
+    """
+    try:
+        from .coverage import coverage_summary
+        summary = coverage_summary(conn)
+    except Exception:
+        return 0
+    return sum(1 for r in summary.get("root_coverage") or []
+               if r.get("status") not in ("completed", "completed_with_warnings")
+               or r.get("root_availability") not in (None, "available"))
+
+
 def _analyzer_extension_map():
     """analyzer key -> (label, frozenset of extensions it applies to).
 
@@ -125,7 +142,22 @@ def project_capabilities(conn):
             "Nothing has been scanned yet.", RUN_PRESCAN, present=0))
         return caps
 
-    if inaccessible:
+    # Whether the latest walk of every root actually finished. A stopped
+    # walk is recorded as an interrupted scan; an unreachable root as
+    # missing. Either way the files not reached are simply absent from the
+    # inventory -- not marked missing, not counted -- and the only honest
+    # reading of the count above is "at least".
+    incomplete_roots = _incomplete_root_count(conn)
+
+    if incomplete_roots:
+        caps.append(Capability(
+            "inventory", "What is here", PARTIAL,
+            f"At least {present:,} files. The latest walk of {incomplete_roots:,} source "
+            f"folder(s) did not finish (stopped, or the folder was unreachable), so "
+            f"files it never reached are not in this inventory at all.",
+            RUN_PRESCAN, present=present, inaccessible=inaccessible,
+            incomplete_roots=incomplete_roots))
+    elif inaccessible:
         caps.append(Capability(
             "inventory", "What is here", PARTIAL,
             f"{present:,} files. {inaccessible:,} paths could not be read, so every "
@@ -143,11 +175,45 @@ def project_capabilities(conn):
     size_unique = _scalar(
         conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND hash_status='size_unique'")
 
+    # A file with neither a fingerprint nor a size-unique proof has NO verdict.
+    # Why it has none matters: a run that was stopped can be run again; a
+    # file that could not be read cannot be fixed by a button. The duplicate
+    # question is only "fully answered" when this number is zero -- the
+    # earlier wording said so whenever anything at all had been fingerprinted,
+    # which after a stopped run would have been exactly the overstatement
+    # this module exists to prevent.
+    no_verdict = max(0, present - identified - size_unique)
+    unexamined = _scalar(
+        conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND content_id IS NULL "
+              "AND (hash_status IS NULL OR hash_status IN ('not_attempted','unresolved'))")
+    unreadable = _scalar(
+        conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND content_id IS NULL "
+              "AND hash_status IN ('error','skipped_cloud_only')")
+
+    def _no_verdict_sentence():
+        parts = []
+        if unexamined:
+            parts.append(f"{unexamined:,} were never examined (a run was stopped, or "
+                         f"they were added since)")
+        if unreadable:
+            parts.append(f"{unreadable:,} could not be read")
+        return (f"{no_verdict:,} files have no verdict: " + "; ".join(parts) + ". "
+                if parts else f"{no_verdict:,} files have no verdict. ")
+
     if identified == 0:
         caps.append(Capability(
             "identity", "Which files are identical", UNAVAILABLE,
             "No file has been fingerprinted, so duplicates cannot be found at all.",
             RUN_DUPLICATES, identified=0, total=present))
+    elif no_verdict:
+        caps.append(Capability(
+            "identity", "Which files are identical", PARTIAL,
+            f"{identified:,} of {present:,} files fingerprinted and {size_unique:,} "
+            f"proven unique by size. " + _no_verdict_sentence() +
+            "The duplicate question is not fully answered.",
+            RUN_DUPLICATES if unexamined else None,
+            identified=identified, total=present, size_unique=size_unique,
+            no_verdict=no_verdict, unexamined=unexamined, unreadable=unreadable))
     elif identified < present:
         # size_unique is a POSITIVE finding: proven not-a-duplicate without being
         # opened. Saying "only 40 of 240 fingerprinted" without that context reads
@@ -168,16 +234,26 @@ def project_capabilities(conn):
 
     # --- duplicates --------------------------------------------------------
     groups = _scalar(conn, "SELECT COUNT(*) FROM duplicate_group")
+    members = _scalar(conn, "SELECT COUNT(*) FROM duplicate_member") if groups else 0
     if identified == 0:
         caps.append(Capability(
             "duplicates", "Duplicates and reclaimable space", UNAVAILABLE,
             "Needs fingerprinting first.", RUN_DUPLICATES, groups=0))
+    elif no_verdict:
+        # Groups found are real -- their members are byte-identical -- but
+        # there may be more groups, or more members, among the unexamined.
+        found = (f"{groups:,} duplicate groups covering {members:,} files found so far"
+                 if groups else "No duplicates found so far")
+        caps.append(Capability(
+            "duplicates", "Duplicates and reclaimable space", PARTIAL,
+            f"{found}; {no_verdict:,} files have no verdict, so there may be more.",
+            RUN_DUPLICATES if unexamined else None,
+            groups=groups, members=members, no_verdict=no_verdict))
     elif groups == 0:
         caps.append(Capability(
             "duplicates", "Duplicates and reclaimable space", AVAILABLE,
             "No duplicates found.", None, groups=0))
     else:
-        members = _scalar(conn, "SELECT COUNT(*) FROM duplicate_member")
         caps.append(Capability(
             "duplicates", "Duplicates and reclaimable space", AVAILABLE,
             f"{groups:,} duplicate groups covering {members:,} files.",

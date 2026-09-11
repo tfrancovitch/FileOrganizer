@@ -1,10 +1,23 @@
-"""Tkinter Hybrid Evidence Explorer for Phase 2 P2.9.1."""
+r"""The Dashboard: one window from New Project to the answers.
+
+This began as the Phase 2 "Hybrid Evidence Explorer", a second window reached
+from the Phase 1 dashboard. Decision 1 (2026-09-10) merged the two: a person
+should not know they were ever separate programs. So this window now also
+creates projects and runs the Phase 1 collection stages -- through
+`runner.py`, which drives the same RunCoordinator the old dashboard did --
+and lands on the hub (`hub.py`), which says what the project can answer.
+
+The Phase 2 rules still hold for everything analytical: stored evidence only,
+no source file is reopened to answer a question. The collection stages that
+DO open files are Phase 1 stages, invoked from here, recorded as runs.
+"""
 from __future__ import annotations
 
 import json
+import os
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 
 from .core import connect, require_phase2_schema, project_info, stamp_core_version, utc_now
 from .coverage import evidence_health
@@ -13,6 +26,12 @@ from .fts import FtsManager, FtsUnavailable
 from .query import QueryEngine, QueryError, QUERY_SCHEMA, SEMANTIC_CONTRACT
 from .reports import ReportCatalog
 from .saved import SavedQueryStore
+from . import hub as hub_view
+from .runner import RunRequest, PRESCAN, run_blocking, app_root_for
+
+#: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
+APP_ROOT = Path(__file__).resolve().parents[2]
+PROJECTS_DIR = APP_ROOT / "Projects"
 
 
 def human_bytes(value):
@@ -33,32 +52,35 @@ def base_file_query(scope):
 
 
 class Phase2App(tk.Tk):
-    def __init__(self, project_dir):
+    """The one window. With a project it lands on the hub; without one it
+    offers the projects on disk and New Project."""
+
+    def __init__(self, project_dir=None):
         super().__init__()
-        self.project_dir=Path(project_dir).resolve()
-        self.conn=connect(self.project_dir,write=True)
-        require_phase2_schema(self.conn)
-        stamp_core_version(self.conn)
-        self.store=SavedQueryStore(self.conn)
-        self.fts=FtsManager(self.conn,self.project_dir)
-        self.engine=QueryEngine(self.conn,saved_store=self.store,fts_manager=self.fts)
+        self.app_root=APP_ROOT
+        self.project_dir=None
+        self.conn=None; self.store=None; self.fts=None; self.engine=None; self.info={}
         self.reports=ReportCatalog()
-        self.info=project_info(self.conn)
         self.scope={"kind":"project"}
         self.filters=[]
         self.search_text=""
         self.current_rows=[]
         self.current_query=None
         self.after_id=None
+        #: (stop_event, worker thread) while a run owns the window; else None.
+        self.active_run=None
+        self._busy_widgets=[]
 
-        self.title(f"The File Organizer — Understand — {self.info.get('name',self.project_dir.name)}")
+        self.title("The File Organizer")
         self.geometry("1280x820")
         self.minsize(1000,650)
         self.protocol("WM_DELETE_WINDOW",self.close)
         self._style()
         self._build_shell()
-        self.refresh_evidence_strip()
-        self.show_overview()
+        if project_dir is not None:
+            self.open_project(project_dir)
+        else:
+            self.show_start()
 
     def _style(self):
         style=ttk.Style(self)
@@ -74,29 +96,221 @@ class Phase2App(tk.Tk):
         self.columnconfigure(1,weight=1); self.rowconfigure(0,weight=1)
         nav=ttk.Frame(self,padding=8); nav.grid(row=0,column=0,sticky="nsew")
         ttk.Label(nav,text="The File Organizer",font=("Segoe UI",13,"bold")).pack(fill="x",pady=(4,16))
+        self.nav_buttons=[]
         for label,cmd in [
-            ("Overview",self.show_overview),("Files",self.show_files),("Reports",self.show_reports),
-            ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history)]:
-            ttk.Button(nav,text=label,style="Nav.TButton",command=cmd).pack(fill="x",pady=2)
-        ttk.Label(nav,text="Read-only analytical mode\nNo source-file actions",foreground="#666",justify="left").pack(side="bottom",fill="x",pady=8)
+            ("Hub",self.show_hub),("Files",self.show_files),("Reports",self.show_reports),
+            ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history),
+            ("Projects",self.show_start)]:
+            b=ttk.Button(nav,text=label,style="Nav.TButton",command=cmd); b.pack(fill="x",pady=2)
+            self.nav_buttons.append(b)
+        ttk.Label(nav,text="Answers come from stored evidence.\nNo source file is modified.",foreground="#666",justify="left").pack(side="bottom",fill="x",pady=8)
 
         main=ttk.Frame(self); main.grid(row=0,column=1,sticky="nsew"); main.columnconfigure(0,weight=1); main.rowconfigure(2,weight=1)
         top=ttk.Frame(main,padding=(12,8)); top.grid(row=0,column=0,sticky="ew"); top.columnconfigure(2,weight=1)
-        self.project_var=tk.StringVar(value=f"Project: {self.info.get('name',self.project_dir.name)}")
+        self.project_var=tk.StringVar(value="No project open")
         ttk.Label(top,textvariable=self.project_var,font=("Segoe UI",10,"bold")).grid(row=0,column=0,sticky="w")
         self.scope_var=tk.StringVar(value="Scope: All Sources")
         ttk.Label(top,textvariable=self.scope_var,foreground="#666").grid(row=1,column=0,sticky="w")
         self.find_var=tk.StringVar()
         entry=ttk.Entry(top,textvariable=self.find_var); entry.grid(row=0,column=2,rowspan=2,sticky="ew",padx=12)
         entry.bind("<Return>",lambda e:self.apply_find())
-        ttk.Button(top,text="Find",command=self.apply_find).grid(row=0,column=3,rowspan=2,padx=(0,6))
-        ttk.Button(top,text="+ Filter",command=self.add_filter).grid(row=0,column=4,rowspan=2,padx=(0,6))
-        ttk.Button(top,text="Save Query",command=self.save_current_query).grid(row=0,column=5,rowspan=2)
+        self.top_buttons=[entry]
+        for label,cmd in (("Find",self.apply_find),("+ Filter",self.add_filter),("Save Query",self.save_current_query)):
+            b=ttk.Button(top,text=label,command=cmd); b.grid(row=0,column=3+len(self.top_buttons)-1,rowspan=2,padx=(0,6))
+            self.top_buttons.append(b)
 
         self.evidence_var=tk.StringVar()
         self.evidence_label=ttk.Label(main,textvariable=self.evidence_var,style="Warn.TLabel")
         self.evidence_label.grid(row=1,column=0,sticky="ew")
         self.content=ttk.Frame(main,padding=12); self.content.grid(row=2,column=0,sticky="nsew")
+        self._set_project_controls(False)
+
+    # -- project lifecycle -------------------------------------------------
+
+    def open_project(self, project_dir):
+        """Open a project through the trusted migration boundary, then land on the hub."""
+        project_dir=Path(project_dir).resolve()
+        self.release_connection()
+        import fo_db
+        try:
+            conn,_project=fo_db.open_project(str(project_dir),app_version=f"P2-{__import__('Phase2').VERSION}")
+            conn.close()
+        except Exception as exc:
+            messagebox.showerror("Open project",f"This project could not be opened.\n\n{exc}",parent=self)
+            self.show_start(); return
+        self.project_dir=project_dir
+        self.reopen_connection()
+        self.scope={"kind":"project"}; self.filters=[]; self.search_text=""; self.find_var.set("")
+        self.scope_var.set("Scope: All Sources")
+        self._set_project_controls(True)
+        self.show_hub()
+
+    def reopen_connection(self):
+        """(Re)establish the analytical connection. The runner closes it before a run."""
+        self.conn=connect(self.project_dir,write=True)
+        require_phase2_schema(self.conn)
+        stamp_core_version(self.conn)
+        self.store=SavedQueryStore(self.conn)
+        self.fts=FtsManager(self.conn,self.project_dir)
+        self.engine=QueryEngine(self.conn,saved_store=self.store,fts_manager=self.fts)
+        self.info=project_info(self.conn)
+        name=self.info.get("name",self.project_dir.name)
+        self.title(f"The File Organizer — {name}")
+        self.project_var.set(f"Project: {name}")
+        self.refresh_evidence_strip()
+
+    def release_connection(self):
+        """Close the write connection so a run can own the database.
+
+        fo_db documents a single-writer rule and migrates under BEGIN
+        IMMEDIATE; holding this connection across a run would sit against the
+        busy timeout at best and conflict with a migration at worst.
+        """
+        if self.conn is not None:
+            try: self.conn.close()
+            except Exception: pass
+        self.conn=None; self.store=None; self.fts=None; self.engine=None
+
+    def can_run(self):
+        return self.project_dir is not None and app_root_for(self.project_dir) is not None
+
+    def _set_project_controls(self, enabled):
+        state="normal" if enabled else "disabled"
+        for b in self.nav_buttons[:-1]: b.configure(state=state)
+        for w in self.top_buttons: w.configure(state=state)
+
+    def set_busy(self, busy):
+        """While a run owns the window nothing else in it may be clicked."""
+        if busy:
+            for b in self.nav_buttons: b.configure(state="disabled")
+            for w in self.top_buttons: w.configure(state="disabled")
+        else:
+            self.nav_buttons[-1].configure(state="normal")
+            self._set_project_controls(self.project_dir is not None)
+
+    # -- runs ---------------------------------------------------------------
+
+    def start_run(self, request):
+        """Hand the window to the runner. The connection is closed until it is done."""
+        if self.active_run is not None:
+            return
+        if request.kind!=PRESCAN or not request.source_roots:
+            if not self.can_run():
+                messagebox.showinfo("Cannot run","This project is not under the application's Projects folder.",parent=self); return
+        self.set_busy(True)
+        self.evidence_var.set(f"Running: {request.title}")
+        self.evidence_label.configure(style="Warn.TLabel")
+        run_blocking(self,request,lambda outcome:self._run_finished(request,outcome))
+
+    def _run_finished(self, request, outcome):
+        self.active_run=None
+        self.set_busy(False)
+        if outcome.project_dir is not None and (self.project_dir is None or Path(outcome.project_dir)!=self.project_dir):
+            # A project was just created: open it properly, migration boundary and all.
+            self.project_dir=None
+            if outcome.status in ("completed","completed_with_warnings","cancelled"):
+                self.open_project(outcome.project_dir)
+                self._announce(request,outcome)
+                if outcome.ok and request.after=="doors": hub_view.show_doors(self)
+                return
+            self.show_start(); self._announce(request,outcome); return
+        if self.project_dir is None:
+            self.show_start(); self._announce(request,outcome); return
+        self.reopen_connection()
+        self._announce(request,outcome)
+        if outcome.ok and request.after=="doors": hub_view.show_doors(self)
+        else: self.show_hub()
+
+    def _announce(self, request, outcome):
+        minutes=outcome.elapsed_sec/60.0
+        took=f"{outcome.elapsed_sec:.0f} s" if outcome.elapsed_sec<120 else f"{minutes:.0f} min"
+        estimate=(request.estimate or {}).get("text") if isinstance(request.estimate,dict) else None
+        tail=f"\n\nTook {took}."+(f" Estimate was {estimate}." if estimate else "")
+        if outcome.status=="failed":
+            messagebox.showerror(request.title,outcome.message+tail,parent=self)
+        elif outcome.cancelled:
+            messagebox.showinfo(request.title,outcome.message+tail,parent=self)
+        elif outcome.warnings:
+            messagebox.showwarning(request.title,outcome.message+"\n\n"+"\n".join(outcome.warnings[:6])+tail,parent=self)
+
+    # -- start screen ------------------------------------------------------
+
+    def show_start(self):
+        """Projects on disk, and New Project. Shown when no project is open."""
+        if self.active_run is not None: return
+        self.release_connection()
+        self.project_dir=None
+        self.title("The File Organizer"); self.project_var.set("No project open"); self.scope_var.set("")
+        self.evidence_label.configure(style="Good.TLabel"); self.evidence_var.set("Inventory. Organize. De-duplicate.")
+        self._set_project_controls(False)
+        self.clear(); self.header("Projects","Open a project, or start a new one with a Pre-Scan.")
+        body=ttk.Frame(self.content); body.pack(fill="both",expand=True)
+        body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=1)
+
+        existing=ttk.LabelFrame(body,text="Open a project",padding=12); existing.grid(row=0,column=0,sticky="nsew",padx=(0,8))
+        names=list_projects()
+        listbox=tk.Listbox(existing,height=14,exportselection=False)
+        for n in names: listbox.insert("end",n)
+        listbox.pack(fill="both",expand=True)
+        if not names: ttk.Label(existing,text="No projects yet.",foreground="#666").pack(anchor="w",pady=6)
+        def open_selected(_=None):
+            sel=listbox.curselection()
+            if not sel: messagebox.showinfo("Open","Select a project first.",parent=self); return
+            self.open_project(PROJECTS_DIR/listbox.get(sel[0]))
+        listbox.bind("<Double-Button-1>",open_selected)
+        row=ttk.Frame(existing); row.pack(fill="x",pady=(8,0))
+        ttk.Button(row,text="Open",command=open_selected,state="normal" if names else "disabled").pack(side="left")
+        ttk.Button(row,text="Re-run (not yet decided)",state="disabled").pack(side="left",padx=6)
+        ttk.Label(existing,text="Whether a re-run is a new project is undecided, so the button ships greyed out rather than clickable but wrong.",foreground="#666",wraplength=420,justify="left").pack(anchor="w",pady=(6,0))
+
+        new=ttk.LabelFrame(body,text="New project",padding=12); new.grid(row=0,column=1,sticky="nsew")
+        ttk.Label(new,text="Folder(s) to inventory:").pack(anchor="w")
+        path_var=tk.StringVar()
+        prow=ttk.Frame(new); prow.pack(fill="x",pady=4)
+        ttk.Entry(prow,textvariable=path_var).pack(side="left",fill="x",expand=True)
+        roots=tk.Listbox(new,height=4)
+        def browse():
+            folder=filedialog.askdirectory(title="Select a folder to inventory",parent=self)
+            if folder: path_var.set(os.path.normpath(folder))
+        def add():
+            folder=path_var.get().strip()
+            if not folder: return
+            ok,title,msg=validate_folder(folder)
+            if not ok: messagebox.showerror(title,msg,parent=self); return
+            if os.path.normcase(os.path.normpath(folder)) in [os.path.normcase(os.path.normpath(roots.get(i))) for i in range(roots.size())]:
+                messagebox.showwarning("Already added",folder,parent=self); return
+            roots.insert("end",os.path.normpath(folder)); path_var.set("")
+        def remove():
+            sel=roots.curselection()
+            if sel: roots.delete(sel[0])
+        ttk.Button(prow,text="Browse...",command=browse).pack(side="left",padx=(6,0))
+        ttk.Button(prow,text="Add",command=add).pack(side="left",padx=(6,0))
+        lrow=ttk.Frame(new); lrow.pack(fill="x")
+        roots.pack(in_=lrow,side="left",fill="x",expand=True)
+        ttk.Button(lrow,text="Remove",command=remove).pack(side="left",padx=(6,0),anchor="n")
+        ttk.Label(new,text="Add a second folder only if you want one project to cover both.",foreground="#666").pack(anchor="w",pady=(2,8))
+        ttk.Label(new,text="Project name (blank to auto-name):").pack(anchor="w")
+        name_var=tk.StringVar(); ttk.Entry(new,textvariable=name_var).pack(fill="x",pady=4)
+        def create():
+            chosen=[roots.get(i) for i in range(roots.size())]
+            typed=path_var.get().strip()
+            if typed and os.path.normcase(os.path.normpath(typed)) not in [os.path.normcase(x) for x in chosen]:
+                ok,title,msg=validate_folder(typed)
+                if not ok: messagebox.showerror(title,msg,parent=self); return
+                chosen.append(os.path.normpath(typed))
+            if not chosen: messagebox.showwarning("Missing folder","Browse to a folder to inventory first.",parent=self); return
+            name=name_var.get().strip() or default_project_name()
+            if (PROJECTS_DIR/name).exists():
+                messagebox.showerror("Name in use",f"A project called '{name}' already exists.",parent=self); return
+            request=RunRequest(PRESCAN,"Pre-Scan",source_roots=chosen,project_name=name,after="doors")
+            hub_view.confirm_and_run(self,request)
+        ttk.Button(new,text="Create project and run the Pre-Scan",command=create).pack(anchor="w",pady=(10,0))
+
+    # -- views ---------------------------------------------------------------
+
+    def show_hub(self):
+        if self.conn is None: self.show_start(); return
+        hub_view.show_hub(self)
 
     def clear(self):
         for w in self.content.winfo_children(): w.destroy()
@@ -104,7 +318,7 @@ class Phase2App(tk.Tk):
 
     def header(self,title,subtitle=None):
         ttk.Label(self.content,text=title,style="Title.TLabel").pack(anchor="w")
-        if subtitle: ttk.Label(self.content,text=subtitle,style="Sub.TLabel").pack(anchor="w",pady=(2,12))
+        if subtitle: ttk.Label(self.content,text=subtitle,style="Sub.TLabel",wraplength=980,justify="left").pack(anchor="w",pady=(2,12))
 
     def refresh_evidence_strip(self):
         h=evidence_health(self.conn)
@@ -116,34 +330,6 @@ class Phase2App(tk.Tk):
             if h["stale_hashes"]: parts.append(f"{h['stale_hashes']:,} stale hashes")
             if h["current_analyzer_failures"]: parts.append(f"{h['current_analyzer_failures']:,} analyzer failures")
             self.evidence_var.set(" · ".join(parts))
-
-    def show_overview(self):
-        self.clear(); self.header("Overview","A few high-value lenses on the current scope.")
-        body=ttk.Frame(self.content); body.pack(fill="both",expand=True)
-        try:
-            count=self.conn.execute("SELECT COUNT(*) FROM file_state WHERE project_id=1 AND state='present'").fetchone()[0]
-            bytes_=self.conn.execute("SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE project_id=1 AND state='present'").fetchone()[0]
-            ensure_duplicate_projection(self.conn)
-            dup=self.conn.execute("SELECT COUNT(*),COALESCE(SUM(reclaimable_bytes),0) FROM p2_current_duplicate_summary").fetchone()
-            health=evidence_health(self.conn)
-        except Exception as exc:
-            messagebox.showerror("Overview",str(exc)); return
-        cards=ttk.Frame(body); cards.pack(fill="x",pady=(0,12))
-        for title,big,small,cmd in [
-            ("Current File Locations",f"{count:,}",human_bytes(bytes_),self.show_files),
-            ("Exact Duplicate Groups",f"{dup[0]:,}",f"{human_bytes(dup[1])} potentially reclaimable",lambda:self.run_report("DUP-001")),
-            ("Evidence Health",health["coverage"].title(),f"{len(health['warnings'])} material warning(s)",self.show_evidence),
-        ]:
-            f=ttk.LabelFrame(cards,text=title,padding=12); f.pack(side="left",fill="both",expand=True,padx=(0,8))
-            ttk.Label(f,text=big,font=("Segoe UI",18,"bold")).pack(anchor="w"); ttk.Label(f,text=small,foreground="#666").pack(anchor="w")
-            ttk.Button(f,text="Open",command=cmd).pack(anchor="e",pady=(8,0))
-        rpt=ttk.Frame(body); rpt.pack(fill="both",expand=True)
-        ttk.Label(rpt,text="Quick reports",font=("Segoe UI",11,"bold")).pack(anchor="w",pady=(4,8))
-        for rid in ("STO-003","STO-002","STO-001","QUAL-001","QUAL-004"):
-            r=self.reports.get(rid)
-            row=ttk.Frame(rpt); row.pack(fill="x",pady=2)
-            ttk.Button(row,text=r["title"],command=lambda x=rid:self.run_report(x)).pack(side="left")
-            ttk.Label(row,text=r["purpose"],foreground="#666").pack(side="left",padx=8)
 
     def _scope_label(self):
         if self.scope["kind"]=="project": return "All Sources"
@@ -380,5 +566,76 @@ class Phase2App(tk.Tk):
         except Exception as exc:messagebox.showerror("History",str(exc))
 
     def close(self):
-        try:self.conn.close()
-        finally:self.destroy()
+        """The window's X. A run in progress is stopped cleanly first, never abandoned.
+
+        The worker is a daemon thread, so closing without waiting would kill
+        it mid-file and leave a half-written result -- exactly what the
+        between-files stop exists to prevent. So: ask, stop, wait for the
+        current file, then close.
+        """
+        if self.active_run is not None:
+            stop_event,thread=self.active_run
+            if thread.is_alive():
+                if not messagebox.askyesno("Run in progress",
+                        "A run is in progress.\n\nStop it and close? Everything already done is "
+                        "kept, and the run is recorded as stopped.\n\nChoose No to let it continue.",
+                        icon="warning",parent=self):
+                    return
+                stop_event.set()
+                self.clear(); self.header("Stopping...","Waiting for the current file to finish.")
+                self.update_idletasks()
+                self._wait_then_destroy(thread)
+                return
+        self.release_connection()
+        self.destroy()
+
+    def _wait_then_destroy(self, thread, waited=0.0):
+        if thread.is_alive() and waited<600:
+            self.after(250,lambda:self._wait_then_destroy(thread,waited+0.25)); return
+        self.release_connection()
+        self.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Start-screen helpers. Kept as functions so the headless checks can call them.
+# ---------------------------------------------------------------------------
+
+def list_projects(projects_dir=None):
+    """Project folders on disk, by name. A project is a folder with a project.json."""
+    root=Path(projects_dir) if projects_dir else PROJECTS_DIR
+    if not root.is_dir(): return []
+    return sorted((p.name for p in root.iterdir() if p.is_dir() and (p/"project.json").is_file()),key=str.lower)
+
+
+def default_project_name(projects_dir=None):
+    """Mirrors the old dashboard's Get-DefaultProjectName: New-Project, New-Project (2), ..."""
+    root=Path(projects_dir) if projects_dir else PROJECTS_DIR
+    candidate="New-Project"; counter=2
+    while (root/candidate).exists():
+        candidate=f"New-Project ({counter})"; counter+=1
+    return candidate
+
+
+def validate_folder(target_path):
+    """Check a folder BEFORE anything is created. Returns (ok, title, message).
+
+    "Not found" and "cannot be accessed" are told apart deliberately: they
+    call for different responses -- retype the path, versus check
+    permissions or plug the drive in -- and reporting a permissions problem
+    as a missing folder sends a person to look for something that is right
+    where they left it.
+    """
+    if not os.path.exists(target_path) or not os.path.isdir(target_path):
+        return (False,"Folder not found",
+                "The folder could not be found. Check the location and try again."
+                +("" if not os.path.exists(target_path) else "\n\n(That location exists, but it is a file, not a folder.)"))
+    try:
+        os.scandir(target_path).close()
+    except PermissionError:
+        return (False,"Folder cannot be accessed",
+                "The folder was found but could not be opened. You may not have permission to read it.")
+    except OSError as exc:
+        return (False,"Folder cannot be accessed",
+                f"The folder was found but could not be opened.\n\n{exc.strerror or exc}\n\n"
+                "If it is on a removable or network drive, check that the drive is still connected.")
+    return (True,None,None)
