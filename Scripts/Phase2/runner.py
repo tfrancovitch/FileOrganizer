@@ -25,13 +25,14 @@ Two halves, kept apart on purpose:
 """
 from __future__ import annotations
 
+import gc
 import json
 import queue
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 # Run kinds, spelled as the `run` table spells them, plus the one Phase 2
 # operation that builds a derived index rather than collecting evidence.
@@ -518,17 +519,93 @@ class RunWorker:
 # The Tk half
 # ---------------------------------------------------------------------------
 
+#: A run estimated to take longer than this asks "are you sure" before it
+#: starts. Shorter runs just go -- the user's second real-use note: an extra
+#: screen before an eight-minute scan is not a safety feature, it is a step.
+CAUTION_SECONDS = 15 * 60
+
+DECLINED = "declined"
+
+
+def estimate_request(app_root, project_dir, request):
+    """(seconds or None, text, detail lines) for a request. Reads a bounded sample.
+
+    Runs on a worker thread with its own read-only connection, never on the
+    window's connection. None seconds means no estimate is possible (the
+    Pre-Scan: the walk is what finds out how many files there are).
+    """
+    from .core import connect
+    from .hub import hash_estimate_now
+    import fo_estimates
+
+    if request.kind == PRESCAN or project_dir is None:
+        return None, None, ["The walk finds out how many files there are; typically 800-1,200 files "
+                            "per second. It reads no file contents."]
+    conn = connect(project_dir, write=False)
+    try:
+        settings = load_settings(project_dir)
+        if request.kind in (DUPLICATES, FINGERPRINT):
+            text_key = "DuplicateRunEstimateText" if request.kind == DUPLICATES else "FullRunEstimateText"
+            secs_key = "DuplicateRunEstimateSeconds" if request.kind == DUPLICATES else "FullRunEstimateSeconds"
+            text, seconds = settings.get(text_key), settings.get(secs_key)
+            if not text or seconds is None:
+                values = hash_estimate_now(conn, settings)
+                if values:
+                    text, seconds = values[text_key], values[secs_key]
+            if text is None:
+                return None, None, ["No estimate could be made for this run."]
+            return int(seconds or 0), text, [f"Estimated time: {text} (measured on this project's own files, "
+                                              "made deliberately pessimistic)."]
+        if request.kind == ANALYSIS:
+            breakdown = fo_estimates.estimate_analysis(conn, request.analyzer_keys)
+            lines = [l for l in fo_estimates.describe_analysis(breakdown).splitlines() if l.strip()]
+            return int(breakdown["total_seconds"]), breakdown["text"], lines
+        if request.kind == INDEX_TEXT:
+            breakdown = fo_estimates.estimate_indexing(conn)
+            lines = [l for l in fo_estimates.describe_indexing(breakdown).splitlines() if l.strip()]
+            return int(breakdown["seconds"]), breakdown["text"], lines
+    finally:
+        conn.close()
+    return None, None, []
+
+
+def needs_caution(seconds, threshold=None):
+    """Whether an estimate is long enough to ask before starting.
+
+    The threshold is read when called, not bound when defined, so
+    CAUTION_SECONDS can be changed at runtime (the checks do).
+    """
+    if threshold is None:
+        threshold = CAUTION_SECONDS
+    return seconds is not None and seconds > threshold
+
+
 def run_blocking(app, request, on_done):
     """Own the window for the duration of one run.
 
     `app` must provide: `content` (the frame to draw in), `clear()`,
-    `release_connection()` and `project_dir` (None while creating). The run
-    itself happens on a worker thread; every widget update happens here, on
-    the Tk thread, via the queue. `on_done(outcome)` is called on the Tk
-    thread once the run is over and the connection may be reopened.
+    `release_connection()`, `app_root`, `project_dir` (None while creating)
+    and `after()`. The run happens on a worker thread; every widget update
+    happens here, on the Tk thread, via the queue. `on_done(outcome)` is
+    called on the Tk thread once the run is over -- or declined -- and the
+    connection may be reopened.
+
+    The first thing the screen does is estimate. That used to be a screen of
+    its own with a Start button; the user's second real-use note was that a
+    screen between the click and the work is a step, not a safeguard. So the
+    estimate is measured here, shown in the log, and only a run longer than
+    CAUTION_SECONDS asks before it begins.
     """
     app.release_connection()
     app.clear()
+    # Dead screens are collected HERE, on the main thread, before any worker
+    # thread exists. Tk objects whose last reference sits in a reference cycle
+    # are freed by the cyclic collector on whichever thread happens to trigger
+    # it; freed on a worker thread, a Tk variable raises and a Tk instance
+    # aborts the process ("Tcl_AsyncDelete: async handler deleted by the wrong
+    # thread"). Reproduced; that is the class of crash the second real-use
+    # session hit. This screen also uses no Tk variables at all.
+    gc.collect()
     frame = app.content
 
     ttk.Label(frame, text=request.title, style="Title.TLabel").pack(anchor="w")
@@ -536,38 +613,82 @@ def run_blocking(app, request, on_done):
                           "Everything already done is kept if you stop.",
               style="Sub.TLabel").pack(anchor="w", pady=(2, 12))
 
-    stage_var = tk.StringVar(value="Starting...")
-    ttk.Label(frame, textvariable=stage_var, font=("Segoe UI", 10, "bold")).pack(anchor="w")
-    detail_var = tk.StringVar(value="")
-    ttk.Label(frame, textvariable=detail_var, foreground="#666").pack(anchor="w", pady=(0, 6))
+    stage_label = ttk.Label(frame, text="Estimating how long this will take...", font=("Segoe UI", 10, "bold"))
+    stage_label.pack(anchor="w")
+    detail_label = ttk.Label(frame, text="", foreground="#666")
+    detail_label.pack(anchor="w", pady=(0, 6))
 
-    bar = ttk.Progressbar(frame, orient="horizontal", length=560, mode="determinate")
+    bar = ttk.Progressbar(frame, orient="horizontal", length=560, mode="indeterminate")
     bar.pack(anchor="w", pady=(0, 10))
     bar.start(15)
     bar_mode = {"mode": "indeterminate"}
-    bar.configure(mode="indeterminate")
 
     log = tk.Text(frame, height=16, width=100, state="disabled", font=("Consolas", 9))
     log.pack(fill="both", expand=True, pady=(0, 10))
 
     stop_event = threading.Event()
-    cancel_var = tk.StringVar(value="Cancel")
     controls = ttk.Frame(frame)
     controls.pack(anchor="w")
 
     def request_stop():
         stop_event.set()
-        cancel_var.set("Stopping after the current file...")
-        cancel_button.configure(state="disabled")
+        try:
+            cancel_button.configure(text="Stopping after the current file...", state="disabled")
+        except tk.TclError:
+            pass
         post(("log", "Stop requested. The current file finishes; nothing after it starts."))
 
-    cancel_button = ttk.Button(controls, textvariable=cancel_var, command=request_stop)
+    cancel_button = ttk.Button(controls, text="Cancel", command=request_stop)
     cancel_button.pack(side="left")
 
     inbox = queue.Queue()
+    alive = {"yes": True}          # cleared when the screen is left, so late
+                                   # messages never touch destroyed widgets
 
     def post(item):
         inbox.put(item)
+
+    def write_log(text):
+        try:
+            log.configure(state="normal")
+            log.insert("end", text + "\n")
+            log.see("end")
+            log.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def set_bar(fraction):
+        try:
+            if fraction is None:
+                if bar_mode["mode"] != "indeterminate":
+                    bar.configure(mode="indeterminate")
+                    bar.start(15)
+                    bar_mode["mode"] = "indeterminate"
+            else:
+                if bar_mode["mode"] != "determinate":
+                    bar.stop()
+                    bar.configure(mode="determinate")
+                    bar_mode["mode"] = "determinate"
+                bar["value"] = max(0.0, min(100.0, float(fraction)))
+        except tk.TclError:
+            pass
+
+    def finish(outcome):
+        alive["yes"] = False
+        try:
+            bar.stop()
+        except tk.TclError:
+            pass
+        on_done(outcome)
+
+    def estimate_main():
+        try:
+            seconds, text, lines = estimate_request(
+                app_root_for(app.project_dir) if app.project_dir else app.app_root,
+                app.project_dir, request)
+        except Exception as exc:                                # noqa: BLE001
+            seconds, text, lines = None, None, [f"The estimate could not be computed ({exc}); starting anyway."]
+        post(("estimate", seconds, text, lines))
 
     def worker_main():
         worker = RunWorker(
@@ -579,54 +700,76 @@ def run_blocking(app, request, on_done):
         outcome = worker.run()
         post(("done", outcome))
 
-    def set_bar(fraction):
-        if fraction is None:
-            if bar_mode["mode"] != "indeterminate":
-                bar.configure(mode="indeterminate")
-                bar.start(15)
-                bar_mode["mode"] = "indeterminate"
-        else:
-            if bar_mode["mode"] != "determinate":
-                bar.stop()
-                bar.configure(mode="determinate")
-                bar_mode["mode"] = "determinate"
-            bar["value"] = max(0.0, min(100.0, float(fraction)))
+    def set_text(label, text):
+        try:
+            label.configure(text=text)
+        except tk.TclError:
+            pass
+
+    def begin_work():
+        set_text(stage_label, "Starting...")
+        gc.collect()                       # see the note at the top: main thread, before the thread
+        thread = threading.Thread(target=worker_main, daemon=True)
+        app.active_run = (stop_event, thread)
+        thread.start()
 
     def poll():
+        if not alive["yes"]:
+            return
         try:
             while True:
                 item = inbox.get_nowait()
                 kind = item[0]
                 if kind == "log":
-                    log.configure(state="normal")
-                    log.insert("end", item[1] + "\n")
-                    log.see("end")
-                    log.configure(state="disabled")
+                    write_log(item[1])
+                elif kind == "estimate":
+                    seconds, text, lines = item[1], item[2], item[3]
+                    for line in lines:
+                        write_log(line)
+                    request.estimate = {"text": text, "seconds": seconds} if text else None
+                    if stop_event.is_set():
+                        finish(RunOutcome(DECLINED, "Not started.", app.project_dir))
+                        return
+                    if needs_caution(seconds):
+                        go = messagebox.askyesno(
+                            request.title,
+                            f"{request.title} is estimated to take about {text}.\n\n"
+                            "The window is busy for that long, though you can stop it at any "
+                            "time and keep what was done.\n\nBegin now?",
+                            parent=app)
+                        if not go:
+                            finish(RunOutcome(DECLINED, "Not started.", app.project_dir))
+                            return
+                    begin_work()
                 elif kind == "stage":
-                    stage_var.set(item[1])
-                    detail_var.set("")
+                    set_text(stage_label, item[1])
+                    set_text(detail_label, "")
                     set_bar(item[2])
                 elif kind == "progress":
                     label, done, total = item[1], item[2], item[3]
                     if total:
-                        detail_var.set(f"{_progress_label(label)}: {done:,} of {total:,}")
+                        set_text(detail_label, f"{_progress_label(label)}: {done:,} of {total:,}")
                         set_bar(done * 100.0 / total)
                     else:
-                        detail_var.set(f"{_progress_label(label)}: {done:,} files so far")
+                        set_text(detail_label, f"{_progress_label(label)}: {done:,} files so far")
                         set_bar(None)
                 elif kind == "done":
-                    bar.stop()
-                    on_done(item[1])
+                    finish(item[1])
                     return
         except queue.Empty:
             pass
+        except tk.TclError:
+            # The screen is gone (the window is closing); stop touching it.
+            alive["yes"] = False
+            return
         app.after(150, poll)
 
-    thread = threading.Thread(target=worker_main, daemon=True)
-    # Registered on the app so the window's close button can stop the run
-    # and wait for the current file rather than killing the daemon thread.
-    app.active_run = (stop_event, thread)
-    thread.start()
+    # Registered before anything starts so the window's close button can
+    # stop the run and wait for the current file rather than killing the
+    # thread. The estimate thread is short and reads only; it is not waited for.
+    app.active_run = (stop_event, threading.Thread(target=lambda: None))
+    gc.collect()
+    threading.Thread(target=estimate_main, daemon=True).start()
     app.after(150, poll)
 
 

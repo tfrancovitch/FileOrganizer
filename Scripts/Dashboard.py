@@ -1908,7 +1908,13 @@ if __name__ == "__main__":
     app.mainloop()
     if app.hand_off:
         # One process, one window at a time: the checks ran in this root,
-        # and the Dashboard proper opens in a fresh one.
+        # and the Dashboard proper opens in a fresh one. `app` stays
+        # referenced on purpose, and the collector runs here on the main
+        # thread: a Tk instance freed later by a worker thread's garbage
+        # collection aborts the process (Tcl_AsyncDelete).
+        import gc
+        gc.collect()
         sys.path.insert(0, str(SCRIPTS_DIR / "Database"))
         from Phase2.gui import Phase2App
-        Phase2App(None).mainloop()
+        dashboard = Phase2App(None)
+        dashboard.mainloop()

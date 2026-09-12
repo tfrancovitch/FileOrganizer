@@ -118,6 +118,7 @@ class Phase2App(tk.Tk):
         self.active_run=None
 
         self.title("The File Organizer")
+        enable_fault_log(self.app_root)
         width=min(1280,max(1000,self.winfo_screenwidth()-120))
         height=min(820,max(650,self.winfo_screenheight()-160))
         self.geometry(f"{width}x{height}")
@@ -133,6 +134,28 @@ class Phase2App(tk.Tk):
             self.open_project(project_dir)
         else:
             self.show_welcome()
+
+    def report_callback_exception(self, exc_type, exc_value, exc_traceback):
+        r"""A Tk callback raised. Log it, tell the person, keep running.
+
+        Tkinter's default handler prints the traceback to stderr, and under
+        pythonw there is no stderr, so a callback error left no trace anywhere
+        -- which is what the first real corpus session's crash looked like from
+        here: nothing. The window survives a callback exception either way
+        (verified under pythonw); what this adds is the evidence, in
+        Logs\app.log, and a dialog so the person knows something happened.
+        """
+        import traceback
+        detail="".join(traceback.format_exception(exc_type,exc_value,exc_traceback))
+        try:
+            import fo_log
+            fo_log.get_app_log(str(self.app_root)).log("CRITICAL","Unhandled exception in a window callback:\n"+detail)
+        except Exception: pass
+        try:
+            messagebox.showerror("Unexpected error",
+                f"Something went wrong on this screen:\n\n{exc_value}\n\nThe window is still open and the project "
+                "is unaffected. The details are in Logs\\app.log.",parent=self)
+        except Exception: pass
 
     def _style(self):
         style=ttk.Style(self)
@@ -275,6 +298,7 @@ class Phase2App(tk.Tk):
             if not self.can_run():
                 messagebox.showinfo("Cannot run","This project is not under the application's Projects folder.",parent=self); return
         self.set_busy(True)
+        self._last_request=request
         self.evidence_var.set(f"Running: {request.title}")
         self.evidence_label.configure(style="Warn.TLabel")
         run_blocking(self,request,lambda outcome:self._run_finished(request,outcome))
@@ -282,6 +306,12 @@ class Phase2App(tk.Tk):
     def _run_finished(self, request, outcome):
         self.active_run=None
         self.set_busy(False)
+        if outcome.status=="declined":
+            # The caution was answered No, or Cancel was pressed while the
+            # estimate was being measured: nothing ran, nothing to announce.
+            if self.project_dir is not None: self.reopen_connection(); self.show_hub()
+            else: self.show_new_panel()
+            return
         if outcome.project_dir is not None and (self.project_dir is None or Path(outcome.project_dir)!=self.project_dir):
             # A project was just created: open it properly, migration boundary and all.
             self.project_dir=None
@@ -389,8 +419,9 @@ class Phase2App(tk.Tk):
             name=name_var.get().strip() or default_project_name()
             if (PROJECTS_DIR/name).exists():
                 messagebox.showerror("Name in use",f"A project called '{name}' already exists.",parent=self); return
-            request=RunRequest(PRESCAN,"Pre-Scan",source_roots=chosen,project_name=name,after="doors")
-            hub_view.confirm_and_run(self,request)
+            # Straight into the Pre-Scan -- no screen in between (the user's
+            # second real-use note). The walk has no estimate to show anyway.
+            self.start_run(RunRequest(PRESCAN,"Pre-Scan",source_roots=chosen,project_name=name,after="doors"))
         ttk.Button(new,text="Create project and run the Pre-Scan",command=create).pack(anchor="w",pady=(10,0))
 
     def show_options(self):
@@ -410,6 +441,12 @@ class Phase2App(tk.Tk):
     def clear(self):
         for w in self.content.winfo_children(): w.destroy()
         self.content.columnconfigure(0,weight=0); self.content.rowconfigure(0,weight=0)
+        # The screen just torn down is collected NOW, on the main thread. Its
+        # widgets, variables and closures form reference cycles, and a cycle
+        # is freed by whichever thread triggers the collector; a Tk object
+        # freed on a worker thread raises at best and aborts the process at
+        # worst (Tcl_AsyncDelete). See runner.run_blocking for the reproduction.
+        import gc; gc.collect()
 
     def header(self,title,subtitle=None,back=False):
         """Page title, optional subtitle, and -- on project pages -- a way back to the summary."""
@@ -861,6 +898,27 @@ class Phase2App(tk.Tk):
 # ---------------------------------------------------------------------------
 # Helpers kept as functions so the headless checks can call them.
 # ---------------------------------------------------------------------------
+
+def enable_fault_log(app_root):
+    r"""Arm faulthandler on Logs\faulthandler.log.
+
+    A crash inside a native library -- an image decoder on a malformed file,
+    say -- takes the whole process with it and, under pythonw, leaves no
+    trace at all. The first real corpus session ended in exactly that kind
+    of silence. With this armed, a native fault writes every thread's Python
+    stack to the file before the process dies, so the next one is not a
+    mystery.
+    """
+    import faulthandler
+    try:
+        logs=Path(app_root)/"Logs"; logs.mkdir(parents=True,exist_ok=True)
+        handle=open(logs/"faulthandler.log","a",encoding="utf-8")
+        handle.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} pid {os.getpid()} armed ===\n"); handle.flush()
+        faulthandler.enable(file=handle,all_threads=True)
+        return handle
+    except Exception:
+        return None
+
 
 def scrollable_frame(parent):
     """A frame that scrolls vertically: the reports list has 31 rows, and a
