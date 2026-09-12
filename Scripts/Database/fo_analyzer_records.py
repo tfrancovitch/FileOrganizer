@@ -213,18 +213,27 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
 
     # -- child tables --------------------------------------------------
 
-    def _write_archive_members(self, analyzer_run_id, outcome, all_paths):
+    def _write_archive_members(self, analyzer_run_id, outcome, all_paths,
+                               results=None):
         r"""Archive entries -> archive_member, from the results.
 
         Nothing here creates a
         file_path or a file_observation: an entry inside a .zip is not
         a location the inventory observed, and pretending otherwise
         would inflate every inventory count derived from those tables.
+
+        `results` is one batch from the streaming sink (B6, E.F007); None
+        means the retained `outcome.results`, the older whole-outcome path.
+        The streaming path passed `results=` from the day it was written and
+        this signature never accepted it, so every Dashboard run with an
+        archive in it raised here, was caught as a warning, and persisted
+        no member rows at all. Found on the first real corpus with .zip
+        files -- no test fixture had one.
         """
         result_ids = self._result_ids_by_path(analyzer_run_id, set(all_paths))
         rows = []
         orphaned = 0
-        for result in outcome.results:
+        for result in (outcome.results if results is None else results):
             entries = result.extra or []
             if not entries:
                 continue
@@ -259,8 +268,14 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
                        "analyzer result and were not persisted." % orphaned)
         return len(rows), bool(orphaned)
 
-    def _write_archive_summaries(self, analyzer_run_id, outcome, all_paths):
-        """Persist complete/capped/summary-only semantics calculated by ArchiveAnalysis."""
+    def _write_archive_summaries(self, analyzer_run_id, outcome, all_paths,
+                                 results=None):
+        """Persist complete/capped/summary-only semantics calculated by ArchiveAnalysis.
+
+        `results` is one streaming batch; None means the retained outcome.
+        The streaming drain never called this at all before 2026-09-12, so
+        no Dashboard run had ever written an archive_summary row.
+        """
         result_ids = self._result_ids_by_path(analyzer_run_id, set(all_paths))
         try:
             cap_row = self.conn.execute(
@@ -269,7 +284,7 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
         except Exception:
             cap = None
         rows = []
-        for result in outcome.results:
+        for result in (outcome.results if results is None else results):
             result_id = result_ids.get(result.path)
             if result_id is None:
                 continue
@@ -473,6 +488,9 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
             members, warned = self._write_archive_members(
                 state["analyzer_run_id"], outcome, state["all_paths"],
                 results=batch)
+            self._write_archive_summaries(
+                state["analyzer_run_id"], outcome, state["all_paths"],
+                results=batch)
             state["children"] += members
             if warned:
                 state["orphaned"] += 1
@@ -526,8 +544,20 @@ class AnalyzerRecordIngestor(fo_analyzers.AnalyzerPersistenceBase):
                 # One analyzer's persistence problem must not stop the
                 # others being recorded -- the same rule as
                 # ingest_outcomes(), for the same reason.
-                self._warn("Could not persist %s: %s: %s"
-                           % (outcome.key, type(exc).__name__, exc))
+                reason = "%s: %s" % (type(exc).__name__, exc)
+                self._warn("Could not persist %s: %s" % (outcome.key, reason))
+                # The analyzer_run row must not stay 'running' forever: say
+                # it failed, and why, so the record does not read as a run
+                # still in progress.
+                try:
+                    self.conn.execute(
+                        "UPDATE analyzer_run SET ingest_status='failed', completed_utc=?, "
+                        "notes=? WHERE analyzer_run_id=? AND ingest_status='running'",
+                        (utc_now(), ("Persistence failed: " + reason)[:2000],
+                         state["analyzer_run_id"]))
+                    self.conn.commit()
+                except Exception:                               # noqa: BLE001
+                    pass
                 summaries.append({"analyzer": outcome.key,
                                   "analysis_status": outcome.status,
                                   "ingest_status": "failed", "counts": {}})
