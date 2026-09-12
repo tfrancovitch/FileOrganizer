@@ -28,8 +28,9 @@ What it proves:
      walks every page. And the project summary adds up.
   8. If a display is available: the window constructs, and every view --
      welcome, Open Project, New Project, the project summary, doors, analyze,
-     Files with sorting and paging, Reports, Options, the pre-run estimate
-     screen -- renders without raising. No mainloop, no clicks.
+     Files with sorting and paging, Reports, Options -- renders without
+     raising; and the run screen estimates first, asks only when the estimate
+     is long, and starts at once otherwise. No mainloop, no clicks.
 
 Run:  python Scripts/p2_dashboard_check.py
 """
@@ -522,6 +523,21 @@ def test_worker(tmp: Path):
     bucket = {b["key"]: b for b in summary["buckets"]}
     check(f"summary text bucket counts exactly ({n_text}) and shows them analysed",
           bucket["text"]["files"] == n_text and bucket["text"]["analysed"] == n_text, str(bucket["text"]))
+    check("summary buckets carry bytes that add up with 'other' to the total",
+          sum(b["bytes"] for b in summary["buckets"]) + summary["other_bytes"] == summary["bytes"] == truth["totals"]["logical_bytes"])
+
+    # -- the runner's estimating step, headless -----------------------------
+    from Phase2.runner import estimate_request, needs_caution, RunRequest as RR, DUPLICATES as DUP, ANALYSIS as ANA, PRESCAN as PRE, INDEX_TEXT as IDX
+    seconds, text, lines = estimate_request(app_root, project_dir, RR(DUP, "Find My Duplicates"))
+    check("hash estimate comes from the Pre-Scan's calibration: seconds and text", isinstance(seconds, int) and bool(text), f"{seconds} {text}")
+    seconds, text, lines = estimate_request(app_root, project_dir, RR(ANA, "Analyze", analyzer_keys=["text", "pdf"]))
+    check("analysis estimate is measured and described", isinstance(seconds, int) and text and any("Text / Markdown" in l for l in lines), f"{seconds} {text}")
+    seconds, text, lines = estimate_request(app_root, project_dir, RR(IDX, "Index text"))
+    check("index estimate is measured from extracted texts", isinstance(seconds, int) and text, f"{seconds} {text}")
+    seconds, text, lines = estimate_request(app_root, project_dir, RR(PRE, "Pre-Scan"))
+    check("the Pre-Scan has no estimate, and says why", seconds is None and lines and "walk" in lines[0].lower())
+    check("caution threshold: 15 minutes and over asks, under does not",
+          needs_caution(16 * 60) and not needs_caution(14 * 60) and not needs_caution(None))
 
     return project_dir
 
@@ -545,6 +561,11 @@ def test_gui_helpers(tmp: Path):
     somefile.write_text("x")
     ok, title, msg = validate_folder(str(somefile))
     check("validate_folder refuses a file, saying so", not ok and "file, not a folder" in msg, msg)
+
+
+def request_estimate_seen(app):
+    """Whether the last run's request carried the estimate the screen measured."""
+    return bool(getattr(app, "_last_request", None) and getattr(app._last_request, "estimate", None))
 
 
 def _texts(widget):
@@ -578,6 +599,8 @@ def test_gui_views(project_dir: Path):
         import tkinter as tk
         root = tk.Tk()
         root.destroy()
+        del root
+        import gc; gc.collect()
     except Exception as exc:                                    # noqa: BLE001
         print(f"  SKIP  no display available ({exc})")
         return
@@ -620,9 +643,18 @@ def test_gui_views(project_dir: Path):
         app.open_project(project_dir); app.update()
 
         hub_view.show_doors(app); app.update()
-        check("doors screen renders", "What next?" in _texts(app.content))
-        hub_view.show_analyze(app); app.update()
-        check("analyze screen renders", any("Choose what to analyze" in t for t in _texts(app.content)))
+        texts = _texts(app.content)
+        check("doors screen is three columns: name, estimate, Begin Scan / Go to the project",
+              "What next?" in texts and texts.count("Begin Scan") == 2 and texts.count("Go to the project") == 2
+              and sum(1 for t in texts if t.startswith("Estimated time:")) == 2, str(texts))
+        app.show_hub(); app.update()
+        texts = _texts(app.content)
+        check("summary: fingerprints read as files (bytes), duplicates as files, groups, reclaimable",
+              any(t.endswith(")") and "files" in t and "of" not in t for t in texts)
+              and any("files, " in t and " groups" in t and "reclaimable" in t for t in texts), str(texts))
+        check("summary: analysed buckets say ANALYZED in the first column; buckets by type carry counts and bytes",
+              "ANALYZED" in texts and any("files   (" in t for t in texts), str(texts))
+        check("summary: no 'Choose what to analyze' screen any more", not any("Choose what to analyze" in t for t in texts))
 
         # -- Files: paging, sorting, columns ----------------------------------
         app.show_files(); app.update()
@@ -664,30 +696,13 @@ def test_gui_views(project_dir: Path):
         app.show_hub(); app.update()
         check("Evidence, History and the summary render", any(t.startswith("Project DashCheck") for t in _texts(app.content)))
 
-        hub_view.confirm_and_run(app, RunRequest(DUPLICATES, "Find My Duplicates"))
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            app.update()
-            start = _button(app.content, "Start")
-            if start is not None and str(start.cget("state")) == "normal":
-                break
-            time.sleep(0.05)
-        check("pre-run estimate screen enables Start once measured", start is not None and str(start.cget("state")) == "normal")
-        hub_view.confirm_and_run(app, RunRequest(ANALYSIS, "Analyze", analyzer_keys=["text", "pdf"]))
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            app.update()
-            start = _button(app.content, "Start")
-            if start is not None and str(start.cget("state")) == "normal":
-                break
-            time.sleep(0.05)
-        check("analysis estimate screen enables Start once measured", start is not None and str(start.cget("state")) == "normal")
     finally:
         for name, fn in saved_boxes.items():
             setattr(gui.messagebox, name, fn)
         try:
             app.release_connection()
             app.destroy()
+            import gc; gc.collect()            # free the dead window on the main thread
         except Exception:                                       # noqa: BLE001
             pass
 
@@ -701,6 +716,8 @@ def test_gui_runner(tmp: Path):
         import tkinter as tk
         root = tk.Tk()
         root.destroy()
+        del root
+        import gc; gc.collect()
     except Exception as exc:                                    # noqa: BLE001
         print(f"  SKIP  no display available ({exc})")
         return
@@ -749,19 +766,54 @@ def test_gui_runner(tmp: Path):
         check("navigation is enabled again after the run", str(app.nav_buttons[0].cget("state")) == "normal")
         check("the analytical connection was reopened", app.conn is not None and app.engine is not None)
 
-        # Find My Duplicates, cancelled through the Cancel button's path.
+        # A long estimate asks first; No means nothing runs.
+        import Phase2.runner as runner
+        runs_before = app.conn.execute("SELECT COUNT(*) FROM run").fetchone()[0]
+        saved_caution = runner.CAUTION_SECONDS
+        runner.CAUTION_SECONDS = -1                     # everything counts as long
+        gui.messagebox.askyesno = lambda title, message, **kw: (dialogs.append(("askyesno", title, message)) or False)
+        try:
+            app.start_run(RunRequest(DUPLICATES, "Find My Duplicates"))
+            check("connection is released while a run owns the window", app.conn is None)
+            finished = pump(lambda: app.active_run is None, 60)
+        finally:
+            runner.CAUTION_SECONDS = saved_caution
+        check("a long estimate asks before beginning, and No declines the run",
+              finished and any(d[0] == "askyesno" and "estimated to take" in d[2] for d in dialogs), str(dialogs[-1:]))
+        check("nothing ran and the window is back on the summary",
+              app.conn is not None and app.conn.execute("SELECT COUNT(*) FROM run").fetchone()[0] == runs_before
+              and any(t.startswith("Project GuiCheck") for t in _texts(app.content)))
+
+        # Cancel pressed while the estimate is still being measured: declined, nothing ran.
         app.start_run(RunRequest(DUPLICATES, "Find My Duplicates"))
-        check("connection is released while a run owns the window", app.conn is None)
+        stop_event, _thread = app.active_run
+        stop_event.set()
+        finished = pump(lambda: app.active_run is None, 60)
+        check("Cancel during the estimate declines the run without starting it",
+              finished and app.conn.execute("SELECT COUNT(*) FROM run").fetchone()[0] == runs_before)
+
+        # A short estimate just goes; then Cancel through the Cancel button's path.
+        gui.messagebox.askyesno = lambda title, message, **kw: (dialogs.append(("askyesno", title, message)) or True)
+        app.start_run(RunRequest(DUPLICATES, "Find My Duplicates"))
+        started = pump(lambda: app.active_run is not None and app.active_run[1].is_alive(), 60)
+        check("a short estimate starts the run without asking", started)
         stop_event, thread = app.active_run
         stop_event.set()                     # what the Cancel button does
         finished = pump(lambda: app.active_run is None, 120)
         check("a cancelled window run finishes and hands the window back", finished and app.conn is not None)
         status = app.conn.execute("SELECT status FROM run ORDER BY run_id DESC LIMIT 1").fetchone()[0]
         check("the cancelled run is recorded as cancelled", status == "cancelled", status)
+        check("the run screen logged the estimate before starting",
+              request_estimate_seen(app), "no estimate text reached the request")
         check("the window returned to the project summary",
               any(t.startswith("Project GuiCheck") for t in _texts(app.content)))
         check("the cancellation was announced to the person, as information not error",
               any(d[0] == "showinfo" and "Stopped" in d[2] for d in dialogs), str(dialogs))
+        # The window survives a callback exception, and records it.
+        dialogs.clear()
+        app.report_callback_exception(ValueError, ValueError("probe"), None)
+        check("a callback exception is reported as a dialog, not a crash",
+              any(d[0] == "showerror" and "probe" in d[2] for d in dialogs), str(dialogs))
     finally:
         gui.APP_ROOT, gui.PROJECTS_DIR = saved
         for name, fn in saved_boxes.items():
@@ -769,6 +821,7 @@ def test_gui_runner(tmp: Path):
         try:
             app.release_connection()
             app.destroy()
+            import gc; gc.collect()            # free the dead window on the main thread
         except Exception:                                       # noqa: BLE001
             pass
 
