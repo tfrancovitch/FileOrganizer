@@ -722,7 +722,7 @@ def test_gui_runner(tmp: Path):
         print(f"  SKIP  no display available ({exc})")
         return
     import Phase2.gui as gui
-    from Phase2.runner import RunRequest, PRESCAN, DUPLICATES
+    from Phase2.runner import RunRequest, PRESCAN, DUPLICATES, ANALYSIS
     import p2_build_acceptance_corpus as corpus_builder
 
     app_root = tmp / "GuiRoot"
@@ -730,6 +730,14 @@ def test_gui_runner(tmp: Path):
     corpus_dir = tmp / "GuiCorpus"
     corpus_dir.mkdir()
     corpus_builder.Corpus(corpus_dir).build()
+    # Two archives, so the streaming persistence path for archive members is
+    # exercised through the window. No fixture had one, and every Dashboard
+    # run with a .zip in it had been persisting zero member rows since B6.
+    import zipfile
+    for n, names in ((1, ("a.txt", "b/c.txt", "d.bin")), (2, ("x.md", "y/z.csv"))):
+        with zipfile.ZipFile(corpus_dir / f"bundle{n}.zip", "w") as zf:
+            for name in names:
+                zf.writestr(name, "payload " * 20)
 
     # Point the window at the scratch root, as an installed copy would be.
     saved = (gui.APP_ROOT, gui.PROJECTS_DIR)
@@ -765,6 +773,16 @@ def test_gui_runner(tmp: Path):
               and "What next?" in _texts(app.content))
         check("navigation is enabled again after the run", str(app.nav_buttons[0].cget("state")) == "normal")
         check("the analytical connection was reopened", app.conn is not None and app.engine is not None)
+
+        # Archives through the window: members and summaries must land.
+        app.start_run(RunRequest(ANALYSIS, "Analyze: Archives", analyzer_keys=["archive"]))
+        finished = pump(lambda: app.active_run is None, 180)
+        members = app.conn.execute("SELECT COUNT(*) FROM archive_member").fetchone()[0]
+        summaries = app.conn.execute("SELECT COUNT(*) FROM archive_summary").fetchone()[0]
+        ingest = app.conn.execute("SELECT ingest_status FROM analyzer_run rr JOIN analyzer a ON a.analyzer_id=rr.analyzer_id WHERE a.analyzer_key='archive' ORDER BY analyzer_run_id DESC LIMIT 1").fetchone()[0]
+        check("archive analysis through the window persists every member and a summary per archive",
+              finished and members == 5 and summaries == 2 and ingest == "completed",
+              f"members={members} summaries={summaries} ingest={ingest}")
 
         # A long estimate asks first; No means nothing runs.
         import Phase2.runner as runner
