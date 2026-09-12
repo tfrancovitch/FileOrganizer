@@ -279,7 +279,7 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? Email (`.msg`, `.pst`, `.eml`) is the largest gap for legal use.
 
-**Unpushed:** the `phase2` branch is **28 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **30 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.
