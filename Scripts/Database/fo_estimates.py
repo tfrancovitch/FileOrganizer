@@ -79,6 +79,7 @@ SAFETY_FACTOR_LOCAL = 0.6
 FALLBACK_BYTES_PER_SEC = 5 * 1024 * 1024
 
 SETTINGS_FIELDS = ("DuplicateRunEstimateText", "FullRunEstimateText",
+                   "DuplicateRunEstimateSeconds", "FullRunEstimateSeconds",
                    "CalibrationThroughputBytesPerSec",
                    "CalibrationSafetyFactor", "CalibrationSampleFileCount")
 
@@ -322,6 +323,10 @@ def calibrate(conn, inventory_scan_ids, drive_type=None, analyzer_count=0):
     return {
         "DuplicateRunEstimateText": format_duration(duplicate_seconds),
         "FullRunEstimateText": format_duration(full_seconds),
+        # The seconds behind the texts, so a caller can decide whether a run
+        # is long enough to warrant a caution before it starts.
+        "DuplicateRunEstimateSeconds": int(round(duplicate_seconds)),
+        "FullRunEstimateSeconds": int(round(full_seconds)),
         "CalibrationThroughputBytesPerSec": int(measured),
         "CalibrationSafetyFactor": safety,
         "CalibrationSampleFileCount": files_used,

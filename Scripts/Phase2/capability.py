@@ -101,11 +101,19 @@ def _analyzer_extension_map():
 
 
 def _counts_by_extension(conn):
+    """extension -> (file count, logical bytes) over CURRENT present files."""
     rows = conn.execute(
-        "SELECT LOWER(COALESCE(fp.extension_key,'')), COUNT(*) "
+        "SELECT LOWER(COALESCE(fp.extension_key,'')), COUNT(*), COALESCE(SUM(fs.size_bytes),0) "
         "  FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
         " WHERE fs.state='present' GROUP BY 1").fetchall()
-    return {r[0]: r[1] for r in rows}
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def _sum_over(ext_counts, exts):
+    """(files, bytes) of the extensions in `exts`."""
+    files = sum(c for e, (c, _b) in ext_counts.items() if e in exts)
+    size = sum(b for e, (_c, b) in ext_counts.items() if e in exts)
+    return files, size
 
 
 def _analyzed_counts(conn):
@@ -289,7 +297,7 @@ def project_capabilities(conn):
     for key, (label, exts) in sorted(_analyzer_extension_map().items()):
         if key == "content_extraction":
             continue                      # reported separately, below
-        applicable = sum(n for e, n in ext_counts.items() if e in exts)
+        applicable, _applicable_bytes = _sum_over(ext_counts, exts)
         if applicable == 0:
             continue                      # a bucket with no files is not a gap
         done = analyzed.get(key, 0)
@@ -313,7 +321,7 @@ def project_capabilities(conn):
 
     # --- text extraction and search ---------------------------------------
     extract = _analyzer_extension_map().get("content_extraction")
-    extractable = sum(n for e, n in ext_counts.items() if e in extract[1]) if extract else 0
+    extractable = _sum_over(ext_counts, extract[1])[0] if extract else 0
     extracted = _scalar(
         conn, "SELECT COUNT(*) FROM extracted_content WHERE status='extracted'")
     unsupported = present - extractable
@@ -413,6 +421,7 @@ def project_summary(conn):
     ext_map = _analyzer_extension_map()
     buckets = []
     claimed = 0
+    claimed_bytes = 0
     for key in BUCKET_LABELS:
         entry = ext_map.get(key)
         if entry is None:
@@ -422,14 +431,18 @@ def project_summary(conn):
         # RAW bucket even though both adapters could open them.
         if key == "image" and "raw_image" in ext_map:
             exts = exts - ext_map["raw_image"][1]
-        files = sum(n for e, n in ext_counts.items() if e in exts)
+        files, size = _sum_over(ext_counts, exts)
         claimed += files
+        claimed_bytes += size
         cap = caps.get(f"analyze.{key}")
-        buckets.append({"key": key, "label": BUCKET_LABELS[key], "files": files,
+        buckets.append({"key": key, "label": BUCKET_LABELS[key], "files": files, "bytes": size,
                         "analysed": analyzed.get(key, 0) if files else 0,
                         "action": cap.action if cap else None,
                         "state": cap.state if cap else None})
     other = max(0, present - claimed)
+    other_bytes = max(0, total_bytes - claimed_bytes)
+    identified_bytes = _scalar(
+        conn, "SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present' AND content_id IS NOT NULL")
 
     identity = caps.get("identity")
     duplicates = caps.get("duplicates")
@@ -450,7 +463,8 @@ def project_summary(conn):
         "inventory": caps.get("inventory"),
         "identity": identity, "duplicates": duplicates,
         "groups": groups, "members": members, "reclaimable_bytes": reclaimable,
-        "buckets": buckets, "other": other,
+        "buckets": buckets, "other": other, "other_bytes": other_bytes,
+        "identified_bytes": identified_bytes,
         "extraction": extraction, "search": search,
         "text_state": text_state,
         "extractable": ex.get("extractable", 0), "extracted": ex.get("extracted", 0),
