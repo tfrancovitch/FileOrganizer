@@ -274,7 +274,17 @@ class Dashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("The File Organizer")
-        self.geometry("620x720")
+        if CLASSIC_MODE:
+            self.geometry("620x720")
+        else:
+            # The startup checks are all this window shows before handing
+            # off, so it is small and centred on the screen -- the user's
+            # note: the old 620x720 landed wherever Windows put it and was
+            # far too large for a progress bar and two lines.
+            width, height = 460, 200
+            x = (self.winfo_screenwidth() - width) // 2
+            y = (self.winfo_screenheight() - height) // 2
+            self.geometry(f"{width}x{height}+{x}+{y}")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -450,7 +460,7 @@ class Dashboard(tk.Tk):
         self.clear_container()
         frame = self.container
 
-        ttk.Label(frame, text="The File Organizer", font=("Segoe UI", 16, "bold")).pack(pady=(60, 10))
+        ttk.Label(frame, text="The File Organizer", font=("Segoe UI", 16, "bold")).pack(pady=((60, 10) if CLASSIC_MODE else (28, 6)))
         self.startup_status_var = tk.StringVar(value="Checking installation...")
         ttk.Label(frame, textvariable=self.startup_status_var, font=("Segoe UI", 10)).pack(pady=(0, 20))
 

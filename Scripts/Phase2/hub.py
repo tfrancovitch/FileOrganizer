@@ -47,63 +47,137 @@ STATE_MARK = {cap.AVAILABLE: ("Yes", "#1f6244"),
 # ---------------------------------------------------------------------------
 
 def show_hub(app):
+    """The project summary: the numbers, then the buckets, then the text state.
+
+    The user's note on the first version: a page headed "What this project
+    can answer" reads as if something were answering questions, and it is not.
+    So this is a summary -- Project <name>, totals, files by type, text -- with
+    a small button only where a run would change a number.
+    """
     app.clear()
-    app.header("What this project can answer",
-               "Every line is a fact already in the project database. "
-               "A button means a run would change the answer.")
+    try:
+        summary = cap.project_summary(app.conn)
+    except Exception as exc:                                    # noqa: BLE001
+        messagebox.showerror("Project", str(exc), parent=app)
+        return
+    name = app.info.get("name", app.project_dir.name)
+    app.header(f"Project {name}", None)
+    can_run = app.can_run()
+
     body = ttk.Frame(app.content)
     body.pack(fill="both", expand=True)
-
-    try:
-        caps = cap.project_capabilities(app.conn)
-    except Exception as exc:                                    # noqa: BLE001
-        messagebox.showerror("Hub", str(exc), parent=app)
-        return
-
-    can_run = app.can_run()
     grid = ttk.Frame(body)
-    grid.pack(fill="x", pady=(0, 12))
-    grid.columnconfigure(2, weight=1)
+    grid.pack(fill="x")
+    grid.columnconfigure(1, weight=1)
+    row = [0]
 
-    for row, c in enumerate(caps):
-        mark, colour = STATE_MARK[c.state]
-        ttk.Label(grid, text=mark, foreground=colour, width=7,
-                  font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="nw", pady=4)
-        ttk.Label(grid, text=c.label, width=30,
-                  font=("Segoe UI", 10, "bold")).grid(row=row, column=1, sticky="nw", pady=4)
-        ttk.Label(grid, text=c.detail, wraplength=620, justify="left").grid(
-            row=row, column=2, sticky="nw", pady=4, padx=(0, 12))
-        if c.action:
-            button = ttk.Button(grid, text=c.action, width=20,
-                                command=lambda c=c: _act(app, c))
-            button.grid(row=row, column=3, sticky="ne", pady=2)
-            if not can_run:
-                button.configure(state="disabled")
+    def line(label, value, action=None, note=None, bold=False):
+        ttk.Label(grid, text=label, width=26, foreground="#444").grid(row=row[0], column=0, sticky="nw", pady=3)
+        ttk.Label(grid, text=value, font=("Segoe UI", 10, "bold") if bold else ("Segoe UI", 10),
+                  wraplength=640, justify="left").grid(row=row[0], column=1, sticky="nw", pady=3)
+        if action:
+            ttk.Button(grid, text=action[0], width=20, command=action[1],
+                       state="normal" if can_run else "disabled").grid(row=row[0], column=2, sticky="ne", pady=1, padx=(12, 0))
+        if note:
+            row[0] += 1
+            ttk.Label(grid, text=note, foreground="#7a5700", wraplength=640, justify="left").grid(
+                row=row[0], column=1, sticky="nw")
+        row[0] += 1
+
+    def heading(text):
+        ttk.Label(grid, text=text, font=("Segoe UI", 11, "bold")).grid(row=row[0], column=0, columnspan=3, sticky="w", pady=(14, 4))
+        row[0] += 1
+
+    def act(capability):
+        if capability is None or not capability.action:
+            return None
+        return (capability.action, lambda c=capability: _act(app, c))
+
+    # -- totals ----------------------------------------------------------
+    inv = summary["inventory"]
+    files_text = f"{summary['present']:,}"
+    if inv is not None and inv.state != cap.AVAILABLE:
+        files_text = ("at least " if inv.counts.get("incomplete_roots") else "") + files_text
+    line("Source folder(s)", "\n".join(summary["roots"]) or "—")
+    line("Total files", files_text + f"   ({_human_bytes(summary['bytes'])})", act(inv),
+         note=None if inv is None or inv.state == cap.AVAILABLE else inv.detail, bold=True)
+
+    ident = summary["identity"]
+    ic = (ident.counts if ident else {}) or {}
+    if ident is None or ident.state == cap.UNAVAILABLE:
+        fp_text = f"0 of {summary['present']:,} files -- no fingerprinting run yet"
+    else:
+        fp_text = f"{ic.get('identified', 0):,} of {ic.get('total', summary['present']):,} files have a content fingerprint"
+        if ic.get("size_unique"):
+            fp_text += f"; {ic['size_unique']:,} proven unique by size without being opened"
+    line("Fingerprints", fp_text, act(ident),
+         note=ident.detail if ident is not None and ident.state == cap.PARTIAL and ic.get("no_verdict") else None, bold=True)
+
+    dup = summary["duplicates"]
+    if dup is None or dup.state == cap.UNAVAILABLE:
+        dup_text = "not yet determined -- needs fingerprints"
+    elif summary["groups"] == 0:
+        dup_text = "none found" + ("" if dup.state == cap.AVAILABLE else " so far")
+    else:
+        dup_text = f"{summary['groups']:,} groups, {summary['members']:,} files"
+        if summary["reclaimable_bytes"] is not None:
+            dup_text += f", {_human_bytes(summary['reclaimable_bytes'])} reclaimable"
+        if dup.state != cap.AVAILABLE:
+            dup_text += " -- so far"
+    line("Duplicates", dup_text, act(dup) if (dup is not None and dup.action and (ident is None or dup.action != ident.action)) else None,
+         note=dup.detail if dup is not None and dup.state == cap.PARTIAL else None, bold=True)
+
+    # -- files by type -----------------------------------------------------
+    heading("Files by type")
+    shown = 0
+    for b in summary["buckets"]:
+        if not b["files"]:
+            continue
+        shown += 1
+        done = b["analysed"]
+        if done == 0:
+            state = "not analysed"
+        elif done < b["files"]:
+            state = f"{done:,} analysed"
+        else:
+            state = "analysed"
+        action = (b["action"], lambda k=b["key"], lbl=b["label"]: confirm_and_run(
+            app, RunRequest(ANALYSIS, f"Analyze: {lbl}", analyzer_keys=[k]))) if b["action"] else None
+        line(b["label"], f"{b['files']:,}   ({state})", action)
+    if summary["other"]:
+        line("Other", f"{summary['other']:,}   (no analyzer handles these types)")
+    if not shown and not summary["other"]:
+        line("Files by type", "nothing inventoried yet")
+
+    # -- text ----------------------------------------------------------------
+    heading("Text")
+    ext = summary["extraction"]
+    srch = summary["search"]
+    if summary["extractable"] == 0 and summary["present"]:
+        text_line = "no file is in a format the product can extract text from"
+    elif summary["text_state"] == "not extracted":
+        text_line = f"not extracted   ({summary['extractable']:,} files could be)"
+    elif summary["text_state"] == "indexed":
+        text_line = f"extracted and indexed   ({summary['extracted']:,} of {summary['extractable']:,} extracted, {summary['indexed']:,} indexed)"
+    else:
+        text_line = f"extracted, not indexed   ({summary['extracted']:,} of {summary['extractable']:,} extracted)"
+    text_action = act(ext) if (ext is not None and ext.action) else act(srch)
+    text_note = None
+    if ext is not None and ext.state != cap.AVAILABLE and ext.action:
+        text_note = ext.detail
+    elif srch is not None and srch.counts.get("unsupported") and summary["extractable"]:
+        text_note = (f"{srch.counts['unsupported']:,} files are in formats this product cannot extract text "
+                     "from, so a search will never match inside them.")
+    line("Text", text_line, text_action, note=text_note)
 
     if not can_run:
         ttk.Label(body, style="Warn.TLabel",
-                  text="This project is not under the application's Projects folder, so "
-                       "runs cannot be started from here. Everything already collected "
-                       "can still be queried.").pack(fill="x", pady=(0, 10))
+                  text="This project is not under the application's Projects folder, so runs cannot be "
+                       "started from here. Everything already collected can still be queried.").pack(fill="x", pady=(12, 0))
 
-    # -- what can be asked right now -------------------------------------
-    asks = ttk.LabelFrame(body, text="Ask it something", padding=10)
-    asks.pack(fill="x", pady=(4, 10))
-    ttk.Label(asks, text="Files, folders, sizes, ages and types are answerable after any "
-                         "Pre-Scan. Duplicates need fingerprints. Searching inside files "
-                         "needs extraction and an index.",
-              foreground="#666", wraplength=900, justify="left").pack(anchor="w", pady=(0, 6))
-    line = ttk.Frame(asks)
-    line.pack(anchor="w")
-    for label, command in (("Browse files", app.show_files),
-                           ("Standard reports", app.show_reports),
-                           ("Evidence health", app.show_evidence),
-                           ("Saved questions", app.show_saved)):
-        ttk.Button(line, text=label, command=command).pack(side="left", padx=(0, 6))
-
-    # -- doors, always available (decision 2: none of them is final) ------
+    # -- what next -----------------------------------------------------------
     doors = ttk.Frame(body)
-    doors.pack(fill="x", pady=(6, 0))
+    doors.pack(fill="x", pady=(18, 0))
     ttk.Button(doors, text="Collect more evidence...", command=lambda: show_doors(app),
                state="normal" if can_run else "disabled").pack(side="left")
     ttk.Button(doors, text="Choose what to analyze...",
@@ -111,8 +185,8 @@ def show_hub(app):
                state="normal" if can_run else "disabled").pack(side="left", padx=(6, 0))
     ttk.Button(doors, text="Open project folder",
                command=lambda: _open_folder(app.project_dir)).pack(side="left", padx=(6, 0))
-    ttk.Label(doors, text="Logs, run records and reports live in the project folder, "
-                          "not on a screen.", foreground="#666").pack(side="left", padx=12)
+    ttk.Label(doors, text="Logs, run records and reports live in the project folder.",
+              foreground="#666").pack(side="left", padx=12)
 
 
 def _open_folder(path):
@@ -221,7 +295,7 @@ def show_doors(app):
           "thoroughness; it is whether non-duplicates get an identity too.",
           f"Estimated time: {full_estimate}",
           lambda: confirm_and_run(app, RunRequest(FINGERPRINT, "Full Fingerprinting")))
-    _door(doors, 2, "Go to the Dashboard",
+    _door(doors, 2, "Go to the project",
           "Everything the Pre-Scan already knows: files, folders, sizes, ages, types, "
           "largest files and folders, what could not be read.\n\n"
           "Come back for the other two whenever a question needs them.",
@@ -310,7 +384,7 @@ def show_analyze(app):
 
     ttk.Button(controls, text="Run the ticked buckets", command=run_chosen,
                state="normal" if (shown and app.can_run()) else "disabled").pack(side="left")
-    ttk.Button(controls, text="Back to the hub", command=app.show_hub).pack(side="left", padx=6)
+    ttk.Button(controls, text="Back to the project", command=app.show_hub).pack(side="left", padx=6)
 
 
 # ---------------------------------------------------------------------------

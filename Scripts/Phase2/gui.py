@@ -2,10 +2,18 @@ r"""The Dashboard: one window from New Project to the answers.
 
 This began as the Phase 2 "Hybrid Evidence Explorer", a second window reached
 from the Phase 1 dashboard. Decision 1 (2026-09-10) merged the two: a person
-should not know they were ever separate programs. So this window now also
-creates projects and runs the Phase 1 collection stages -- through
-`runner.py`, which drives the same RunCoordinator the old dashboard did --
-and lands on the hub (`hub.py`), which says what the project can answer.
+should not know they were ever separate programs. So this window also creates
+projects and runs the Phase 1 collection stages -- through `runner.py`, which
+drives the same RunCoordinator the old dashboard did -- and lands on the
+project summary (`hub.py`).
+
+The layout follows the user's real-use notes of 2026-09-11: Open Project and
+New Project at the top of the side panel, Options and Exit at the bottom,
+nothing open until one of them is clicked; a project summary rather than a
+"what can this answer" page; a Files page that sorts, filters, chooses its
+columns, pages both ways and exports; a Reports list that scrolls with Run in
+the first column and exports its result; a confirmation before a project is
+closed by opening another.
 
 The Phase 2 rules still hold for everything analytical: stored evidence only,
 no source file is reopened to answer a question. The collection stages that
@@ -13,9 +21,11 @@ DO open files are Phase 1 stages, invoked from here, recorded as runs.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
@@ -33,6 +43,29 @@ from .runner import RunRequest, PRESCAN, run_blocking, app_root_for
 APP_ROOT = Path(__file__).resolve().parents[2]
 PROJECTS_DIR = APP_ROOT / "Projects"
 
+#: Every column the Files page can show: field id -> (heading, width, kind).
+#: `kind` decides how a value is rendered and what "Filter this column" asks.
+FILE_COLUMNS = {
+    "path.file_name": ("File", 240, "text"),
+    "folder.parent": ("Folder", 240, "text"),
+    "path.relative": ("Path", 320, "text"),
+    "path.extension": ("Ext", 70, "enum"),
+    "file.size_bytes": ("Size", 100, "bytes"),
+    "time.modified_utc": ("Modified", 170, "datetime"),
+    "time.created_utc": ("Created", 170, "datetime"),
+    "time.accessed_utc": ("Accessed", 170, "datetime"),
+    "file.in_current_exact_duplicate_group": ("Duplicate", 80, "bool"),
+    "hash.status": ("Hash status", 120, "enum"),
+    "hash.authority": ("Evidence", 100, "enum"),
+    "path.depth": ("Depth", 60, "int"),
+    "file.hard_link_count": ("Hard links", 80, "int"),
+    "file.is_offline_or_cloud": ("Cloud/offline", 90, "bool"),
+    "file.allocated_size_bytes": ("Allocated", 100, "bytes"),
+}
+DEFAULT_FILE_COLUMNS = ["path.file_name", "folder.parent", "path.extension", "file.size_bytes",
+                        "time.modified_utc", "file.in_current_exact_duplicate_group", "hash.authority"]
+PAGE_SIZE = 200
+
 
 def human_bytes(value):
     if value is None: return "Unknown"
@@ -40,6 +73,16 @@ def human_bytes(value):
     for unit in ("B","KB","MB","GB","TB"):
         if n < 1024 or unit=="TB": return f"{n:,.1f} {unit}" if unit!="B" else f"{int(n):,} B"
         n/=1024
+
+
+def render_cell(field, value):
+    """One cell, rendered for the kind of column it sits in."""
+    kind = FILE_COLUMNS.get(field, (None, None, "text"))[2]
+    if value is None: return "" if kind in ("text", "enum") else "Unavailable" if kind == "datetime" else ""
+    if kind == "bytes": return human_bytes(value)
+    if kind == "bool": return "Yes" if value else "No"
+    if field == "hash.authority": return {"current": "Current", "absent": "None", "stale": "Stale hash"}.get(value, str(value))
+    return str(value)
 
 
 def base_file_query(scope):
@@ -52,8 +95,8 @@ def base_file_query(scope):
 
 
 class Phase2App(tk.Tk):
-    """The one window. With a project it lands on the hub; without one it
-    offers the projects on disk and New Project."""
+    """The one window. Opens on nothing; Open Project and New Project are the
+    first two buttons in the side panel, Options and Exit the last two."""
 
     def __init__(self, project_dir=None):
         super().__init__()
@@ -66,15 +109,15 @@ class Phase2App(tk.Tk):
         self.search_text=""
         self.current_rows=[]
         self.current_query=None
-        self.after_id=None
+        # Files page state: chosen columns, sort, and the stack of page cursors.
+        self.files_columns=list(DEFAULT_FILE_COLUMNS)
+        self.files_sort=None                       # (field, "asc"|"desc") or None
+        self.files_cursors=[None]                  # cursor that opens page i
+        self.files_page=0
         #: (stop_event, worker thread) while a run owns the window; else None.
         self.active_run=None
-        self._busy_widgets=[]
 
         self.title("The File Organizer")
-        # Fit the screen: at 125% display scaling a fixed 1280x820 is taller
-        # than a 1080-pixel display once the title bar and taskbar are counted,
-        # and the bottom of the window was simply cut off.
         width=min(1280,max(1000,self.winfo_screenwidth()-120))
         height=min(820,max(650,self.winfo_screenheight()-160))
         self.geometry(f"{width}x{height}")
@@ -82,10 +125,14 @@ class Phase2App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW",self.close)
         self._style()
         self._build_shell()
+        # Open maximized: the user's note, and the tables want the width. The
+        # fitted geometry above is what it falls back to un-maximized.
+        try: self.state("zoomed")
+        except tk.TclError: pass
         if project_dir is not None:
             self.open_project(project_dir)
         else:
-            self.show_start()
+            self.show_welcome()
 
     def _style(self):
         style=ttk.Style(self)
@@ -101,26 +148,32 @@ class Phase2App(tk.Tk):
         self.columnconfigure(1,weight=1); self.rowconfigure(0,weight=1)
         nav=ttk.Frame(self,padding=8); nav.grid(row=0,column=0,sticky="nsew")
         ttk.Label(nav,text="The File Organizer",font=("Segoe UI",13,"bold")).pack(fill="x",pady=(4,16))
+        self.nav_open=ttk.Button(nav,text="Open Project",style="Nav.TButton",command=self.show_open_panel); self.nav_open.pack(fill="x",pady=2)
+        self.nav_new=ttk.Button(nav,text="New Project",style="Nav.TButton",command=self.show_new_panel); self.nav_new.pack(fill="x",pady=2)
+        self.nav_sep=ttk.Separator(nav); self.nav_sep.pack(fill="x",pady=10)
         self.nav_buttons=[]
         for label,cmd in [
-            ("Hub",self.show_hub),("Files",self.show_files),("Reports",self.show_reports),
-            ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history),
-            ("Projects",self.show_start)]:
+            ("Project",self.show_hub),("Files",self.show_files),("Reports",self.show_reports),
+            ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history)]:
             b=ttk.Button(nav,text=label,style="Nav.TButton",command=cmd); b.pack(fill="x",pady=2)
             self.nav_buttons.append(b)
+        # Bottom of the panel: Options (the architecture is here; there is
+        # nothing to set yet) and Exit.
+        self.nav_exit=ttk.Button(nav,text="Exit",style="Nav.TButton",command=self.close); self.nav_exit.pack(side="bottom",fill="x",pady=2)
+        self.nav_options=ttk.Button(nav,text="Options",style="Nav.TButton",command=self.show_options); self.nav_options.pack(side="bottom",fill="x",pady=2)
         ttk.Label(nav,text="Answers come from stored evidence.\nNo source file is modified.",foreground="#666",justify="left").pack(side="bottom",fill="x",pady=8)
 
         main=ttk.Frame(self); main.grid(row=0,column=1,sticky="nsew"); main.columnconfigure(0,weight=1); main.rowconfigure(2,weight=1)
         top=ttk.Frame(main,padding=(12,8)); top.grid(row=0,column=0,sticky="ew"); top.columnconfigure(2,weight=1)
         self.project_var=tk.StringVar(value="No project open")
         ttk.Label(top,textvariable=self.project_var,font=("Segoe UI",10,"bold")).grid(row=0,column=0,sticky="w")
-        self.scope_var=tk.StringVar(value="Scope: All Sources")
+        self.scope_var=tk.StringVar(value="")
         ttk.Label(top,textvariable=self.scope_var,foreground="#666").grid(row=1,column=0,sticky="w")
         self.find_var=tk.StringVar()
         entry=ttk.Entry(top,textvariable=self.find_var); entry.grid(row=0,column=2,rowspan=2,sticky="ew",padx=12)
         entry.bind("<Return>",lambda e:self.apply_find())
         self.top_buttons=[entry]
-        for label,cmd in (("Find",self.apply_find),("+ Filter",self.add_filter),("Save Query",self.save_current_query)):
+        for label,cmd in (("Find in files",self.apply_find),("+ Filter",self.add_filter),("Save Query",self.save_current_query)):
             b=ttk.Button(top,text=label,command=cmd); b.grid(row=0,column=3+len(self.top_buttons)-1,rowspan=2,padx=(0,6))
             self.top_buttons.append(b)
 
@@ -133,7 +186,7 @@ class Phase2App(tk.Tk):
     # -- project lifecycle -------------------------------------------------
 
     def open_project(self, project_dir):
-        """Open a project through the trusted migration boundary, then land on the hub."""
+        """Open a project through the trusted migration boundary, then land on its summary."""
         project_dir=Path(project_dir).resolve()
         self.release_connection()
         import fo_db
@@ -142,10 +195,11 @@ class Phase2App(tk.Tk):
             conn.close()
         except Exception as exc:
             messagebox.showerror("Open project",f"This project could not be opened.\n\n{exc}",parent=self)
-            self.show_start(); return
+            self.show_open_panel(); return
         self.project_dir=project_dir
         self.reopen_connection()
         self.scope={"kind":"project"}; self.filters=[]; self.search_text=""; self.find_var.set("")
+        self.files_sort=None; self.files_cursors=[None]; self.files_page=0
         self.scope_var.set("Scope: All Sources")
         self._set_project_controls(True)
         self.show_hub()
@@ -176,21 +230,39 @@ class Phase2App(tk.Tk):
             except Exception: pass
         self.conn=None; self.store=None; self.fts=None; self.engine=None
 
+    def close_project(self):
+        """Leave the open project. Callers confirm first (see _confirm_leave)."""
+        self.release_connection()
+        self.project_dir=None; self.info={}
+        self.title("The File Organizer"); self.project_var.set("No project open"); self.scope_var.set("")
+        self._set_project_controls(False)
+
+    def _confirm_leave(self, verb):
+        """The user's note: opening another project by accident closed the one
+        they were in. Ask first, and say which project."""
+        if self.project_dir is None: return True
+        name=self.info.get("name",self.project_dir.name)
+        return messagebox.askyesno("Close this project?",
+                                   f"This will close the project '{name}' so you can {verb}.\n\n"
+                                   "Nothing is lost -- everything it knows is in its database -- "
+                                   "but the screen you are on will close.\n\nContinue?",parent=self)
+
     def can_run(self):
         return self.project_dir is not None and app_root_for(self.project_dir) is not None
 
     def _set_project_controls(self, enabled):
         state="normal" if enabled else "disabled"
-        for b in self.nav_buttons[:-1]: b.configure(state=state)
+        for b in self.nav_buttons: b.configure(state=state)
         for w in self.top_buttons: w.configure(state=state)
 
     def set_busy(self, busy):
         """While a run owns the window nothing else in it may be clicked."""
+        state="disabled" if busy else "normal"
+        for b in (self.nav_open,self.nav_new,self.nav_options,self.nav_exit): b.configure(state=state)
         if busy:
             for b in self.nav_buttons: b.configure(state="disabled")
             for w in self.top_buttons: w.configure(state="disabled")
         else:
-            self.nav_buttons[-1].configure(state="normal")
             self._set_project_controls(self.project_dir is not None)
 
     # -- runs ---------------------------------------------------------------
@@ -218,9 +290,9 @@ class Phase2App(tk.Tk):
                 self._announce(request,outcome)
                 if outcome.ok and request.after=="doors": hub_view.show_doors(self)
                 return
-            self.show_start(); self._announce(request,outcome); return
+            self.show_open_panel(); self._announce(request,outcome); return
         if self.project_dir is None:
-            self.show_start(); self._announce(request,outcome); return
+            self.show_open_panel(); self._announce(request,outcome); return
         self.reopen_connection()
         self._announce(request,outcome)
         if outcome.ok and request.after=="doors": hub_view.show_doors(self)
@@ -238,37 +310,47 @@ class Phase2App(tk.Tk):
         elif outcome.warnings:
             messagebox.showwarning(request.title,outcome.message+"\n\n"+"\n".join(outcome.warnings[:6])+tail,parent=self)
 
-    # -- start screen ------------------------------------------------------
+    # -- the start: nothing open, then Open Project or New Project ------------
 
-    def show_start(self):
-        """Projects on disk, and New Project. Shown when no project is open."""
-        if self.active_run is not None: return
-        self.release_connection()
-        self.project_dir=None
-        self.title("The File Organizer"); self.project_var.set("No project open"); self.scope_var.set("")
+    def show_welcome(self):
+        """What the window shows before anything is clicked: nothing, on purpose."""
+        self.clear()
         self.evidence_label.configure(style="Good.TLabel"); self.evidence_var.set("Inventory. Organize. De-duplicate.")
-        self._set_project_controls(False)
-        self.clear(); self.header("Projects","Open a project, or start a new one with a Pre-Scan.")
-        body=ttk.Frame(self.content); body.pack(fill="both",expand=True)
-        body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=1)
+        ttk.Label(self.content,text="Open a project, or start a new one.",style="Sub.TLabel").pack(anchor="w",pady=(40,0))
 
-        existing=ttk.LabelFrame(body,text="Open a project",padding=12); existing.grid(row=0,column=0,sticky="nsew",padx=(0,8))
+    def show_open_panel(self):
+        """The list of projects on disk. Reached from Open Project."""
+        if self.active_run is not None: return
+        if self.project_dir is not None:
+            if not self._confirm_leave("open another"): return
+            self.close_project()
+        self.clear(); self.header("Open Project","Projects on disk, under the application's Projects folder.")
+        self.evidence_label.configure(style="Good.TLabel"); self.evidence_var.set("Inventory. Organize. De-duplicate.")
+        box=ttk.Frame(self.content); box.pack(fill="both",expand=True)
         names=list_projects()
-        listbox=tk.Listbox(existing,height=14,exportselection=False)
+        listbox=tk.Listbox(box,height=16,exportselection=False,font=("Segoe UI",10))
         for n in names: listbox.insert("end",n)
         listbox.pack(fill="both",expand=True)
-        if not names: ttk.Label(existing,text="No projects yet.",foreground="#666").pack(anchor="w",pady=6)
+        if not names: ttk.Label(box,text="No projects yet. Use New Project.",foreground="#666").pack(anchor="w",pady=6)
         def open_selected(_=None):
             sel=listbox.curselection()
             if not sel: messagebox.showinfo("Open","Select a project first.",parent=self); return
             self.open_project(PROJECTS_DIR/listbox.get(sel[0]))
         listbox.bind("<Double-Button-1>",open_selected)
-        row=ttk.Frame(existing); row.pack(fill="x",pady=(8,0))
+        row=ttk.Frame(box); row.pack(fill="x",pady=(8,0))
         ttk.Button(row,text="Open",command=open_selected,state="normal" if names else "disabled").pack(side="left")
         ttk.Button(row,text="Re-run (not yet decided)",state="disabled").pack(side="left",padx=6)
-        ttk.Label(existing,text="Whether a re-run is a new project is undecided, so the button ships greyed out rather than clickable but wrong.",foreground="#666",wraplength=420,justify="left").pack(anchor="w",pady=(6,0))
+        ttk.Label(box,text="Whether a re-run is a new project is undecided, so that button ships greyed out rather than clickable but wrong.",foreground="#666",wraplength=700,justify="left").pack(anchor="w",pady=(6,0))
 
-        new=ttk.LabelFrame(body,text="New project",padding=12); new.grid(row=0,column=1,sticky="nsew")
+    def show_new_panel(self):
+        """The New Project form. Reached from New Project."""
+        if self.active_run is not None: return
+        if self.project_dir is not None:
+            if not self._confirm_leave("start a new one"): return
+            self.close_project()
+        self.clear(); self.header("New Project","Pick the folder(s) to inventory. The Pre-Scan runs as soon as the project is created.")
+        self.evidence_label.configure(style="Good.TLabel"); self.evidence_var.set("Inventory. Organize. De-duplicate.")
+        new=ttk.Frame(self.content); new.pack(fill="x")
         ttk.Label(new,text="Folder(s) to inventory:").pack(anchor="w")
         path_var=tk.StringVar()
         prow=ttk.Frame(new); prow.pack(fill="x",pady=4)
@@ -295,7 +377,7 @@ class Phase2App(tk.Tk):
         ttk.Button(lrow,text="Remove",command=remove).pack(side="left",padx=(6,0),anchor="n")
         ttk.Label(new,text="Add a second folder only if you want one project to cover both.",foreground="#666").pack(anchor="w",pady=(2,8))
         ttk.Label(new,text="Project name (blank to auto-name):").pack(anchor="w")
-        name_var=tk.StringVar(); ttk.Entry(new,textvariable=name_var).pack(fill="x",pady=4)
+        name_var=tk.StringVar(); ttk.Entry(new,textvariable=name_var,width=50).pack(anchor="w",pady=4)
         def create():
             chosen=[roots.get(i) for i in range(roots.size())]
             typed=path_var.get().strip()
@@ -311,19 +393,32 @@ class Phase2App(tk.Tk):
             hub_view.confirm_and_run(self,request)
         ttk.Button(new,text="Create project and run the Pre-Scan",command=create).pack(anchor="w",pady=(10,0))
 
+    def show_options(self):
+        """Options. Nothing to set yet; the place for it exists."""
+        if self.active_run is not None: return
+        self.clear(); self.header("Options","Nothing to set yet.")
+        ttk.Label(self.content,text="This is where preferences will live -- a dark mode is the first candidate. "
+                                    "Until there is one, there is nothing here to change.",wraplength=800,justify="left").pack(anchor="w")
+
     # -- views ---------------------------------------------------------------
 
     def show_hub(self):
-        if self.conn is None: self.show_start(); return
+        """The project summary -- the landing view for an open project."""
+        if self.conn is None: self.show_welcome(); return
         hub_view.show_hub(self)
 
     def clear(self):
         for w in self.content.winfo_children(): w.destroy()
         self.content.columnconfigure(0,weight=0); self.content.rowconfigure(0,weight=0)
 
-    def header(self,title,subtitle=None):
-        ttk.Label(self.content,text=title,style="Title.TLabel").pack(anchor="w")
+    def header(self,title,subtitle=None,back=False):
+        """Page title, optional subtitle, and -- on project pages -- a way back to the summary."""
+        row=ttk.Frame(self.content); row.pack(fill="x")
+        ttk.Label(row,text=title,style="Title.TLabel").pack(side="left",anchor="w")
+        if back and self.project_dir is not None:
+            ttk.Button(row,text="◀ Project summary",command=self.show_hub).pack(side="right",anchor="e")
         if subtitle: ttk.Label(self.content,text=subtitle,style="Sub.TLabel",wraplength=980,justify="left").pack(anchor="w",pady=(2,12))
+        else: ttk.Frame(self.content,height=8).pack()
 
     def refresh_evidence_strip(self):
         h=evidence_health(self.conn)
@@ -342,22 +437,31 @@ class Phase2App(tk.Tk):
         if self.scope["kind"]=="folder_subtrees": return self.scope["folders"][0].get("display_name") or self.scope["folders"][0].get("relative_path_key") or "Root"
         return self.scope["kind"]
 
-    def show_files(self,reset_cursor=True):
-        if reset_cursor: self.after_id=None
-        self.clear(); self.header("Files","Browse current File Locations. Scope and filters are part of the analytical question.")
+    # -- Files ---------------------------------------------------------------
+
+    def show_files(self, reset_paging=True):
+        if self.conn is None: self.show_welcome(); return
+        if reset_paging: self.files_cursors=[None]; self.files_page=0
+        self.clear(); self.header("Files","Every current file in the scope. Click a heading to sort; right-click one to filter or choose columns.",back=True)
         tools=ttk.Frame(self.content); tools.pack(fill="x",pady=(0,8))
         ttk.Label(tools,textvariable=self.scope_var,font=("Segoe UI",9,"bold")).pack(side="left")
         if self.filters: ttk.Label(tools,text=f" · {len(self.filters)} active filter(s)",foreground="#445").pack(side="left")
-        ttk.Button(tools,text="Clear Query",command=self.clear_query).pack(side="right")
+        if self.search_text: ttk.Label(tools,text=f" · find: {self.search_text!r}",foreground="#445").pack(side="left")
+        ttk.Button(tools,text="Clear filters and sort",command=self.clear_query).pack(side="right")
+        ttk.Button(tools,text="Export CSV...",command=self.export_files_csv).pack(side="right",padx=6)
+        ttk.Button(tools,text="Columns...",command=self.choose_columns).pack(side="right")
 
-        panes=ttk.Panedwindow(self.content,orient="horizontal"); panes.pack(fill="both",expand=True)
+        # A classic PanedWindow: it honours minsize, which is what keeps the
+        # details pane from being squeezed to nothing.
+        panes=tk.PanedWindow(self.content,orient="horizontal",sashrelief="raised",sashwidth=6,bd=0)
+        panes.pack(fill="both",expand=True)
         left=ttk.Frame(panes,padding=6); center=ttk.Frame(panes); right=ttk.Frame(panes,padding=8)
-        panes.add(left,weight=1); panes.add(center,weight=4); panes.add(right,weight=2)
+        panes.add(left,minsize=180,width=220); panes.add(center,minsize=400); panes.add(right,minsize=300,width=320)
         self._populate_scope_tree(left)
         self._populate_file_table(center)
         self.detail_host=right
         ttk.Label(right,text="Details & Evidence",font=("Segoe UI",10,"bold")).pack(anchor="w")
-        ttk.Label(right,text="Select a File Location.",foreground="#666").pack(anchor="w",pady=8)
+        ttk.Label(right,text="Select a file.",foreground="#666").pack(anchor="w",pady=8)
 
     def _populate_scope_tree(self,parent):
         ttk.Label(parent,text="Folders / Source Roots",font=("Segoe UI",9,"bold")).pack(anchor="w",pady=(0,5))
@@ -385,41 +489,151 @@ class Phase2App(tk.Tk):
         tree.bind("<<TreeviewSelect>>",selected)
 
     def _populate_file_table(self,parent):
-        columns=("name","folder","ext","size","modified","dup","evidence")
-        table=ttk.Treeview(parent,columns=columns,show="headings")
-        for c,w in [("name",230),("folder",230),("ext",70),("size",100),("modified",135),("dup",75),("evidence",110)]:
-            table.heading(c,text=c.title()); table.column(c,width=w,anchor="w")
-        sy=ttk.Scrollbar(parent,orient="vertical",command=table.yview); table.configure(yscrollcommand=sy.set)
-        table.pack(side="left",fill="both",expand=True); sy.pack(side="right",fill="y")
+        columns=[c for c in self.files_columns if c in FILE_COLUMNS] or list(DEFAULT_FILE_COLUMNS)
+        host=ttk.Frame(parent); host.pack(fill="both",expand=True)
+        host.rowconfigure(0,weight=1); host.columnconfigure(0,weight=1)
+        table=ttk.Treeview(host,columns=columns,show="headings")
+        sort_field,sort_dir=self.files_sort or (None,None)
+        for c in columns:
+            heading,width,_kind=FILE_COLUMNS[c]
+            if c==sort_field: heading+=" ▲" if sort_dir=="asc" else " ▼"
+            table.heading(c,text=heading,command=lambda c=c:self.sort_files_by(c))
+            table.column(c,width=width,minwidth=50,anchor="w",stretch=False)
+        sy=ttk.Scrollbar(host,orient="vertical",command=table.yview); sx=ttk.Scrollbar(host,orient="horizontal",command=table.xview)
+        table.configure(yscrollcommand=sy.set,xscrollcommand=sx.set)
+        table.grid(row=0,column=0,sticky="nsew"); sy.grid(row=0,column=1,sticky="ns"); sx.grid(row=1,column=0,sticky="ew")
+        cursor=self.files_cursors[self.files_page]
         try:
-            result=self.engine.list_files(scope=self.scope,search=self.search_text,filters=self.filters,limit=200,after_id=self.after_id)
+            result=self.engine.list_files(scope=self.scope,search=self.search_text,filters=self.filters,limit=PAGE_SIZE,
+                                          sort=self.files_sort,cursor=cursor,columns=columns)
+            total=self.engine.count_files(scope=self.scope,search=self.search_text,filters=self.filters)
         except Exception as exc:
-            messagebox.showerror("Files",str(exc)); return
+            messagebox.showerror("Files",str(exc),parent=self); return
         self.current_query=result["normalized_query"]; self.current_rows=result["rows"]
         for i,row in enumerate(self.current_rows):
-            ev="Current" if row.get("hash.authority") in ("current","absent") else "Stale hash"
-            table.insert("","end",iid=str(i),values=(row.get("path.file_name"),row.get("folder.parent"),row.get("path.extension"),human_bytes(row.get("file.size_bytes")),row.get("time.modified_utc") or "Unavailable","Yes" if row.get("file.in_current_exact_duplicate_group") else "No",ev))
+            table.insert("","end",iid=str(i),values=[render_cell(c,row.get(c)) for c in columns])
         def choose(_=None):
             sel=table.selection()
             if sel:self.show_file_detail(self.current_rows[int(sel[0])])
         table.bind("<<TreeviewSelect>>",choose)
-        bottom=ttk.Frame(parent); bottom.place(relx=0,rely=1,anchor="sw",relwidth=1)
-        if self.current_rows:
-            ttk.Button(bottom,text="Next 200 →",command=lambda:self.next_files_page(self.current_rows[-1].get("path.id"))).pack(side="right",padx=5,pady=5)
+        table.bind("<Button-3>",lambda e:self._files_header_menu(e,table,columns))
+        # Paging, both ways, with honest numbers.
+        first=self.files_page*PAGE_SIZE+1 if self.current_rows else 0
+        last=self.files_page*PAGE_SIZE+len(self.current_rows)
+        bar=ttk.Frame(parent); bar.pack(fill="x",pady=(4,0))
+        ttk.Label(bar,text=(f"Files {first:,}–{last:,} of {total:,}" if total else "No files match."),foreground="#444").pack(side="left")
+        nxt=ttk.Button(bar,text=f"Next {PAGE_SIZE} ▶",command=self.next_files_page,state="normal" if result.get("next_cursor") else "disabled"); nxt.pack(side="right",padx=4)
+        prv=ttk.Button(bar,text=f"◀ Previous {PAGE_SIZE}",command=self.previous_files_page,state="normal" if self.files_page>0 else "disabled"); prv.pack(side="right")
+        if result.get("next_cursor"):
+            self.files_cursors=self.files_cursors[:self.files_page+1]+[result["next_cursor"]]
 
-    def next_files_page(self,last_id):
-        self.after_id=last_id; self.show_files(reset_cursor=False)
+    def next_files_page(self):
+        if self.files_page+1<len(self.files_cursors):
+            self.files_page+=1; self.show_files(reset_paging=False)
+
+    def previous_files_page(self):
+        if self.files_page>0:
+            self.files_page-=1; self.show_files(reset_paging=False)
+
+    def sort_files_by(self,field,direction=None):
+        """Click a heading: sort by it, ascending first, then descending."""
+        if direction is None:
+            current=self.files_sort
+            direction="desc" if current and current[0]==field and current[1]=="asc" else "asc"
+        self.files_sort=(field,direction)
+        self.show_files()
+
+    def _files_header_menu(self,event,table,columns):
+        region=table.identify_region(event.x,event.y)
+        col=table.identify_column(event.x)
+        if not col: return
+        try: field=columns[int(col[1:])-1]
+        except (ValueError,IndexError): return
+        menu=tk.Menu(self,tearoff=0)
+        heading=FILE_COLUMNS[field][0]
+        menu.add_command(label=f"Sort by {heading}, ascending",command=lambda:self.sort_files_by(field,"asc"))
+        menu.add_command(label=f"Sort by {heading}, descending",command=lambda:self.sort_files_by(field,"desc"))
+        menu.add_separator()
+        menu.add_command(label=f"Filter by {heading}...",command=lambda:self.filter_column(field))
+        menu.add_command(label="Clear all filters",command=self.clear_query,state="normal" if (self.filters or self.search_text) else "disabled")
+        menu.add_separator()
+        menu.add_command(label="Choose columns...",command=self.choose_columns)
+        menu.add_command(label="Export CSV...",command=self.export_files_csv)
+        try: menu.tk_popup(event.x_root,event.y_root)
+        finally: menu.grab_release()
+
+    def filter_column(self,field):
+        """A filter on one column, asked for in the column's own terms."""
+        heading,_w,kind=FILE_COLUMNS[field]
+        cond=None
+        if kind=="text":
+            val=simpledialog.askstring(heading,f"{heading} contains:",parent=self)
+            if val: cond={"left":{"kind":"field","id":field},"op":"contains","value":{"kind":"literal","value":val}}
+        elif kind=="enum":
+            val=simpledialog.askstring(heading,f"{heading} equals (for example .pdf, current, size_unique):",parent=self)
+            if val: cond={"left":{"kind":"field","id":field},"op":"eq","value":{"kind":"literal","value":val.strip().lower()}}
+        elif kind=="bytes":
+            val=simpledialog.askfloat(heading,f"{heading} at least (MB):",parent=self,minvalue=0)
+            if val is not None: cond={"left":{"kind":"field","id":field},"op":"gte","value":{"kind":"literal","value":int(val*1024*1024)}}
+        elif kind=="int":
+            val=simpledialog.askinteger(heading,f"{heading} at least:",parent=self,minvalue=0)
+            if val is not None: cond={"left":{"kind":"field","id":field},"op":"gte","value":{"kind":"literal","value":int(val)}}
+        elif kind=="datetime":
+            val=simpledialog.askstring(heading,f"{heading} before (YYYY-MM-DD), or after (prefix with >):",parent=self)
+            if val:
+                v=val.strip()
+                op="after" if v.startswith(">") else "before"
+                v=v.lstrip("> ").strip()
+                cond={"left":{"kind":"field","id":field},"op":op,"value":{"kind":"literal","value":v+"T00:00:00Z"}}
+        elif kind=="bool":
+            yes=messagebox.askyesno(heading,f"Show only files where {heading} is Yes?\n\n(No shows only where it is No.)",parent=self)
+            cond={"left":{"kind":"field","id":field},"op":"is_true" if yes else "is_false"}
+        if cond is None: return
+        self.filters.append({"condition":cond}); self.show_files()
+
+    def choose_columns(self):
+        """Tick the columns the Files table shows."""
+        win=tk.Toplevel(self); win.title("Columns"); win.transient(self); win.grab_set()
+        ttk.Label(win,text="Show these columns:",font=("Segoe UI",10,"bold")).pack(anchor="w",padx=12,pady=(12,6))
+        vars_={}
+        for field,(heading,_w,_k) in FILE_COLUMNS.items():
+            v=tk.BooleanVar(value=field in self.files_columns); vars_[field]=v
+            ttk.Checkbutton(win,text=heading,variable=v).pack(anchor="w",padx=18)
+        def apply():
+            chosen=[f for f in FILE_COLUMNS if vars_[f].get()]
+            if not chosen: messagebox.showinfo("Columns","Keep at least one column.",parent=win); return
+            self.files_columns=chosen; win.destroy(); self.show_files(reset_paging=False)
+        row=ttk.Frame(win); row.pack(fill="x",padx=12,pady=12)
+        ttk.Button(row,text="Apply",command=apply).pack(side="left")
+        ttk.Button(row,text="Cancel",command=win.destroy).pack(side="left",padx=6)
+
+    def export_files_csv(self):
+        """Every file the current question covers -- not just this page -- to a CSV the person chooses."""
+        if self.conn is None: return
+        columns=[c for c in self.files_columns if c in FILE_COLUMNS] or list(DEFAULT_FILE_COLUMNS)
+        exports=self.project_dir/"Exports"; exports.mkdir(exist_ok=True)
+        stamp=datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        path=filedialog.asksaveasfilename(parent=self,title="Export files to CSV",initialdir=str(exports),
+                                          initialfile=f"files_{self.info.get('name',self.project_dir.name)}_{stamp}.csv",
+                                          defaultextension=".csv",filetypes=[("CSV","*.csv")])
+        if not path: return
+        try:
+            n=export_files(self.engine,path,columns,scope=self.scope,search=self.search_text,filters=self.filters,sort=self.files_sort)
+        except Exception as exc:
+            messagebox.showerror("Export CSV",str(exc),parent=self); return
+        messagebox.showinfo("Export CSV",f"{n:,} file(s) written to:\n{path}",parent=self)
 
     def show_file_detail(self,row):
         for w in self.detail_host.winfo_children(): w.destroy()
         ttk.Label(self.detail_host,text="Details & Evidence",font=("Segoe UI",10,"bold")).pack(anchor="w")
-        pairs=[("File",row.get("path.file_name")),("Parent",row.get("folder.parent")),("Extension",row.get("path.extension")),("Logical Size",human_bytes(row.get("file.size_bytes"))),
-               ("Filesystem Modified",row.get("time.modified_utc") or "Unavailable"),("Exact Duplicate","Yes" if row.get("file.in_current_exact_duplicate_group") else "No"),("Hash Authority",row.get("hash.authority"))]
+        pairs=[(FILE_COLUMNS[c][0],render_cell(c,row.get(c))) for c in self.files_columns if c in FILE_COLUMNS and c in row]
         for k,v in pairs:
-            f=ttk.Frame(self.detail_host); f.pack(fill="x",pady=2); ttk.Label(f,text=k+":",width=20,foreground="#666").pack(side="left"); ttk.Label(f,text=str(v)).pack(side="left")
+            f=ttk.Frame(self.detail_host); f.pack(fill="x",pady=2)
+            ttk.Label(f,text=k+":",width=14,foreground="#666").pack(side="left",anchor="n")
+            ttk.Label(f,text=str(v),wraplength=200,justify="left").pack(side="left",fill="x")
         ttk.Separator(self.detail_host).pack(fill="x",pady=8)
         ttk.Button(self.detail_host,text="Metadata Explorer",command=lambda:self.show_metadata(row.get("path.id"))).pack(anchor="w")
-        ttk.Label(self.detail_host,text="Phase 2 shows stored project evidence only.\nIt does not reopen the Source File.",foreground="#666",justify="left").pack(anchor="w",pady=10)
+        ttk.Label(self.detail_host,text="Shown from stored project evidence.\nThe source file is not reopened.",foreground="#666",justify="left").pack(anchor="w",pady=10)
 
     def show_metadata(self,file_path_id):
         win=tk.Toplevel(self); win.title("Metadata Explorer"); win.geometry("760x500")
@@ -439,9 +653,11 @@ class Phase2App(tk.Tk):
             tv.insert("","end",values=(row.get("analysis.analyzer_key"),row.get("analysis.status"),row.get("analysis.title") or "",author,row.get("analysis.analyzed_utc")))
 
     def apply_find(self):
+        if self.conn is None: return
         self.search_text=self.find_var.get().strip(); self.show_files()
 
     def add_filter(self):
+        if self.conn is None: return
         field=simpledialog.askstring("Add Filter","Field (extension, min size MB, modified before YYYY-MM-DD, stale hash, exact duplicate):",parent=self)
         if not field:return
         f=field.strip().lower()
@@ -459,37 +675,45 @@ class Phase2App(tk.Tk):
         elif f in ("exact duplicate","duplicate"):
             self.filters.append({"condition":{"left":{"kind":"field","id":"file.in_current_exact_duplicate_group"},"op":"is_true"}})
         else:
-            messagebox.showinfo("Add Filter","That quick filter is not implemented yet. Advanced query remains available through Saved Query/Report definitions.")
+            messagebox.showinfo("Add Filter","That quick filter is not implemented yet. Right-click a column heading on the Files page to filter by that column.")
             return
         self.show_files()
 
     def clear_query(self):
-        self.filters=[]; self.search_text=""; self.find_var.set(""); self.scope={"kind":"project"}; self.scope_var.set("Scope: All Sources"); self.show_files()
+        self.filters=[]; self.search_text=""; self.find_var.set(""); self.files_sort=None
+        self.scope={"kind":"project"}; self.scope_var.set("Scope: All Sources"); self.show_files()
 
     def save_current_query(self):
+        if self.conn is None: return
         q=self.current_query or base_file_query(self.scope)
         # Remove execution-only normalization keys.
         q={k:v for k,v in q.items() if not k.startswith("_")}
-        name=simpledialog.askstring("Save Query","Name this analytical question:",parent=self)
+        name=simpledialog.askstring("Save Query","Name this question:",parent=self)
         if not name:return
         try:
             rec=self.store.create(name,q); messagebox.showinfo("Saved Query",f"Saved as revision {rec['revision_number']}.")
         except Exception as exc: messagebox.showerror("Saved Query",str(exc))
 
+    # -- Reports -------------------------------------------------------------
+
     def show_reports(self):
-        self.clear(); self.header("Reports",f"{len(self.reports.reports)} standard reports. Reports run in the current Scope.")
+        if self.conn is None: self.show_welcome(); return
+        self.clear(); self.header("Reports",f"{len(self.reports.reports)} standard reports. Each runs in the current scope ({self._scope_label()}).",back=True)
         tools=ttk.Frame(self.content); tools.pack(fill="x",pady=(0,8)); search=tk.StringVar(); family=tk.StringVar(value="All")
-        ent=ttk.Entry(tools,textvariable=search); ent.pack(side="left",fill="x",expand=True)
-        fams=["All"]+sorted({r["family"] for r in self.reports.reports}); cb=ttk.Combobox(tools,textvariable=family,values=fams,state="readonly",width=18); cb.pack(side="left",padx=6)
-        host=ttk.Frame(self.content); host.pack(fill="both",expand=True)
+        ttk.Label(tools,text="Find:").pack(side="left")
+        ent=ttk.Entry(tools,textvariable=search,width=30); ent.pack(side="left",padx=(4,10))
+        fams=["All"]+sorted({r["family"] for r in self.reports.reports}); cb=ttk.Combobox(tools,textvariable=family,values=fams,state="readonly",width=18); cb.pack(side="left")
+        host=scrollable_frame(self.content)
         def redraw(*_):
             for w in host.winfo_children():w.destroy()
             rows=self.reports.list(None if family.get()=="All" else family.get(),search=search.get())
-            for r in rows:
-                line=ttk.Frame(host); line.pack(fill="x",pady=2); ttk.Label(line,text=r["title"],width=38,font=("Segoe UI",9,"bold")).pack(side="left")
-                ttk.Label(line,text=f"{r['family']} · {r['tier']}",width=22,foreground="#666").pack(side="left")
-                ttk.Label(line,text=r["counting_unit"],foreground="#666").pack(side="left",fill="x",expand=True)
-                ttk.Button(line,text="Run",command=lambda rid=r["report_id"]:self.run_report(rid)).pack(side="right")
+            for i,r in enumerate(rows):
+                # Run first, then the name: the button sits next to what it runs.
+                ttk.Button(host,text="Run",width=6,command=lambda rid=r["report_id"]:self.run_report(rid)).grid(row=i,column=0,sticky="w",pady=2,padx=(0,8))
+                ttk.Label(host,text=r["title"],font=("Segoe UI",9,"bold")).grid(row=i,column=1,sticky="w",padx=(0,12))
+                ttk.Label(host,text=f"{r['family']} · {r['tier']}",foreground="#666").grid(row=i,column=2,sticky="w",padx=(0,12))
+                ttk.Label(host,text=r["counting_unit"],foreground="#666").grid(row=i,column=3,sticky="w")
+            if not rows: ttk.Label(host,text="No report matches.").grid(row=0,column=0,sticky="w")
         ent.bind("<KeyRelease>",redraw); cb.bind("<<ComboboxSelected>>",redraw); redraw()
 
     def _report_params(self,r):
@@ -509,9 +733,24 @@ class Phase2App(tk.Tk):
         if params is None:return
         try: result=self.reports.run(self.engine,rid,scope=self.scope,parameters=params)
         except Exception as exc: messagebox.showerror(r["title"],str(exc)); return
-        self.clear(); self.header(r["title"],r["purpose"])
-        ttk.Label(self.content,text=f"Scope: {self._scope_label()} · Unit: {r['counting_unit']}",foreground="#666").pack(anchor="w",pady=(0,8))
+        self.clear(); self.header(r["title"],r["purpose"],back=True)
+        line=ttk.Frame(self.content); line.pack(fill="x",pady=(0,8))
+        ttk.Label(line,text=f"Scope: {self._scope_label()} · Unit: {r['counting_unit']}",foreground="#666").pack(side="left")
+        ttk.Button(line,text="◀ Reports",command=self.show_reports).pack(side="right")
+        ttk.Button(line,text="Export CSV...",command=lambda:self.export_result_csv(result,r["report_id"])).pack(side="right",padx=6)
         self._generic_result_table(result)
+
+    def export_result_csv(self,result,stem):
+        rows=result.get("rows") or []
+        if not rows: messagebox.showinfo("Export CSV","There are no rows to export.",parent=self); return
+        exports=self.project_dir/"Exports"; exports.mkdir(exist_ok=True)
+        stamp=datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        path=filedialog.asksaveasfilename(parent=self,title="Export to CSV",initialdir=str(exports),
+                                          initialfile=f"{stem}_{stamp}.csv",defaultextension=".csv",filetypes=[("CSV","*.csv")])
+        if not path: return
+        try: n=write_rows_csv(path,rows)
+        except Exception as exc: messagebox.showerror("Export CSV",str(exc),parent=self); return
+        messagebox.showinfo("Export CSV",f"{n:,} row(s) written to:\n{path}",parent=self)
 
     def _generic_result_table(self,result):
         rows=result["rows"]
@@ -520,28 +759,43 @@ class Phase2App(tk.Tk):
         cols=list(rows[0])
         frame=ttk.Frame(self.content); frame.pack(fill="both",expand=True)
         tv=ttk.Treeview(frame,columns=cols,show="headings")
-        for c in cols: tv.heading(c,text=c); tv.column(c,width=150,anchor="w")
+        for c in cols: tv.heading(c,text=c); tv.column(c,width=150,anchor="w",stretch=False)
         sy=ttk.Scrollbar(frame,orient="vertical",command=tv.yview); sx=ttk.Scrollbar(frame,orient="horizontal",command=tv.xview); tv.configure(yscrollcommand=sy.set,xscrollcommand=sx.set)
         tv.grid(row=0,column=0,sticky="nsew"); sy.grid(row=0,column=1,sticky="ns"); sx.grid(row=1,column=0,sticky="ew"); frame.rowconfigure(0,weight=1); frame.columnconfigure(0,weight=1)
         for row in rows[:5000]: tv.insert("","end",values=[human_bytes(row[c]) if c.endswith("bytes") and isinstance(row[c],(int,float)) else row[c] for c in cols])
-        ttk.Label(self.content,text=f"{len(rows):,} returned row/group(s) in this execution · Coverage: {result['coverage']['coverage']}",foreground="#666").pack(anchor="w",pady=5)
+        ttk.Label(self.content,text=f"{len(rows):,} row/group(s) · Coverage: {result['coverage']['coverage']}",foreground="#666").pack(anchor="w",pady=5)
+
+    # -- Saved queries -------------------------------------------------------
 
     def show_saved(self):
-        self.clear(); self.header("Saved Queries","Saved questions re-execute against project evidence; rows are not frozen.")
-        host=ttk.Frame(self.content); host.pack(fill="both",expand=True)
-        for q in self.store.list():
-            line=ttk.Frame(host); line.pack(fill="x",pady=3); ttk.Label(line,text=q["name"],width=40,font=("Segoe UI",9,"bold")).pack(side="left")
-            ttk.Label(line,text=f"Revision {q['revision_number']} · {q['updated_utc']}",foreground="#666").pack(side="left",fill="x",expand=True)
-            ttk.Button(line,text="Run",command=lambda uid=q["saved_query_uid"]:self.run_saved(uid)).pack(side="right")
+        if self.conn is None: self.show_welcome(); return
+        self.clear(); self.header("Saved Queries",
+            "Standard reports are the questions that ship with the product. A saved query is a question you built "
+            "yourself on the Files page -- scope, find text and filters -- and saved by name. Both are queries; both "
+            "re-run against the current evidence every time, so rows are never frozen.",back=True)
+        host=scrollable_frame(self.content)
+        saved=self.store.list()
+        if not saved: ttk.Label(host,text="Nothing saved yet. On the Files page, set a scope and filters, then press Save Query.",foreground="#666").grid(row=0,column=0,sticky="w")
+        for i,q in enumerate(saved):
+            ttk.Button(host,text="Run",width=6,command=lambda uid=q["saved_query_uid"]:self.run_saved(uid)).grid(row=i,column=0,sticky="w",pady=3,padx=(0,8))
+            ttk.Label(host,text=q["name"],font=("Segoe UI",9,"bold")).grid(row=i,column=1,sticky="w",padx=(0,12))
+            ttk.Label(host,text=f"Revision {q['revision_number']} · {q['updated_utc']}",foreground="#666").grid(row=i,column=2,sticky="w")
 
     def run_saved(self,uid):
         try:
             rec=self.store.get_latest(uid); result=self.engine.execute(rec["query"],retain_kind="saved_query",saved_revision_id=rec["saved_query_revision_id"])
-            self.clear(); self.header(rec["name"],"Saved Query · re-executed against current evidence"); self._generic_result_table(result)
-        except Exception as exc: messagebox.showerror("Saved Query",str(exc))
+        except Exception as exc: messagebox.showerror("Saved Query",str(exc)); return
+        self.clear(); self.header(rec["name"],"Saved query · re-run against current evidence",back=True)
+        line=ttk.Frame(self.content); line.pack(fill="x",pady=(0,8))
+        ttk.Button(line,text="◀ Saved queries",command=self.show_saved).pack(side="right")
+        ttk.Button(line,text="Export CSV...",command=lambda:self.export_result_csv(result,"saved_query")).pack(side="right",padx=6)
+        self._generic_result_table(result)
+
+    # -- Evidence, History ---------------------------------------------------
 
     def show_evidence(self):
-        self.clear(); self.header("Evidence","What the project knows, what it does not know, and why.")
+        if self.conn is None: self.show_welcome(); return
+        self.clear(); self.header("Evidence","What the project knows, what it does not know, and why.",back=True)
         h=evidence_health(self.conn)
         items=[("Coverage",h["coverage"]),("Present File Locations",f"{h['present_locations']:,}"),("Inaccessible",f"{h['inaccessible_locations']:,}"),("Unverified",f"{h['unverified_locations']:,}"),("Missing",f"{h['missing_locations']:,}"),("Stale Hashes",f"{h['stale_hashes']:,}"),("Cloud / Offline",f"{h['cloud_offline']:,}"),("Current Analyzer Failures",f"{h['current_analyzer_failures']:,}")]
         for k,v in items:
@@ -563,15 +817,18 @@ class Phase2App(tk.Tk):
         except Exception as exc: messagebox.showerror("Literal Text Index",str(exc))
 
     def show_history(self):
-        self.clear(); self.header("History","Stored observations — separate from Current State.")
+        if self.conn is None: self.show_welcome(); return
+        self.clear(); self.header("History","Stored observations — separate from Current State.",back=True)
         q={"query_schema":QUERY_SCHEMA,"semantic_contract":SEMANTIC_CONTRACT,"subject":{"entity":"file","temporal":{"mode":"history"}},"scope":{"kind":"project"},
            "where":{"condition":{"left":{"kind":"field","id":"observation.change_kind"},"op":"is_not_null"}},
            "sort":[{"ref":{"kind":"field","id":"observation.observed_utc"},"direction":"desc","nulls":"last"}],"semantic_limit":1000}
         try:self._generic_result_table(self.engine.execute(q))
         except Exception as exc:messagebox.showerror("History",str(exc))
 
+    # -- closing -------------------------------------------------------------
+
     def close(self):
-        """The window's X. A run in progress is stopped cleanly first, never abandoned.
+        """The window's X, and Exit. A run in progress is stopped cleanly first, never abandoned.
 
         The worker is a daemon thread, so closing without waiting would kill
         it mid-file and leave a half-written result -- exactly what the
@@ -602,8 +859,60 @@ class Phase2App(tk.Tk):
 
 
 # ---------------------------------------------------------------------------
-# Start-screen helpers. Kept as functions so the headless checks can call them.
+# Helpers kept as functions so the headless checks can call them.
 # ---------------------------------------------------------------------------
+
+def scrollable_frame(parent):
+    """A frame that scrolls vertically: the reports list has 31 rows, and a
+    window shows about twenty. Returns the inner frame to fill."""
+    outer=ttk.Frame(parent); outer.pack(fill="both",expand=True)
+    canvas=tk.Canvas(outer,highlightthickness=0,bd=0)
+    bar=ttk.Scrollbar(outer,orient="vertical",command=canvas.yview)
+    inner=ttk.Frame(canvas)
+    inner.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
+    window=canvas.create_window((0,0),window=inner,anchor="nw")
+    canvas.bind("<Configure>",lambda e:canvas.itemconfigure(window,width=e.width))
+    canvas.configure(yscrollcommand=bar.set)
+    canvas.pack(side="left",fill="both",expand=True); bar.pack(side="right",fill="y")
+    def wheel(event):
+        canvas.yview_scroll(int(-event.delta/120),"units")
+    canvas.bind("<Enter>",lambda e:canvas.bind_all("<MouseWheel>",wheel))
+    canvas.bind("<Leave>",lambda e:canvas.unbind_all("<MouseWheel>"))
+    return inner
+
+
+def write_rows_csv(path, rows, columns=None):
+    """Write dict rows to a CSV (UTF-8 with BOM, so Excel reads it). Returns the row count."""
+    columns=list(columns or (rows[0].keys() if rows else []))
+    n=0
+    with open(path,"w",encoding="utf-8-sig",newline="") as handle:
+        writer=csv.writer(handle)
+        writer.writerow(columns)
+        for row in rows:
+            writer.writerow(["" if row.get(c) is None else row.get(c) for c in columns]); n+=1
+    return n
+
+
+def export_files(engine, path, columns, scope=None, search=None, filters=None, sort=None, page=5000):
+    """Every file the question covers, page after page, to one CSV. Returns the count.
+
+    Walks the same sorted keyset pages the Files page uses, so the export is
+    the whole answer in the same order -- never just the page on screen.
+    """
+    columns=list(columns)
+    n=0
+    cursor=None
+    with open(path,"w",encoding="utf-8-sig",newline="") as handle:
+        writer=csv.writer(handle)
+        writer.writerow([FILE_COLUMNS.get(c,(c,))[0] for c in columns])
+        while True:
+            result=engine.list_files(scope=scope,search=search,filters=filters,limit=page,sort=sort,cursor=cursor,columns=columns)
+            for row in result["rows"]:
+                writer.writerow(["" if row.get(c) is None else row.get(c) for c in columns]); n+=1
+            cursor=result.get("next_cursor")
+            if not cursor: break
+    return n
+
 
 def list_projects(projects_dir=None):
     """Project folders on disk, by name. A project is a folder with a project.json."""
