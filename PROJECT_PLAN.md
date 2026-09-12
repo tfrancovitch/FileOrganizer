@@ -4,9 +4,10 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-11 (night — after the first real-use session)
-**Current position:** Phase 2 (Understand) — built, used once by a person, reworked
-to their notes; closeout drafted, awaiting the user's decision
+**Last updated:** 2026-09-12 — after the second real-use session, on a real corpus
+**Current position:** Phase 2 (Understand) — built; used twice by a person, the
+second time on 41,056 real files; every note acted on; the crash found and fixed;
+closeout drafted, awaiting the user's decision
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -68,7 +69,7 @@ A nineteenth, adopted 2026-09-10:
 | Phase | Name | Status |
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
-| **2** | **Understand** | **Built, used once, reworked to the user's notes; closeout drafted — the user's decision** |
+| **2** | **Understand** | **Built; used twice, the second time on a real corpus; every note acted on; the crash fixed; closeout drafted — the user's decision** |
 | 3 | Decide / Plan | Not started |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
@@ -99,7 +100,8 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **124 / 124** — every run kind to completion and stopped, sorted paging over every file, exports, the summary's arithmetic, and every view of the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **136 / 136**, four consecutive runs — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, and every view of the real window |
+| **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.3 GB reclaimable. Audio and video analysis run to completion through the window on a copy of the project |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
 
 ### Defects found and fixed
@@ -121,6 +123,9 @@ query engine being tested.
 | 13 | `capability.py` said "the duplicate question is fully answered" whenever anything had been fingerprinted | Says "not fully answered" when any file has no verdict; "at least N files" when a walk did not finish |
 | 14 | Duplicate counts were read from `duplicate_group`, which keeps one row per group **per run** — 9 groups shown where the truth was 4 after a stopped, a complete and a fingerprinting run | Counted from the current-duplicate projection |
 | 15 | Files page: "Next 200" on 25 files led to a blank page with no way back | Previous and Next, both real, with "Files 1–25 of 25" |
+| 16 | **The crash.** Tk objects whose last reference sits in a reference cycle are freed by the garbage collector on whichever thread triggers it; freed on a worker thread, a Tk variable raises and a Tk instance **aborts the process** (`Tcl_AsyncDelete`). Timing-dependent — glitched once, crashed the second time. Reproduced in the suite and in isolation | Collector run on the main thread after every screen teardown and before every thread; no Tk variables on the run screen; faulthandler armed; callback errors logged |
+| 17 | ffprobe spawned without `CREATE_NO_WINDOW` — under pythonw every probe flashed a console window ("a bunch of brief windows popped up") | Flag added |
+| 18 | `needs_caution` bound its threshold at definition time; found by the check that tried to lower it | Read when called |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -156,17 +161,37 @@ Two things the session did **not** produce, and the closeout has to say so: it r
 on `PrefixSiblings` — a 25-file fixture, not real data — and its notes are about
 the interface, not questions asked of a corpus. See `Docs\Handoffs\P2.12_CLOSEOUT.md`.
 
+### The second real-use session — 2026-09-12, a real corpus
+
+`C:\Users\tfran\OneDrive\Documents\TOMMY STUFF`: 41,056 files, 73.6 GB. Pre-Scan in
+68 s, Full Fingerprinting in 9 min against an estimate of ~8. Notes in
+`Phase 2 Human Test 2 - Real Corpus Notes.txt`; every one acted on the same day:
+
+| Note | Done |
+|---|---|
+| A screen between "Create project and run the Pre-Scan" and the Pre-Scan; another between a door and its scan | Gone. Every button starts its run. The estimate is measured as the run's first step and shown in its log; only a run over 15 minutes asks "Begin now?" |
+| "Walking #,### files so far" — liked | Kept |
+| Doors: too much text; wants name / Estimated time / Begin Scan | Three columns, exactly so, one sentence at the foot |
+| Fingerprints should read files (bytes); duplicates as files, groups, bytes reclaimable; buckets with count and bytes | Done |
+| Button far right, unclear which line it belongs to; first column should be Analyze or ANALYZED | First column is the action or the word |
+| No way to analyze everything at once (excluding extraction) | "Analyze all" |
+| "Choose what to analyze" does not fit the one-at-a-time interface | Removed |
+| The empty confirm page, Back going home, brief windows, then **the crash** | Confirm page removed (was an empty "measuring" screen); the brief windows were ffprobe consoles (#17); the crash was #16, reproduced and fixed |
+
+The exploration stopped at the crash. The questions of the corpus itself — what is
+taking the space, which duplicates matter — are still to be asked.
+
 ### What remains before Phase 2 closes
 
 The living plan's own completion criteria:
 
 | Criterion | Status |
 |---|---|
-| Acceptance run against a meaningful real project | Partial — purpose-built corpora and a 25-file fixture, not real data |
+| Acceptance run against a meaningful real project | **Partial → mostly met** — Pre-Scan and Full Fingerprinting on 41,056 real files, estimate honoured; analysis on a copy; the exploration was cut short by the crash before questions were asked |
 | Shareable evidence reviewed | Partial |
-| **Real user questions recorded** | **Partial** — a person's notes are recorded and acted on; they are about the interface, not questions put to a corpus |
+| **Real user questions recorded** | **Partial** — two sessions' notes recorded and acted on; still about the interface, because the second session crashed before the corpus was questioned |
 | Analytical gaps classified | Partial |
-| High-value deficiencies corrected or deferred | **Done** — 15 defects, all fixed |
+| High-value deficiencies corrected or deferred | **Done** — 18 defects, all fixed |
 | Real source immutability confirmed | **Done** on the corpus |
 | **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not evidenced** — the session did not reach a verdict |
 
@@ -268,10 +293,13 @@ rather than time-boxed, and it does not exist for network shares.
 6. The user's notes, every one acted on (see section 4) ✔
 7. `Docs\Handoffs\P2.12_CLOSEOUT.md` drafted ✔
 
+**Done 2026-09-12 — the second real-use session, on a real corpus**
+8. Every note acted on; the crash reproduced and fixed; the flow is click-and-go ✔
+
 **To close Phase 2** — the user's decision
-8. Decide: close on the evidence so far, or one more session on a real folder first
-   (the notes file, or `Docs\Validation\PHASE_2_REAL_USE_RECORD.md`)
-9. Sign the closeout; Phase 3 handoff follows from it
+9. Pick up the real corpus where the crash stopped it: analyze, extract, index,
+   and ask it things. Record what was asked and whether it answered.
+10. Sign the closeout; Phase 3 handoff follows from it
 
 **Decisions still open**
 - Does a re-run constitute a new project?
@@ -279,7 +307,7 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? Email (`.msg`, `.pst`, `.eml`) is the largest gap for legal use.
 
-**Unpushed:** the `phase2` branch is **30 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **37 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.

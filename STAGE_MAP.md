@@ -11,8 +11,10 @@ Dashboard) and the code in `FileOrganizer-Phase1-RC-B6.1`.
 (`Scripts\Phase2\gui.py` + `hub.py`) through the blocking runner
 (`Scripts\Phase2\runner.py`), which drives `RunCoordinator` exactly as the old
 dashboard did. The stage keys, run kinds and tables are unchanged; what changed is
-that every run shows an estimate first, owns the window while it runs, and has a
-Cancel. `Dashboard.py --classic` still reaches the pre-merge screens.
+that every run starts on its click, measures its estimate as its first step and
+logs it, asks "Begin now?" only when the estimate exceeds 15 minutes, owns the
+window while it runs, and has a Cancel. `Dashboard.py --classic` still reaches the
+pre-merge screens.
 
 **Companion documents**
 - `FileOrganizer-Phase2\The_File_Organizer_Project_Plan_Phases_1-8plus.docx` — the phase model
