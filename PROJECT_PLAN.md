@@ -4,9 +4,9 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-11 (evening — the Dashboard build)
-**Current position:** Phase 2 (Understand) — built and verified; closeout awaits a
-session on real files
+**Last updated:** 2026-09-11 (night — after the first real-use session)
+**Current position:** Phase 2 (Understand) — built, used once by a person, reworked
+to their notes; closeout drafted, awaiting the user's decision
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -68,7 +68,7 @@ A nineteenth, adopted 2026-09-10:
 | Phase | Name | Status |
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
-| **2** | **Understand** | **Built and verified; closeout awaits a session on real files** |
+| **2** | **Understand** | **Built, used once, reworked to the user's notes; closeout drafted — the user's decision** |
 | 3 | Decide / Plan | Not started |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
@@ -99,7 +99,7 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **93 / 93** — every run kind to completion and stopped, through the runner and through the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **124 / 124** — every run kind to completion and stopped, sorted paging over every file, exports, the summary's arithmetic, and every view of the real window |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
 
 ### Defects found and fixed
@@ -119,6 +119,8 @@ query engine being tested.
 | 11 | **Analysis results detached after any re-scan.** Results were matched to observations by path within the newest scan's rows, which in `history.mode=changes` do not exist for an unchanged file — so they were stored as `unmatched` and the hub would say "none analysed" forever | The engine's own current observation id rides along on each result |
 | 12 | The Pause button wrote a flag file nothing read | Replaced by Stop, wired to `should_continue` |
 | 13 | `capability.py` said "the duplicate question is fully answered" whenever anything had been fingerprinted | Says "not fully answered" when any file has no verdict; "at least N files" when a walk did not finish |
+| 14 | Duplicate counts were read from `duplicate_group`, which keeps one row per group **per run** — 9 groups shown where the truth was 4 after a stopped, a complete and a fingerprinting run | Counted from the current-duplicate projection |
+| 15 | Files page: "Next 200" on 25 files led to a blank page with no way back | Previous and Next, both real, with "Files 1–25 of 25" |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -133,24 +135,46 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
+### The first real-use session — 2026-09-11
+
+The user ran the Dashboard and wrote notes (`Phase 2 Real person Notes 2026-09-1.txt`
+in the workspace root). Every note was acted on the same day:
+
+| Note | Done |
+|---|---|
+| Startup-check window too large, lands anywhere | Small, centred; the Dashboard then opens maximized |
+| Side panel: Open Project and New Project on top, Options and Exit at the bottom, nothing open initially | Exactly so; Options exists with nothing to set yet |
+| "What this project can answer" reads as an AI answering — make it a project summary | "Project *name*": totals, fingerprints, duplicates, files by type, text state |
+| Could not get back from Browse files; Next 200 on 25 files went blank | "Project summary" button on every page; real Previous/Next with counts |
+| Reports: Run button too far from the name; only ~20 of 31 visible | Run in the first column; the list scrolls |
+| Files: details pane squished; choose columns; sort and filter like a spreadsheet; more columns; export CSV | All built — sort by heading (server-side, both directions), right-click to filter a column or choose columns, horizontal scroll, minimum pane widths, CSV of everything the question covers |
+| Reports should export to CSV | Reports and saved queries export their result |
+| What is the difference between saved queries and reports? | A standard report ships with the product; a saved query is one you composed on the Files page and named. Both are queries; both re-run on current evidence. The page now says so |
+| Clicking Projects closed the open project without asking | Asks first, naming the project |
+
+Two things the session did **not** produce, and the closeout has to say so: it ran
+on `PrefixSiblings` — a 25-file fixture, not real data — and its notes are about
+the interface, not questions asked of a corpus. See `Docs\Handoffs\P2.12_CLOSEOUT.md`.
+
 ### What remains before Phase 2 closes
 
 The living plan's own completion criteria:
 
 | Criterion | Status |
 |---|---|
-| Acceptance run against a meaningful real project | Partial — purpose-built corpus, not real data |
+| Acceptance run against a meaningful real project | Partial — purpose-built corpora and a 25-file fixture, not real data |
 | Shareable evidence reviewed | Partial |
-| **Real user questions recorded** | **Not done** |
+| **Real user questions recorded** | **Partial** — a person's notes are recorded and acted on; they are about the interface, not questions put to a corpus |
 | Analytical gaps classified | Partial |
-| High-value deficiencies corrected or deferred | **Done** |
-| Real source immutability confirmed | **Done** |
-| **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not done** |
+| High-value deficiencies corrected or deferred | **Done** — 15 defects, all fixed |
+| Real source immutability confirmed | **Done** on the corpus |
+| **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not evidenced** — the session did not reach a verdict |
 
-**The two outstanding items require a person using it on real files.** The
-Dashboard is built for exactly that session, and
-`Docs\Validation\PHASE_2_REAL_USE_RECORD.md` is where its questions and findings
-go. Then **P2.12 — Closeout and Phase 3 Handoff** formally ends the phase.
+**`Docs\Handoffs\P2.12_CLOSEOUT.md`** assesses each criterion against what
+exists and puts the decision to the user: close the phase on the evidence so far,
+or run one more session on a real folder with the reworked window first. The
+notes file or `Docs\Validation\PHASE_2_REAL_USE_RECORD.md` — either form — is
+where that session's questions go.
 
 ---
 
@@ -240,9 +264,14 @@ rather than time-boxed, and it does not exist for network shares.
    real analyzers, `fo_estimates.estimate_analysis()` / `estimate_indexing()` ✔
 5. One window — `Dashboard.py` hands off after its startup checks ✔
 
-**To close Phase 2** — these need a person on real files; an agent cannot do them
-6. Use it on a real corpus and fill in `Docs\Validation\PHASE_2_REAL_USE_RECORD.md`
-7. P2.12 closeout and Phase 3 handoff
+**Done 2026-09-11, later — the first real-use session**
+6. The user's notes, every one acted on (see section 4) ✔
+7. `Docs\Handoffs\P2.12_CLOSEOUT.md` drafted ✔
+
+**To close Phase 2** — the user's decision
+8. Decide: close on the evidence so far, or one more session on a real folder first
+   (the notes file, or `Docs\Validation\PHASE_2_REAL_USE_RECORD.md`)
+9. Sign the closeout; Phase 3 handoff follows from it
 
 **Decisions still open**
 - Does a re-run constitute a new project?
@@ -250,7 +279,7 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? Email (`.msg`, `.pst`, `.eml`) is the largest gap for legal use.
 
-**Unpushed:** the `phase2` branch is **23 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **28 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.

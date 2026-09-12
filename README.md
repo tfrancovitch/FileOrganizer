@@ -129,14 +129,15 @@ database can actually be created on this machine.
 
 ## Using it
 
-One window. `TheFileOrganizer.bat` runs the startup checks, then opens on
-**Projects**: open one, or create one. Every step that does work shows an
-estimate before it starts, owns the window while it runs, and has a **Cancel**
-that stops between files and keeps everything already done.
+One window. `TheFileOrganizer.bat` runs the startup checks, then opens with
+nothing selected: **Open Project** and **New Project** are the first two buttons
+in the side panel, **Options** and **Exit** the last two. Every step that does
+work shows an estimate before it starts, owns the window while it runs, and has
+a **Cancel** that stops between files and keeps everything already done.
 
 ### 1. Create a project
 
-On the Projects screen, pick the folder you want to inventory, name the project
+Press **New Project**, pick the folder you want to inventory, name the project
 (or leave it blank to auto-name), and press **Create project and run the
 Pre-Scan**.
 
@@ -183,32 +184,39 @@ verifiable content identity. That identity is what later lets a file be
 verified after a move, and a change be detected on a re-scan. The difference
 from the first door is not thoroughness.
 
-**Go to the Dashboard** — everything the Pre-Scan already knows.
+**Go to the project** — everything the Pre-Scan already knows.
 
 > A partial hash is treated as complete content identity **only** when the
 > whole file fits inside the 64 KB window. For anything larger, matching first
 > bytes is a screening result and never proof.
 
-### 4. The hub
+### 4. The project summary
 
-The landing view says, line by line, what the project can answer and what a
-run would change: what is here, which files are identical, duplicates, each
-analyzer bucket, text extracted, search inside files. A button on a line runs
-the thing that would improve it.
+The landing page for an open project: source folders, total files and size,
+fingerprints, duplicates and reclaimable space, files by type with how many
+have been analysed, and the text state (not extracted / extracted / indexed).
+A small button sits on any line a run would change.
 
-**Choose what to analyze** lives here too: one row per bucket with a measured
-count of applicable files, and separate rows for extracting text and indexing
-it, because those are the slow ones and each can be skipped. Each analyzer
-runs independently — one failing does not stop the others, and a bucket with
-no applicable files is a success, not an error.
+**Files** lists every current file: click a heading to sort, right-click one to
+filter by that column or choose columns, page with Previous/Next, and export
+everything the question covers to CSV. **Reports** are the 31 standard
+questions that ship with the product; a **saved query** is one you composed on
+the Files page and named. Both re-run against current evidence, and both
+export.
+
+**Choose what to analyze** lives under the summary: one row per bucket with a
+measured count of applicable files, and separate rows for extracting text and
+indexing it, because those are the slow ones and each can be skipped. Each
+analyzer runs independently — one failing does not stop the others, and a
+bucket with no applicable files is a success, not an error.
 
 ### Stopping a run
 
 Cancel is honoured between files, never during one, so nothing is left
 half-written. What was done is kept and recorded; what was not is spelled
-out — the hub says "at least N files" after a stopped walk, "not fully
-answered" after stopped fingerprinting, "N of M have current analysis" after a
-stopped bucket. Running the stage again starts from its first file.
+out — the summary says "at least N files" after a stopped walk, "not fully
+answered" after stopped fingerprinting, "N analysed" of M after a stopped
+bucket. Running the stage again starts from its first file.
 
 ### 5. Results
 

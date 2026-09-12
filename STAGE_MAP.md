@@ -72,7 +72,7 @@ After the prescan the user chooses what to invest next. **None of these is final
 |---|---|---|---|
 | **Find My Duplicates** | `duplicate_analysis` | Opens only size-collision candidates | Answers the duplicate question **completely** |
 | **Full Fingerprinting** | `exhaustive_identity` | Opens every file | Gives **every** file a verifiable content identity |
-| **Go to the query interface** | — | Nothing | Everything the prescan already knows |
+| **Go to the project** | — | Nothing | Everything the prescan already knows — the project summary |
 
 **The real difference between the first two is not thoroughness.** Find My
 Duplicates finds every duplicate there is. Full Fingerprinting additionally gives
