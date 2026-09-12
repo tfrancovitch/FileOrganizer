@@ -23,9 +23,13 @@ What it proves:
   5. The estimates count applicable files exactly and measure a real sample.
   6. The window's non-drawing helpers (project listing, folder validation,
      default naming) behave.
-  7. If a display is available: the window constructs, and every view --
-     start, hub, doors, analyze, the pre-run estimate screen -- renders
-     without raising. No mainloop, no clicks.
+  7. The Files page's engine support: sorted keyset paging in both directions
+     with no repeats, chosen columns, an exact total, and a CSV export that
+     walks every page. And the project summary adds up.
+  8. If a display is available: the window constructs, and every view --
+     welcome, Open Project, New Project, the project summary, doors, analyze,
+     Files with sorting and paging, Reports, Options, the pre-run estimate
+     screen -- renders without raising. No mainloop, no clicks.
 
 Run:  python Scripts/p2_dashboard_check.py
 """
@@ -453,6 +457,72 @@ def test_worker(tmp: Path):
     text = fo_estimates.describe_analysis(breakdown)
     check("the description names each analyzer and the estimate", "Text / Markdown" in text and "Estimated time" in text)
 
+    # -- the Files page's engine support ------------------------------------
+    section("9. Files page: sorted paging, columns, count, export, summary")
+    from Phase2.gui import export_files, write_rows_csv, FILE_COLUMNS
+    from Phase2.capability import project_summary
+    c = connect(project_dir, write=True)
+    engine = QueryEngine(c, saved_store=SavedQueryStore(c), fts_manager=FtsManager(c, project_dir))
+    total = engine.count_files()
+    check(f"count_files == inventory ({n_files})", total == n_files, f"got {total}")
+    seen = []
+    cursor = None
+    pages = 0
+    while True:
+        r = engine.list_files(sort=("file.size_bytes", "desc"), cursor=cursor, limit=50,
+                              columns=["path.file_name", "file.size_bytes"])
+        pages += 1
+        seen.extend((x["path.id"], x["file.size_bytes"]) for x in r["rows"])
+        cursor = r["next_cursor"]
+        if not cursor:
+            break
+    sizes = [z for _, z in seen]
+    check("size-descending pages cover every file exactly once, in order",
+          len(seen) == n_files and len({i for i, _ in seen}) == n_files
+          and all(sizes[i] >= sizes[i + 1] for i in range(len(sizes) - 1)), f"{len(seen)} rows over {pages} pages")
+    check("chosen columns come back (plus path.id), nothing else",
+          set(r["columns"] or ["path.id", "path.file_name", "file.size_bytes"]) == {"path.id", "path.file_name", "file.size_bytes"}, str(r["columns"]))
+    names = []
+    cursor = None
+    while True:
+        r = engine.list_files(sort=("path.file_name", "asc"), cursor=cursor, limit=100, columns=["path.file_name"])
+        names.extend(x["path.file_name"] for x in r["rows"])
+        cursor = r["next_cursor"]
+        if not cursor:
+            break
+    check("name-ascending pages cover every file, in order",
+          len(names) == n_files and names == sorted(names), f"{len(names)} names")
+    first = engine.list_files(limit=10)
+    second = engine.list_files(limit=10, cursor=first["next_cursor"])
+    check("default order pages by id with a cursor and no overlap",
+          {x["path.id"] for x in first["rows"]}.isdisjoint({x["path.id"] for x in second["rows"]})
+          and second["rows"][0]["path.id"] > first["rows"][-1]["path.id"])
+    small = engine.list_files(limit=1000)
+    check("a page that holds everything carries no next cursor", small["next_cursor"] is None and len(small["rows"]) == n_files)
+    filtered = engine.count_files(filters=[{"condition": {"left": {"kind": "field", "id": "path.extension"}, "op": "eq", "value": {"kind": "literal", "value": ".txt"}}}])
+    check(f"count_files honours a filter ({truth['by_extension']['.txt']['count']} .txt)",
+          filtered == truth["by_extension"][".txt"]["count"], f"got {filtered}")
+    out = tmp / "export.csv"
+    n = export_files(engine, str(out), ["path.file_name", "file.size_bytes", "path.extension"], sort=("file.size_bytes", "desc"))
+    import csv as _csv
+    with open(out, encoding="utf-8-sig", newline="") as f:
+        exported = list(_csv.reader(f))
+    check(f"export writes a header and every file ({n_files}) in the sorted order",
+          n == n_files and exported[0] == ["File", "Size", "Ext"] and len(exported) == n_files + 1
+          and [int(r[1]) for r in exported[1:]] == sorted((int(r[1]) for r in exported[1:]), reverse=True), f"{n} rows")
+    summary = project_summary(c)
+    c.close()
+    check("summary buckets plus other add up to the total",
+          sum(b["files"] for b in summary["buckets"]) + summary["other"] == summary["present"] == n_files)
+    check(f"summary duplicates match ground truth ({expected_groups} groups)",
+          summary["groups"] == expected_groups and summary["reclaimable_bytes"] == truth["duplicates"]["total_reclaimable_bytes"],
+          f"{summary['groups']} groups, {summary['reclaimable_bytes']} bytes")
+    check("summary text state is 'indexed' after extraction and indexing", summary["text_state"] == "indexed", summary["text_state"])
+    n_text = truth["by_extension"].get(".txt", {}).get("count", 0) + truth["by_extension"].get(".md", {}).get("count", 0)
+    bucket = {b["key"]: b for b in summary["buckets"]}
+    check(f"summary text bucket counts exactly ({n_text}) and shows them analysed",
+          bucket["text"]["files"] == n_text and bucket["text"]["analysed"] == n_text, str(bucket["text"]))
+
     return project_dir
 
 
@@ -461,7 +531,7 @@ def test_worker(tmp: Path):
 # ---------------------------------------------------------------------------
 
 def test_gui_helpers(tmp: Path):
-    section("9. Window helpers")
+    section("10. Window helpers")
     from Phase2.gui import list_projects, default_project_name, validate_folder
     projects = tmp / "AppRoot" / "Projects"
     check("list_projects finds the created project", "DashCheck" in list_projects(projects), str(list_projects(projects)))
@@ -477,8 +547,33 @@ def test_gui_helpers(tmp: Path):
     check("validate_folder refuses a file, saying so", not ok and "file, not a folder" in msg, msg)
 
 
+def _texts(widget):
+    """Every label/button text under a widget, recursively."""
+    import tkinter as tk
+    out = []
+    for w in widget.winfo_children():
+        if isinstance(w, (tk.ttk.Label, tk.ttk.Button, tk.Label, tk.Button)):
+            try:
+                out.append(str(w.cget("text")))
+            except Exception:                                   # noqa: BLE001
+                pass
+        out.extend(_texts(w))
+    return out
+
+
+def _button(widget, text):
+    import tkinter as tk
+    for w in widget.winfo_children():
+        if isinstance(w, tk.ttk.Button) and str(w.cget("text")) == text:
+            return w
+        found = _button(w, text)
+        if found is not None:
+            return found
+    return None
+
+
 def test_gui_views(project_dir: Path):
-    section("10. Window views (no mainloop)")
+    section("11. Window views (no mainloop)")
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -486,48 +581,110 @@ def test_gui_views(project_dir: Path):
     except Exception as exc:                                    # noqa: BLE001
         print(f"  SKIP  no display available ({exc})")
         return
+    import Phase2.gui as gui
     from Phase2.gui import Phase2App
     from Phase2 import hub as hub_view
     from Phase2.runner import RunRequest, DUPLICATES, ANALYSIS
+    saved_boxes = {name: getattr(gui.messagebox, name) for name in ("showinfo", "showwarning", "showerror", "askyesno")}
+    dialogs = []
+    for name in saved_boxes:
+        setattr(gui.messagebox, name, lambda title, message, name=name, **kw: (dialogs.append((name, title, message)) or True))
     app = Phase2App(None)
     try:
         app.update()
-        check("start screen renders", app.project_dir is None and app.content.winfo_children())
+        check("the window opens on nothing: no project, no panel, one line of text",
+              app.project_dir is None and len(_texts(app.content)) == 1, str(_texts(app.content)))
+        check("Open Project and New Project sit at the top of the side panel; Options and Exit exist",
+              all(hasattr(app, a) for a in ("nav_open", "nav_new", "nav_options", "nav_exit")))
+        check("project pages are disabled until a project is open",
+              all(str(b.cget("state")) == "disabled" for b in app.nav_buttons))
+        app.show_open_panel(); app.update()
+        check("Open Project shows the projects panel", "Open Project" in _texts(app.content))
+        app.show_new_panel(); app.update()
+        check("New Project shows the form", any("Create project" in t for t in _texts(app.content)))
+        app.show_options(); app.update()
+        check("Options page exists (nothing to set yet)", "Options" in _texts(app.content))
+
         app.open_project(project_dir)
         app.update()
-        check("hub renders for an opened project", app.conn is not None and app.content.winfo_children())
-        hub_view.show_doors(app)
-        app.update()
-        check("doors screen renders", len(app.content.winfo_children()) > 0)
-        hub_view.show_analyze(app)
-        app.update()
-        check("analyze screen renders", len(app.content.winfo_children()) > 0)
+        texts = _texts(app.content)
+        check("opening a project lands on 'Project <name>', not a question page",
+              any(t.startswith("Project DashCheck") for t in texts) and not any("can answer" in t for t in texts), str(texts[:3]))
+        check("the summary shows totals, files by type and text", all(any(k in t for t in texts) for k in ("Total files", "Files by type", "Text")))
+        check("project pages are enabled with a project open", all(str(b.cget("state")) == "normal" for b in app.nav_buttons))
+
+        dialogs.clear()
+        app.show_open_panel(); app.update()
+        check("leaving an open project asks first (askyesno), and answering yes closes it",
+              any(d[0] == "askyesno" and "DashCheck" in d[2] for d in dialogs) and app.project_dir is None, str(dialogs))
+        app.open_project(project_dir); app.update()
+
+        hub_view.show_doors(app); app.update()
+        check("doors screen renders", "What next?" in _texts(app.content))
+        hub_view.show_analyze(app); app.update()
+        check("analyze screen renders", any("Choose what to analyze" in t for t in _texts(app.content)))
+
+        # -- Files: paging, sorting, columns ----------------------------------
+        app.show_files(); app.update()
+        texts = _texts(app.content)
+        check("Files page shows an honest range over the total",
+              any(t.startswith("Files 1") and " of 231" in t for t in texts), str([t for t in texts if t.startswith("Files")]))
+        nxt = _button(app.content, "Next 200 \u25b6"); prv = _button(app.content, "\u25c0 Previous 200")
+        check("Next is enabled on a full page and Previous is disabled on the first",
+              nxt is not None and str(nxt.cget("state")) == "normal" and prv is not None and str(prv.cget("state")) == "disabled")
+        app.next_files_page(); app.update()
+        texts = _texts(app.content)
+        nxt = _button(app.content, "Next 200 \u25b6"); prv = _button(app.content, "\u25c0 Previous 200")
+        check("the second page shows 201-231 with Next disabled and Previous enabled",
+              any(t.startswith("Files 201") and "231 of 231" in t for t in texts)
+              and str(nxt.cget("state")) == "disabled" and str(prv.cget("state")) == "normal", str([t for t in texts if t.startswith("Files")]))
+        app.previous_files_page(); app.update()
+        check("Previous returns to page one", any(t.startswith("Files 1") for t in _texts(app.content)))
+        app.sort_files_by("file.size_bytes"); app.update()
+        check("sorting by size resets to page one and marks the heading",
+              app.files_sort == ("file.size_bytes", "asc") and app.files_page == 0)
+        sizes = [r["file.size_bytes"] for r in app.current_rows]
+        check("the page is sorted by size ascending", sizes == sorted(sizes))
+        app.sort_files_by("file.size_bytes"); app.update()
+        check("clicking the same heading again sorts descending",
+              app.files_sort == ("file.size_bytes", "desc") and [r["file.size_bytes"] for r in app.current_rows] == sorted(sizes := [r["file.size_bytes"] for r in app.current_rows], reverse=True))
+        app.files_columns = ["path.file_name", "hash.status", "time.created_utc"]
+        app.show_files(); app.update()
+        check("chosen columns drive the query", set(app.current_rows[0].keys()) == {"path.id", "path.file_name", "hash.status", "time.created_utc"}, str(list(app.current_rows[0].keys())))
+        app.files_columns = list(gui.DEFAULT_FILE_COLUMNS)
+        app.show_file_detail(app.current_rows[0]); app.update()
+        check("details pane renders for a row", "Details & Evidence" in _texts(app.detail_host))
+
+        app.show_reports(); app.update()
+        check("Reports page lists all 31 with Run first", _texts(app.content).count("Run") == 31)
+        app.show_saved(); app.update()
+        check("Saved Queries page explains itself", any("Standard reports are the questions" in t for t in _texts(app.content)))
+        app.show_evidence(); app.update()
+        app.show_history(); app.update()
+        app.show_hub(); app.update()
+        check("Evidence, History and the summary render", any(t.startswith("Project DashCheck") for t in _texts(app.content)))
+
         hub_view.confirm_and_run(app, RunRequest(DUPLICATES, "Find My Duplicates"))
         deadline = time.time() + 20
         while time.time() < deadline:
             app.update()
-            buttons = [w for f in app.content.winfo_children() for w in f.winfo_children()
-                       if isinstance(w, tk.ttk.Button) and w.cget("text") == "Start"]
-            if buttons and str(buttons[0].cget("state")) == "normal":
+            start = _button(app.content, "Start")
+            if start is not None and str(start.cget("state")) == "normal":
                 break
             time.sleep(0.05)
-        check("pre-run estimate screen enables Start once measured", bool(buttons) and str(buttons[0].cget("state")) == "normal")
+        check("pre-run estimate screen enables Start once measured", start is not None and str(start.cget("state")) == "normal")
         hub_view.confirm_and_run(app, RunRequest(ANALYSIS, "Analyze", analyzer_keys=["text", "pdf"]))
         deadline = time.time() + 30
         while time.time() < deadline:
             app.update()
-            buttons = [w for f in app.content.winfo_children() for w in f.winfo_children()
-                       if isinstance(w, tk.ttk.Button) and w.cget("text") == "Start"]
-            if buttons and str(buttons[0].cget("state")) == "normal":
+            start = _button(app.content, "Start")
+            if start is not None and str(start.cget("state")) == "normal":
                 break
             time.sleep(0.05)
-        check("analysis estimate screen enables Start once measured", bool(buttons) and str(buttons[0].cget("state")) == "normal")
-        app.show_files(); app.update()
-        app.show_reports(); app.update()
-        app.show_evidence(); app.update()
-        app.show_hub(); app.update()
-        check("Files, Reports, Evidence and Hub views render", True)
+        check("analysis estimate screen enables Start once measured", start is not None and str(start.cget("state")) == "normal")
     finally:
+        for name, fn in saved_boxes.items():
+            setattr(gui.messagebox, name, fn)
         try:
             app.release_connection()
             app.destroy()
@@ -539,7 +696,7 @@ def test_gui_runner(tmp: Path):
     """Drive the REAL window through a run: run_blocking, its queue, Cancel,
     and _run_finished. The worker is the same one sections 2-7 proved; this
     proves the Tk half around it, with the app root pointed at scratch."""
-    section("11. Window runner (run_blocking, Cancel, _run_finished)")
+    section("12. Window runner (run_blocking, Cancel, _run_finished)")
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -588,8 +745,7 @@ def test_gui_runner(tmp: Path):
         check("the window's Pre-Scan finishes", finished)
         check("the window opened the new project and landed on the doors",
               app.project_dir is not None and app.project_dir.name == "GuiCheck"
-              and any("What next?" in str(w.cget("text")) for w in app.content.winfo_children()
-                      if isinstance(w, tk.ttk.Label)))
+              and "What next?" in _texts(app.content))
         check("navigation is enabled again after the run", str(app.nav_buttons[0].cget("state")) == "normal")
         check("the analytical connection was reopened", app.conn is not None and app.engine is not None)
 
@@ -602,8 +758,8 @@ def test_gui_runner(tmp: Path):
         check("a cancelled window run finishes and hands the window back", finished and app.conn is not None)
         status = app.conn.execute("SELECT status FROM run ORDER BY run_id DESC LIMIT 1").fetchone()[0]
         check("the cancelled run is recorded as cancelled", status == "cancelled", status)
-        check("the window returned to the hub", any("can answer" in str(w.cget("text"))
-              for w in app.content.winfo_children() if isinstance(w, tk.ttk.Label)))
+        check("the window returned to the project summary",
+              any(t.startswith("Project GuiCheck") for t in _texts(app.content)))
         check("the cancellation was announced to the person, as information not error",
               any(d[0] == "showinfo" and "Stopped" in d[2] for d in dialogs), str(dialogs))
     finally:
