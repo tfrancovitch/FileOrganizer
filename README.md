@@ -131,9 +131,11 @@ database can actually be created on this machine.
 
 One window. `TheFileOrganizer.bat` runs the startup checks, then opens with
 nothing selected: **Open Project** and **New Project** are the first two buttons
-in the side panel, **Options** and **Exit** the last two. Every step that does
-work shows an estimate before it starts, owns the window while it runs, and has
-a **Cancel** that stops between files and keeps everything already done.
+in the side panel, **Options** and **Exit** the last two. Every button that does
+work starts at once: the run measures its own estimate first and shows it, asks
+"Begin now?" only if that estimate is over 15 minutes, owns the window while it
+runs, and has a **Cancel** that stops between files and keeps everything already
+done.
 
 ### 1. Create a project
 
@@ -170,7 +172,7 @@ Nothing is hashed in full yet.
 ### 3. The three doors
 
 After the Pre-Scan, three choices — none of them final; all three stay
-available from the hub.
+available from the project page. Each shows its estimate; **Begin Scan** begins.
 
 **Find My Duplicates** — answers the duplicate question *completely*. Only
 files that share an exact size can possibly be duplicates, so only those are
@@ -204,11 +206,11 @@ questions that ship with the product; a **saved query** is one you composed on
 the Files page and named. Both re-run against current evidence, and both
 export.
 
-**Choose what to analyze** lives under the summary: one row per bucket with a
-measured count of applicable files, and separate rows for extracting text and
-indexing it, because those are the slow ones and each can be skipped. Each
-analyzer runs independently — one failing does not stop the others, and a
-bucket with no applicable files is a success, not an error.
+The summary's first column is the action: **Analyze** on a bucket that needs
+it, or the word ANALYZED; **Analyze all** runs every bucket that needs it, text
+extraction excluded, because extracting and indexing are the slow ones and each
+can be skipped. Each analyzer runs independently — one failing does not stop
+the others, and a bucket with no applicable files is a success, not an error.
 
 ### Stopping a run
 
