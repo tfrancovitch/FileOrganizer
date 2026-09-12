@@ -61,7 +61,12 @@ def run_ffprobe(path):
         "ffprobe", "-v", "quiet", "-print_format", "json",
         "-show_format", "-show_streams", str(path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    # CREATE_NO_WINDOW: the Dashboard runs under pythonw, with no console of
+    # its own, so without this every probe flashed a console window on the
+    # screen -- one per sampled video or audio file. Harmless to the result,
+    # alarming to watch, and reported as such by the first person to see it.
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {result.stderr.strip()[:200]}")
     return json.loads(result.stdout)
