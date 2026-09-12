@@ -4,10 +4,11 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-12 — after the second real-use session, on a real corpus
-**Current position:** Phase 2 (Understand) — built; used twice by a person, the
-second time on 41,056 real files; every note acted on; the crash found and fixed;
-closeout drafted, awaiting the user's decision
+**Last updated:** 2026-09-12, afternoon — the analyzers run on the real corpus
+**Current position:** Phase 2 (Understand) — built; used twice by a person on a
+real 41,056-file corpus; every note acted on; the crash fixed; all seven analyzers
+run on the real corpus with source immutability confirmed; extraction awaits the
+user's decision; closeout drafted
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -69,7 +70,7 @@ A nineteenth, adopted 2026-09-10:
 | Phase | Name | Status |
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
-| **2** | **Understand** | **Built; used twice, the second time on a real corpus; every note acted on; the crash fixed; closeout drafted — the user's decision** |
+| **2** | **Understand** | **Built; used on a real corpus through fingerprinting and every analyzer, source files confirmed untouched; closeout drafted — the user's decision** |
 | 3 | Decide / Plan | Not started |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
@@ -101,7 +102,8 @@ query engine being tested.
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
 | **Dashboard checks** (`p2_dashboard_check.py`) | **136 / 136**, four consecutive runs — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, and every view of the real window |
-| **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.3 GB reclaimable. Audio and video analysis run to completion through the window on a copy of the project |
+| **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.4 GB reclaimable. **All seven analyzers run on the real project: 30 min against a ~51 min estimate; 31,254 files analysed, 16 per-file errors recorded with reasons; 30,112 archive members listed** (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md`) |
+| **Source immutability, real folder** | **41,056 / 41,056 unchanged** in size and modification time after the Pre-Scan, Full Fingerprinting, all seven analyzers and the archive re-run |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
 
 ### Defects found and fixed
@@ -126,6 +128,7 @@ query engine being tested.
 | 16 | **The crash.** Tk objects whose last reference sits in a reference cycle are freed by the garbage collector on whichever thread triggers it; freed on a worker thread, a Tk variable raises and a Tk instance **aborts the process** (`Tcl_AsyncDelete`). Timing-dependent — glitched once, crashed the second time. Reproduced in the suite and in isolation | Collector run on the main thread after every screen teardown and before every thread; no Tk variables on the run screen; faulthandler armed; callback errors logged |
 | 17 | ffprobe spawned without `CREATE_NO_WINDOW` — under pythonw every probe flashed a console window ("a bunch of brief windows popped up") | Flag added |
 | 18 | `needs_caution` bound its threshold at definition time; found by the check that tried to lower it | Read when called |
+| 19 | **Archive members were never persisted by a Dashboard run.** The streaming persistence path passed `results=` to a writer that never accepted it and never called the summary writer; every run with a `.zip` raised, was caught as a warning, reported "succeeded", and stored zero member rows with the ingest status stuck at *running*. No fixture had an archive; the real corpus had 462 | Both writers take the batch; summaries written; a persistence failure marks its analyzer run *failed* with the reason. 30,112 members persisted on re-run; the suite now carries zips through the window |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -137,6 +140,7 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
+- **Text extraction can be very slow on real PDFs.** The real corpus's 4,060 extractable documents estimated at ~40 hours (the sample hit 6 s/file). The estimate is pessimistic by design; the true figure is unknown until it runs. Extraction was deliberately not started unattended.
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
@@ -192,7 +196,7 @@ The living plan's own completion criteria:
 | **Real user questions recorded** | **Partial** — two sessions' notes recorded and acted on; still about the interface, because the second session crashed before the corpus was questioned |
 | Analytical gaps classified | Partial |
 | High-value deficiencies corrected or deferred | **Done** — 18 defects, all fixed |
-| Real source immutability confirmed | **Done** on the corpus |
+| Real source immutability confirmed | **Done — on the real folder**: 41,056 / 41,056 unchanged after every run |
 | **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not evidenced** — the session did not reach a verdict |
 
 **`Docs\Handoffs\P2.12_CLOSEOUT.md`** assesses each criterion against what
@@ -295,11 +299,15 @@ rather than time-boxed, and it does not exist for network shares.
 
 **Done 2026-09-12 — the second real-use session, on a real corpus**
 8. Every note acted on; the crash reproduced and fixed; the flow is click-and-go ✔
+9. The seven analyzers run on the real project at the user's request; immutability
+   confirmed on the real folder; defect 19 found and fixed ✔
 
 **To close Phase 2** — the user's decision
-9. Pick up the real corpus where the crash stopped it: analyze, extract, index,
-   and ask it things. Record what was asked and whether it answered.
-10. Sign the closeout; Phase 3 handoff follows from it
+10. Extract and index the 4,060 documents, or not (~40 h estimated; it will ask)
+11. Ask the corpus things — what is taking the space, which duplicate groups are
+    worth acting on, what is in the archives — and record what was asked and
+    whether it answered
+12. Sign the closeout; Phase 3 handoff follows from it
 
 **Decisions still open**
 - Does a re-run constitute a new project?
@@ -307,7 +315,7 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? Email (`.msg`, `.pst`, `.eml`) is the largest gap for legal use.
 
-**Unpushed:** the `phase2` branch is **37 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **41 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.
