@@ -284,7 +284,10 @@ class QueryEngine:
         q.pop("_normalized_execution_utc", None)
         return fingerprint(q)
 
-    def execute(self, query, parameters=None, limit=None, cursor=None, retain_kind=None, saved_revision_id=None, cancel_check=None):
+    def execute(self, query, parameters=None, limit=None, cursor=None, retain_kind=None, saved_revision_id=None, cancel_check=None, columns=None):
+        """Run a query. `columns`, when given, names the fields an ungrouped file
+        query returns (path.id is always included) -- a presentation choice, not
+        part of the question, so it is not in the AST and not in the fingerprint."""
         normalized = self.normalize(query, parameters)
         entity = normalized["subject"]["entity"]
         if cancel_check is not None:
@@ -300,7 +303,7 @@ class QueryEngine:
             else:
                 if entity == "duplicate_group":
                     ensure_duplicate_projection(self.conn)
-                sql, bind = self._compile(normalized, cursor=cursor, external_limit=limit)
+                sql, bind = self._compile(normalized, cursor=cursor, external_limit=limit, columns=columns)
                 cur = self.conn.execute(sql, bind)
                 rows = [dict(r) for r in cur.fetchall()]
                 result = {"rows": rows, "columns": list(rows[0]) if rows else [], "next_cursor": self._next_cursor(normalized, rows)}
@@ -625,7 +628,7 @@ class QueryEngine:
         return expr
 
     def _compile(self, q, cursor=None, external_limit=None, ids_only=False,
-                 id_constraint_sql=None, id_constraint_bind=None):
+                 id_constraint_sql=None, id_constraint_bind=None, columns=None):
         entity=q["subject"]["entity"]; temporal=q["subject"]["temporal"]["mode"]
         if entity=="folder": raise QueryError("folder subject uses specialized executor")
         fmap=self._field_map(entity,temporal)
@@ -683,6 +686,11 @@ class QueryEngine:
                 select.append(f"{expr} AS \"{aid}\""); agg_aliases[aid]=expr
         else:
             cols = DEFAULT_FILE_COLUMNS if entity=="file" and temporal=="current" else DEFAULT_HISTORY_COLUMNS if entity=="file" else DEFAULT_ANALYSIS_COLUMNS if entity=="analysis_result" else DEFAULT_DUP_COLUMNS if entity=="duplicate_group" else DEFAULT_RUN_COLUMNS
+            if columns:
+                unknown=[c for c in columns if c not in fmap]
+                if unknown: raise QueryError(f"Unknown column(s): {unknown}")
+                cols=list(columns)
+                if "path.id" in fmap and "path.id" not in cols: cols=["path.id"]+cols
             for fid in cols:
                 if fid in fmap: select.append(f"{fmap[fid]} AS \"{fid}\"")
 
@@ -769,8 +777,8 @@ class QueryEngine:
             return {"path.id": rows[-1].get("path.id")}
         return None
 
-    def list_files(self, scope=None, search=None, filters=None, limit=200, after_id=None):
-        """Fast ordinary Files-workspace query with location-id cursor."""
+    @staticmethod
+    def _files_query(scope, search, filters):
         q={
             "query_schema":QUERY_SCHEMA,"semantic_contract":SEMANTIC_CONTRACT,
             "subject":{"entity":"file","temporal":{"mode":"current"},"current_file_states":["present"]},
@@ -782,11 +790,65 @@ class QueryEngine:
                 {"condition":{"left":{"kind":"field","id":"path.file_name"},"op":"contains","value":{"kind":"literal","value":search}}},
                 {"condition":{"left":{"kind":"field","id":"path.relative"},"op":"contains","value":{"kind":"literal","value":search}}},
             ]})
-        if after_id:
-            preds.append({"condition":{"left":{"kind":"field","id":"path.id"},"op":"gt","value":{"kind":"literal","value":after_id}}})
+        return q,preds
+
+    @staticmethod
+    def _cond(field,op,value=None):
+        c={"condition":{"left":{"kind":"field","id":field},"op":op}}
+        if value is not None: c["condition"]["value"]={"kind":"literal","value":value}
+        return c
+
+    def _keyset_after(self, field, direction, value, last_id):
+        """Rows strictly after (value, last_id) in the order (field direction NULLS LAST, path.id ASC).
+
+        A composite keyset rather than an offset: a page then costs the same
+        whether it is the first or the five-hundredth, and a row inserted or
+        removed between two clicks cannot shift the window and repeat or skip
+        anything -- which is what P2.5 chose id-keyset paging for in the first
+        place. Nulls sort last, so a non-null key is followed by every null row.
+        """
+        step="gt" if direction=="asc" else "lt"
+        if field=="path.id":
+            return self._cond("path.id",step,last_id)
+        if value is None:
+            return {"all":[self._cond(field,"is_null"),self._cond("path.id","gt",last_id)]}
+        return {"any":[self._cond(field,step,value),
+                       {"all":[self._cond(field,"eq",value),self._cond("path.id","gt",last_id)]},
+                       self._cond(field,"is_null")]}
+
+    def list_files(self, scope=None, search=None, filters=None, limit=200, after_id=None,
+                   sort=None, cursor=None, columns=None):
+        """The Files page's query: scope + search + filters, sorted, one page at a time.
+
+        `sort` is (field_id, "asc"|"desc"); None means location id ascending,
+        the original walk order. `cursor` is the previous page's `next_cursor`.
+        `after_id` is the older id-only cursor and still works for the default
+        order. The result carries `next_cursor` only when the page was full.
+        """
+        q,preds=self._files_query(scope,search,filters)
+        field,direction=sort or ("path.id","asc")
+        direction="desc" if str(direction).lower()=="desc" else "asc"
+        if cursor:
+            preds.append(self._keyset_after(field,direction,cursor.get("value"),cursor.get("id")))
+        elif after_id and field=="path.id":
+            preds.append(self._cond("path.id","gt" if direction=="asc" else "lt",after_id))
         if preds: q["where"]={"all":preds} if len(preds)>1 else preds[0]
-        q["sort"]=[{"ref":{"kind":"field","id":"path.id"},"direction":"asc"}]
-        return self.execute(q,limit=limit)
+        q["sort"]=[{"ref":{"kind":"field","id":field},"direction":direction,"nulls":"last"}]
+        result=self.execute(q,limit=limit,columns=columns)
+        rows=result["rows"]
+        if rows and limit and len(rows)>=int(limit):
+            result["next_cursor"]={"value":rows[-1].get(field),"id":rows[-1].get("path.id"),"field":field,"direction":direction}
+        else:
+            result["next_cursor"]=None
+        return result
+
+    def count_files(self, scope=None, search=None, filters=None):
+        """How many current present files the Files page's question covers."""
+        q,preds=self._files_query(scope,search,filters)
+        if preds: q["where"]={"all":preds} if len(preds)>1 else preds[0]
+        q["aggregates"]=[{"id":"n","function":"count"}]
+        rows=self.execute(q)["rows"]
+        return int(rows[0]["n"]) if rows else 0
 
     def _execute_folders(self,q):
         """Specialized analytical folder backend derived only from stored current paths."""

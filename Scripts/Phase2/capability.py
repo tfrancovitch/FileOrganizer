@@ -125,6 +125,31 @@ def _analyzed_counts(conn):
         return {}
 
 
+def current_duplicate_counts(conn):
+    """(groups, files in them, reclaimable bytes or None) for the CURRENT state.
+
+    Counted from the Phase 2 current-duplicate projection -- current files
+    sharing a content identity -- never from `duplicate_group`, which keeps one
+    row per group PER RUN and so triples after a stopped run, a complete run
+    and a fingerprinting run of the same files. The projection needs a
+    writable connection to rebuild; on a read-only one the latest run's
+    groups stand in, with reclaimable bytes unknown rather than guessed.
+    """
+    try:
+        from .derived import ensure_duplicate_projection
+        ensure_duplicate_projection(conn)
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(location_count),0), COALESCE(SUM(reclaimable_bytes),0) "
+            "FROM p2_current_duplicate_summary").fetchone()
+        return int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
+    except Exception:
+        pass
+    latest = "(SELECT MAX(duplicate_run_id) FROM duplicate_run)"
+    groups = _scalar(conn, f"SELECT COUNT(*) FROM duplicate_group WHERE duplicate_run_id={latest}")
+    members = _scalar(conn, f"SELECT COALESCE(SUM(member_count),0) FROM duplicate_group WHERE duplicate_run_id={latest}")
+    return int(groups or 0), int(members or 0), None
+
+
 def project_capabilities(conn):
     """Everything this project can and cannot currently answer.
 
@@ -233,8 +258,7 @@ def project_capabilities(conn):
             None, identified=identified, total=present))
 
     # --- duplicates --------------------------------------------------------
-    groups = _scalar(conn, "SELECT COUNT(*) FROM duplicate_group")
-    members = _scalar(conn, "SELECT COUNT(*) FROM duplicate_member") if groups else 0
+    groups, members, _reclaimable = current_duplicate_counts(conn)
     if identified == 0:
         caps.append(Capability(
             "duplicates", "Duplicates and reclaimable space", UNAVAILABLE,
@@ -355,3 +379,80 @@ def summarise(caps):
         f"  {mark[c.state]:>4}  {c.label:<{width}}  {c.detail}"
         + (f"   [{c.action}]" if c.action else "")
         for c in caps)
+
+
+# ---------------------------------------------------------------------------
+# The project summary -- what the landing page shows
+# ---------------------------------------------------------------------------
+
+#: Bucket labels for the summary, in the order the analyzers run. "Other" is
+#: everything no analyzer claims, so the buckets always add up to the total.
+BUCKET_LABELS = {
+    "image": "Images", "raw_image": "RAW camera images", "pdf": "PDFs",
+    "office": "Office documents", "audio": "Audio", "video": "Video",
+    "text": "Text / Markdown", "archive": "Archives",
+}
+
+
+def project_summary(conn):
+    """The numbers a project summary page shows, every one a fact in the database.
+
+    Built on project_capabilities() so the summary and the capability actions
+    cannot disagree, plus the counts a person asked for that capabilities do
+    not carry: total size, every bucket's file count whether or not it has
+    been analysed, and "other" -- files no analyzer handles.
+    """
+    caps = {c.key: c for c in project_capabilities(conn)}
+    present = _scalar(conn, "SELECT COUNT(*) FROM file_state WHERE state='present'")
+    total_bytes = _scalar(conn, "SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present'")
+    roots = [r[0] for r in conn.execute(
+        "SELECT root_path FROM source_root WHERE project_id=1 AND is_active=1 ORDER BY root_ordinal, root_path")]
+
+    ext_counts = _counts_by_extension(conn)
+    analyzed = _analyzed_counts(conn)
+    ext_map = _analyzer_extension_map()
+    buckets = []
+    claimed = 0
+    for key in BUCKET_LABELS:
+        entry = ext_map.get(key)
+        if entry is None:
+            continue
+        _label, exts = entry
+        # Image excludes RAW the way the engine does: RAW files belong to the
+        # RAW bucket even though both adapters could open them.
+        if key == "image" and "raw_image" in ext_map:
+            exts = exts - ext_map["raw_image"][1]
+        files = sum(n for e, n in ext_counts.items() if e in exts)
+        claimed += files
+        cap = caps.get(f"analyze.{key}")
+        buckets.append({"key": key, "label": BUCKET_LABELS[key], "files": files,
+                        "analysed": analyzed.get(key, 0) if files else 0,
+                        "action": cap.action if cap else None,
+                        "state": cap.state if cap else None})
+    other = max(0, present - claimed)
+
+    identity = caps.get("identity")
+    duplicates = caps.get("duplicates")
+    extraction = caps.get("extraction")
+    search = caps.get("search")
+    groups, members, reclaimable = current_duplicate_counts(conn)
+
+    ex = (extraction.counts if extraction else {}) or {}
+    if not extraction or extraction.state == UNAVAILABLE and not ex.get("extracted"):
+        text_state = "not extracted"
+    elif search and search.state == AVAILABLE:
+        text_state = "indexed"
+    else:
+        text_state = "extracted, not indexed"
+
+    return {
+        "present": present, "bytes": total_bytes, "roots": roots,
+        "inventory": caps.get("inventory"),
+        "identity": identity, "duplicates": duplicates,
+        "groups": groups, "members": members, "reclaimable_bytes": reclaimable,
+        "buckets": buckets, "other": other,
+        "extraction": extraction, "search": search,
+        "text_state": text_state,
+        "extractable": ex.get("extractable", 0), "extracted": ex.get("extracted", 0),
+        "indexed": (search.counts.get("indexed", 0) if search else 0),
+    }
