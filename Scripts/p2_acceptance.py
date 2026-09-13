@@ -214,7 +214,9 @@ def run(project_dir: Path, truth: dict) -> int:
     section("8. Deep keyset continuation (never reached by the v1.2 run)")
     try:
         seen, cursor, pages = [], None, 0
-        while pages < 20:
+        # Bounded by the corpus, not by a number: twenty pages of 25 held
+        # 344 files and stopped short once the matrix categories arrived.
+        while pages < truth["totals"]["file_count"] // 25 + 2:
             page = engine.list_files(limit=25, after_id=cursor)
             rows = page["rows"] if isinstance(page, dict) else page
             if not rows:

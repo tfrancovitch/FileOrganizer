@@ -157,6 +157,30 @@ def set_creation_time(target: str, when: datetime) -> None:
         kernel32.CloseHandle(handle)
 
 
+def make_sparse(target: str, size: int) -> None:
+    """Mark a file sparse and extend it: the tail reads as zeros and occupies
+    no disk. fsutil needs the plain path; it exits 0 on failure, so the
+    size is checked afterwards."""
+    if os.name != "nt":
+        with open(target, "r+b") as handle:
+            handle.truncate(size)
+        return
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    plain = plain_path(target)
+    subprocess.run(["fsutil", "sparse", "setflag", plain], capture_output=True, creationflags=flags)
+    subprocess.run(["fsutil", "file", "seteof", plain, str(size)], capture_output=True, creationflags=flags)
+    if os.path.getsize(target) != size:
+        raise OSError("could not make %s sparse to %d bytes" % (plain, size))
+
+
+def set_compressed(target: str) -> None:
+    """NTFS compression on one file (compact /c)."""
+    if os.name != "nt":
+        return
+    subprocess.run(["compact", "/c", "/q", plain_path(target)], capture_output=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
 def _is_reparse(entry) -> bool:
     try:
         attributes = entry.stat(follow_symlinks=False).st_file_attributes
@@ -884,18 +908,42 @@ class Corpus:
 
     def add(self, relpath: str, data: bytes, *, age_days: int, note: str = "",
             expect_analyzer_failure: bool = False, case: str | None = None,
-            attributes: int = 0, created: datetime | None = None):
+            attributes: int = 0, created: datetime | None = None,
+            sparse_to: int | None = None, compress: bool = False, streams: dict | None = None):
         """Write one file and record its truth.
 
         `attributes` are FILE_ATTRIBUTE_* bits to set after writing (hidden,
         system, read-only). `created` pins the creation time -- NTFS keeps
         it separately from the modified time, which `age_days` sets.
+        `sparse_to` marks the file sparse and extends it to that many bytes
+        (the tail reads as zeros and occupies nothing); the truth records
+        the on-disk size and the hash of data plus the zero tail.
+        `compress` sets NTFS compression on the file. `streams` writes named
+        alternate data streams ({name: bytes}); they are not part of the
+        file's size or hash -- the scanner sees the main stream only.
         """
         path = self.root / relpath
         target = ext_path(path)
         os.makedirs(ext_path(path.parent), exist_ok=True)
         with open(target, "wb") as handle:
             handle.write(data)
+        size, digest = len(data), hashlib.sha256(data).hexdigest()
+        if sparse_to is not None and sparse_to > len(data):
+            make_sparse(target, sparse_to)
+            size = sparse_to
+            tail = hashlib.sha256(data)
+            remaining = sparse_to - len(data)
+            zeros = bytes(1024 * 1024)
+            while remaining > 0:
+                chunk = min(remaining, len(zeros))
+                tail.update(zeros[:chunk])
+                remaining -= chunk
+            digest = tail.hexdigest()
+        if compress:
+            set_compressed(target)
+        for stream_name, stream_data in (streams or {}).items():
+            with open(target + ":" + stream_name, "wb") as handle:
+                handle.write(stream_data)
         stamp = NOW - timedelta(days=age_days)
         ts = stamp.timestamp()
         os.utime(target, (ts, ts))
@@ -906,8 +954,8 @@ class Corpus:
         relative = relpath.replace("/", "\\")
         self.files.append({
             "relative_path": relative,
-            "size_bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": size,
+            "sha256": digest,
             "extension": Path(relpath).suffix.lower(),
             "modified_utc": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "age_days": age_days,
@@ -1021,6 +1069,7 @@ class Corpus:
         self._duplicates_identity()
         self._links()
         self._corruption()
+        self._metadata()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -1819,6 +1868,64 @@ class Corpus:
                       expected={"file_state.state": "present"},
                       notes="the protected archives beside Archives\\plain.zip and bundle.zip, whose markers are still found")
             self.case("X-017")["paths"].extend([(base + "/protected/zipcrypto.zip").replace("/", "\\"), "Archives\\plain.zip"])
+
+    def _metadata(self):
+        """06_Metadata: matrix section F and D-010. Timestamps the program
+        must carry as they are, attributes it must record, and the sizes a
+        sparse or compressed file has on disk versus in the directory."""
+        base = "06_Metadata"
+        present = {"file_state.state": "present"}
+        days = lambda y, m, d: (NOW - datetime(y, m, d, 12, 0, 0, tzinfo=timezone.utc)).days   # noqa: E731
+
+        # F-001 / F-002 -- very old, and in the future.
+        self.add(base + "/dates/from_1980.txt", b"modified on the FAT epoch, 1980-01-01\n", age_days=days(1980, 1, 1), case="F-001")
+        self.add(base + "/dates/from_1970.txt", b"modified the day after the Unix epoch\n", age_days=days(1970, 1, 2), case="F-001")
+        self.case("F-001", construction="G", expected=dict(present, **{"modified_utc": ["1980-01-01T12:00:00Z", "1970-01-02T12:00:00Z"]}),
+                  notes="the age report counts them as the oldest files in the corpus")
+        self.add(base + "/dates/from_2099.txt", b"modified on 2099-12-31, a clock set wrong\n", age_days=days(2099, 12, 31), case="F-002")
+        self.case("F-002", construction="G", expected=dict(present, modified_utc="2099-12-31T12:00:00Z"),
+                  notes="age_days is negative in the truth; the window must show it without error (camera clocks do this)")
+
+        # F-003 -- created after modified.
+        self.add(base + "/dates/created_after_modified.txt", b"created 2030, modified 2020\n", age_days=days(2020, 6, 1),
+                 created=datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc), case="F-003")
+        self.case("F-003", construction="G", expected=dict(present, modified_utc="2020-06-01T12:00:00Z", created_utc="2030-01-01T12:00:00Z"),
+                  notes="both preserved as they are; nothing reconciles them")
+
+        # F-004 -- fifty files sharing one second.
+        for i in range(50):
+            self.add(base + "/same_second/batch_%02d.txt" % i, ("Batch file %d, stamped with the others.\n" % i).encode("utf-8"),
+                     age_days=days(2024, 3, 15), case="F-004")
+        self.case("F-004", construction="G", expected=dict(present, row_count=50, not_grouped=True, modified_utc="2024-03-15T12:00:00Z"),
+                  notes="identical timestamps are not identity: the contents differ and nothing groups them")
+
+        # F-005 / F-006 / D-010 -- hidden, system, read-only.
+        for i in range(3):
+            self.add(base + "/attributes/hidden_%d.txt" % i, b"a hidden file\n", age_days=57, attributes=FILE_ATTRIBUTE_HIDDEN, case="F-005")
+        self.case("F-005", construction="G", expected=dict(present, row_count=3, attributes_has=["Hidden"], **{"extracted_content.status": "extracted"}),
+                  notes="hidden files are in scope: inventoried, hashed, read; the report's 'Hidden files' counts them")
+        self.add(base + "/attributes/system.txt", b"a system-attributed file\n", age_days=58, attributes=FILE_ATTRIBUTE_SYSTEM, case="F-006")
+        self.case("F-006", construction="G", expected=dict(present, attributes_has=["System"]))
+        self.add(base + "/attributes/read_only.txt", b"a read-only file\n", age_days=59, attributes=FILE_ATTRIBUTE_READONLY, case="D-010")
+        self.case("D-010", construction="G", expected=dict(present, attributes_has=["ReadOnly"], **{"extracted_content.status": "extracted"}),
+                  notes="recorded, read, never written; the builder clears the attribute before deleting the tree")
+
+        # F-007 -- NTFS-compressed: the directory says 1 MB, the disk holds less.
+        self.add(base + "/sizes/compressed.txt", b"The same line, compressed by NTFS on disk.\n" * 24000, age_days=60, compress=True, case="F-007")
+        self.case("F-007", construction="G", expected=dict(present, attributes_has=["Compressed"], allocated_lt_size=True))
+
+        # F-009 -- sparse: 64 MB in the directory, 4 KB on disk.
+        self.add(base + "/sizes/sparse_64mb.bin", b"S" * 4096, age_days=61, sparse_to=64 * 1024 * 1024, case="F-009")
+        self.case("F-009", construction="G", expected=dict(present, size_bytes=64 * 1024 * 1024, attributes_has=["SparseFile"], allocated_lt_size=True,
+                                                           hash_status=["size_unique", "unique_by_hash"]),
+                  notes="hashing reads the 64 MB of zeros in well under a second; the 4 GB one is in Hostile")
+
+        # F-010 -- an alternate data stream: invisible to the scanner, by policy.
+        self.add(base + "/streams/report.txt", b"The main stream: what every reader sees.\n", age_days=62,
+                 streams={"secret": b"An alternate data stream nobody enumerates.\n"}, case="F-010")
+        self.case("F-010", construction="G", classification="SCOPE", expected=dict(present, size_bytes=41),
+                  matrix_expects="Detect/document support policy",
+                  notes="the row is the main stream; the named stream is not enumerated, counted or read -- alternate data streams are out of scope, written down here")
 
     def _bulk(self):
         """Volume and size/date spread, so ranked reports actually rank."""

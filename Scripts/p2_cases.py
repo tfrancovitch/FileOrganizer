@@ -26,6 +26,7 @@ The keys, and what they assert. Per path (every path the case lists):
   depth                         file_path.depth == value (directories under the root)
   path_length_gt                file_state.path_length > value
   size_bytes                    file_state.size_bytes == value
+  modified_utc, created_utc     file_state timestamps (a value, or a list of allowed values)
   attributes_has                every .NET attribute name listed is present
   attributes_lacks              none of the names listed is present
   is_reparse_point              file_state.is_reparse_point == value
@@ -203,6 +204,10 @@ def _per_path(conn, truth, key, value, relative_path, row):
         return (row["path_length"] or 0) > value, f"path_length={row['path_length']}"
     if key == "size_bytes":
         return row["size_bytes"] == value, f"size_bytes={row['size_bytes']}"
+    if key in ("modified_utc", "created_utc"):
+        got = conn.execute(f"SELECT {key} FROM file_state WHERE file_path_id = ?", (row["file_path_id"],)).fetchone()[0]
+        allowed = value if isinstance(value, list) else [value]
+        return got in allowed, f"{key}={got!r}"
     if key == "attributes_has":
         names = _attribute_names(row["attributes"])
         return all(v in names for v in value), f"attributes={row['attributes']!r}"
