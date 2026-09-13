@@ -407,6 +407,29 @@ def test_worker(tmp: Path):
     check("extracted-text rows exist", extracted > 0, f"got {extracted}")
     caps = capabilities(project_dir)
     check("hub: search unavailable, Index text offered", caps["search"].action == "Index text", caps["search"].detail)
+    # Every marker file -- .doc/.ppt/.xls from real Office, RTF, HTML, JSON,
+    # CSV, a .doc that is RTF inside -- has its text, read by the reader its
+    # bytes call for, not the one its name suggests.
+    con = connect(project_dir)
+    source_types = {}
+    for row in con.execute(
+            "SELECT fp.relative_path, ec.status, ec.source_type FROM extracted_content ec "
+            "JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id "
+            "JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id "
+            "JOIN file_path fp ON fp.file_path_id=fs.file_path_id"):
+        source_types[row[0]] = (row[1], row[2])
+    con.close()
+    markers = [rel for rel, m in truth["fts_markers"].items() if m["expected_indexed"]]
+    missing = [rel for rel in markers if source_types.get(rel, ("", ""))[0] != "extracted"]
+    check(f"every marker file has extracted text ({len(markers)} formats)", not missing, f"missing: {missing}")
+    expected_sources = {"Documents\\legacy_memo.doc": "Word 97-2003", "Documents\\legacy_deck.ppt": "PowerPoint 97-2003",
+                        "Documents\\legacy_ledger.xls": "Excel 97-2003", "Documents\\cover_letter.rtf": "RTF",
+                        "Documents\\saved_page.html": "HTML", "Documents\\export.json": "JSON",
+                        "Mixed\\inventory_extract.csv": "CSV", "Documents\\misnamed_rtf.doc": "RTF",
+                        "Malformed\\not_really.docx": "PlainText"}
+    wrong = {rel: source_types.get(rel) for rel, want in expected_sources.items() if source_types.get(rel, ("", ""))[1] != want}
+    check("each file was read as what its bytes are (a .doc holding RTF is RTF; a .docx holding text is text)",
+          not wrong, str(wrong))
 
     worker = make_worker(app_root, project_dir, RunRequest(INDEX_TEXT, "Index text"), log)
     worker.stop_event.set()            # stop at the first check
@@ -436,6 +459,22 @@ def test_worker(tmp: Path):
     check("a phrase search against the new index finds exactly its marker document",
           [r["path.file_name"] for r in rows] == ["quarterly_report.docx"],
           str([r["path.file_name"] for r in rows]))
+    c = connect(project_dir, write=True)
+    engine = QueryEngine(c, saved_store=SavedQueryStore(c), fts_manager=FtsManager(c, project_dir))
+    misses = {}
+    for rel, m in truth["fts_markers"].items():
+        hits = [r["path.file_name"] for r in engine.execute({
+            "query_schema": QUERY_SCHEMA, "semantic_contract": SEMANTIC_CONTRACT,
+            "subject": {"entity": "file", "temporal": {"mode": "current"}, "current_file_states": ["present"]},
+            "scope": {"kind": "project"},
+            "where": {"all": [{"text_match": {"mode": "phrase", "query": {"kind": "literal", "value": m["phrase"]}}}]},
+        })["rows"]]
+        want = [rel.split("\\")[-1]] if m["expected_indexed"] else []
+        if hits != want:
+            misses[rel] = hits
+    c.close()
+    check(f"every marker phrase finds exactly its own file ({len(truth['fts_markers'])} formats, incl. .doc/.ppt/.xls/.rtf/.html/.json/.csv)",
+          not misses, str(misses))
 
     # -- estimates -------------------------------------------------------------
     section("8. Estimates")
@@ -457,6 +496,13 @@ def test_worker(tmp: Path):
     check(f"index estimate counts distinct texts ({distinct})", idx["texts"] == distinct, f"got {idx['texts']}")
     text = fo_estimates.describe_analysis(breakdown)
     check("the description names each analyzer and the estimate", "Text / Markdown" in text and "Estimated time" in text)
+    ext = by_key["content_extraction"]
+    n_pdf = truth["by_extension"].get(".pdf", {}).get("count", 0)
+    check(f"extraction estimates PDFs by page ({n_pdf} PDFs, pages counted by the PDF analyzer) and the rest by file",
+          ext.get("pdf") and ext["pdf"]["files"] == n_pdf and ext["pdf"]["pages"] and ext["pdf"]["seconds_per_page"]
+          and ext["pdf"]["pages_counted_files"] >= 1 and ext.get("other") and ext["other"]["files"] > 0,
+          str({k: ext.get(k) for k in ("pdf", "other")}))
+    check("the description shows the PDF pages and the per-page rate", "PDFs:" in text and "ms/page" in text and "other documents:" in text)
 
     # -- the Files page's engine support ------------------------------------
     section("9. Files page: sorted paging, columns, count, export, summary")
@@ -525,6 +571,11 @@ def test_worker(tmp: Path):
           bucket["text"]["files"] == n_text and bucket["text"]["analysed"] == n_text, str(bucket["text"]))
     check("summary buckets carry bytes that add up with 'other' to the total",
           sum(b["bytes"] for b in summary["buckets"]) + summary["other_bytes"] == summary["bytes"] == truth["totals"]["logical_bytes"])
+    n_other_extractable = sum(v["count"] for k, v in truth["by_extension"].items() if k in (".csv", ".json", ".html", ".htm", ".rtf"))
+    check(f"summary says how many 'Other' files can still have text extracted ({n_other_extractable})",
+          summary["other_extractable"] == n_other_extractable, f"got {summary['other_extractable']}")
+    check("the Other link excludes only the buckets' extensions, so its list matches its count",
+          ".json" not in summary["all_bucket_extensions"] and ".pdf" in summary["all_bucket_extensions"], str(summary["all_bucket_extensions"]))
 
     # -- the runner's estimating step, headless -----------------------------
     from Phase2.runner import estimate_request, needs_caution, RunRequest as RR, DUPLICATES as DUP, ANALYSIS as ANA, PRESCAN as PRE, INDEX_TEXT as IDX
@@ -684,18 +735,19 @@ def test_gui_views(project_dir: Path):
         check("summary: no 'Choose what to analyze' screen any more", not any("Choose what to analyze" in t for t in texts))
 
         # -- Files: paging, sorting, columns ----------------------------------
+        n_files = app.conn.execute("SELECT COUNT(*) FROM file_state WHERE state='present'").fetchone()[0]
         app.show_files(); app.update()
         texts = _texts(app.content)
         check("Files page shows an honest range over the total",
-              any(t.startswith("Files 1") and " of 231" in t for t in texts), str([t for t in texts if t.startswith("Files")]))
+              any(t.startswith("Files 1") and f" of {n_files}" in t for t in texts), str([t for t in texts if t.startswith("Files")]))
         nxt = _button(app.content, "Next 200 \u25b6"); prv = _button(app.content, "\u25c0 Previous 200")
         check("Next is enabled on a full page and Previous is disabled on the first",
               nxt is not None and str(nxt.cget("state")) == "normal" and prv is not None and str(prv.cget("state")) == "disabled")
         app.next_files_page(); app.update()
         texts = _texts(app.content)
         nxt = _button(app.content, "Next 200 \u25b6"); prv = _button(app.content, "\u25c0 Previous 200")
-        check("the second page shows 201-231 with Next disabled and Previous enabled",
-              any(t.startswith("Files 201") and "231 of 231" in t for t in texts)
+        check(f"the second page shows 201-{n_files} with Next disabled and Previous enabled",
+              any(t.startswith("Files 201") and f"{n_files} of {n_files}" in t for t in texts)
               and str(nxt.cget("state")) == "disabled" and str(prv.cget("state")) == "normal", str([t for t in texts if t.startswith("Files")]))
         app.previous_files_page(); app.update()
         check("Previous returns to page one", any(t.startswith("Files 1") for t in _texts(app.content)))

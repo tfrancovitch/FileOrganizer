@@ -10,7 +10,8 @@ The corpus deliberately contains:
 
   * many extensions, including files with no extension
   * exact duplicates with a precomputed reclaimable-byte total
-  * extractable text (DOCX, XLSX, PDF, TXT, CSV) carrying known marker phrases
+  * extractable text (DOCX, XLSX, PDF, TXT, CSV, RTF, HTML, JSON, and the
+    Word / Excel / PowerPoint 97-2003 binaries) carrying known marker phrases
     so FTS can be verified against a specific expected hit
   * a wide modified-date spread so the Age reports separate
   * deliberately malformed files so analyzer-failure reports are exercised
@@ -42,17 +43,24 @@ SEED = 20260908
 NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
 
 # Marker phrases are unique nonsense trigrams so an FTS hit cannot be accidental.
-# `indexable` records whether Phase 1 content extraction covers that format at
-# all: ContentExtraction.EXTENSIONS is {.pdf .docx .pptx .xlsx .txt .md}, so a
-# .csv marker is expected to be unsearchable. Pinning that here keeps a known
-# Phase 1 limitation from being mistaken for a Phase 2 FTS defect -- and makes
-# it fail loudly if extraction coverage ever widens.
+# `indexable` records whether content extraction covers that format: every
+# format here is covered since extraction widened on 2026-09-12 (CSV was the
+# pinned exception before that). A marker whose flag is False is expected to
+# be unsearchable, and the acceptance check says so if it ever is found --
+# so a widening or a narrowing of coverage fails loudly either way.
 MARKERS = {
     "Documents/quarterly_report.docx": ("zarquon reconciliation variance", True),
     "Documents/budget_model.xlsx": ("flimberly allocation ceiling", True),
     "Documents/research_note.pdf": ("quixotic chloroplast cascade", True),
     "Documents/meeting_minutes.txt": ("vermillion quorum adjournment", True),
-    "Mixed/inventory_extract.csv": ("grobnar stocktake delta", False),
+    "Mixed/inventory_extract.csv": ("grobnar stocktake delta", True),
+    "Documents/legacy_memo.doc": ("wumbledore ledger fastening", True),
+    "Documents/legacy_ledger.xls": ("pallister quotient harbor", True),
+    "Documents/legacy_deck.ppt": ("crandall spindle overture", True),
+    "Documents/cover_letter.rtf": ("obrenzo tariff lantern", True),
+    "Documents/saved_page.html": ("kestrel varnish ledgerline", True),
+    "Documents/export.json": ("mizzen tabulated cormorant", True),
+    "Documents/misnamed_rtf.doc": ("pellucid gantry sonnet", True),
 }
 
 
@@ -162,6 +170,30 @@ def make_png(width: int, height: int, colour: tuple[int, int, int]) -> bytes:
     return buf.getvalue()
 
 
+def make_rtf(paragraphs: list[str]) -> bytes:
+    """A small RTF with a font table, a hyperlink field and a hex-escaped
+    character, so the reader's group handling is exercised, not just its
+    happy path."""
+    body = "\\par\n".join(paragraphs)
+    return (
+        "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fswiss Arial;}}"
+        "{\\colortbl;\\red0\\green0\\blue0;}{\\info{\\title Ignored title}}\n"
+        "\\pard\\f0\\fs24 " + body + "\\par\n"
+        "{\\field{\\*\\fldinst HYPERLINK \"http://example.invalid\"}{\\fldrslt visible link text}}\\par\n"
+        "Caf\\'e9 closes.\\par\n}"
+    ).encode("latin-1")
+
+
+def make_html(title: str, paragraphs: list[str]) -> bytes:
+    body = "".join(f"<p>{p}</p>\n" for p in paragraphs)
+    return (
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>" + title + "</title>\n"
+        "<style>p { color: #333 }</style><script>var hidden = 'not text';</script></head>\n"
+        "<body><h1>" + title + "</h1>\n" + body +
+        "<table><tr><td>cell one</td><td>cell two</td></tr></table>\n</body></html>\n"
+    ).encode("utf-8")
+
+
 def make_gzip(payload: bytes) -> bytes:
     import gzip
     buf = io.BytesIO()
@@ -244,6 +276,31 @@ class Corpus:
         self.add("Documents/presentation_notes.txt",
                  b"Slide notes for the annual review.\nNothing confidential here.\n",
                  age_days=800)
+
+        # The formats extraction gained on 2026-09-12. The three binaries are
+        # genuine Office output (see p2_fixture_blobs.py); the rest are built.
+        import p2_fixture_blobs
+        self.add("Documents/legacy_memo.doc", p2_fixture_blobs.blob("legacy_memo.doc"),
+                 age_days=2200, note="FTS marker: doc (Word 97-2003)")
+        self.add("Documents/legacy_ledger.xls", p2_fixture_blobs.blob("legacy_ledger.xls"),
+                 age_days=2300, note="FTS marker: xls (Excel 97-2003)")
+        self.add("Documents/legacy_deck.ppt", p2_fixture_blobs.blob("legacy_deck.ppt"),
+                 age_days=2400, note="FTS marker: ppt (PowerPoint 97-2003)")
+        self.add("Documents/cover_letter.rtf", make_rtf([
+            "Dear committee,",
+            f"The {marker('Documents/cover_letter.rtf')} is enclosed for your review.",
+        ]), age_days=700, note="FTS marker: rtf")
+        self.add("Documents/saved_page.html", make_html("Saved page", [
+            "A page saved from the browser.",
+            f"It mentions the {marker('Documents/saved_page.html')} once.",
+        ]), age_days=90, note="FTS marker: html")
+        self.add("Documents/export.json", json.dumps({
+            "export": "settings", "note": marker("Documents/export.json"), "items": [1, 2, 3],
+        }, indent=2).encode("utf-8"), age_days=33, note="FTS marker: json")
+        # A ".doc" that is RTF inside -- 947 of the real corpus's 1,263 were.
+        self.add("Documents/misnamed_rtf.doc", make_rtf([
+            f"Filed as a Word document, written as RTF: {marker('Documents/misnamed_rtf.doc')}.",
+        ]), age_days=1500, note="FTS marker: RTF named .doc; read by its bytes")
 
     def _known_duplicates(self):
         """Exact duplicates with a precomputed reclaimable-byte total."""
