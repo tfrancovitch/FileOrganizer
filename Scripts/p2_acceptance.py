@@ -238,7 +238,7 @@ def run(project_dir: Path, truth: dict) -> int:
         import p2_cases
         p2_cases.assert_scan_expectations(project_dir, truth, check)
         p2_cases.assert_cases(conn, truth, check, project_dir=project_dir,
-                              truth_path=TRUTH_PATH, home="Corpus")
+                              truth_path=TRUTH_PATH, home="Corpus", engine=engine)
 
     conn.close()
 

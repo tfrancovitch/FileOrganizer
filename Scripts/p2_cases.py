@@ -51,6 +51,9 @@ Across the case's paths:
                                 row for the first path (raw names, as shipped)
   canary_absent                 none of the listed paths exists on disk
                                 (%VAR% expanded) -- nothing escaped an archive
+  csv_export_safe               the Files export (Phase2.gui.export_files) has no
+                                cell beginning with = + - @ tab or return, and every
+                                case file is in it (needs the query engine)
   inventory_scan.status         the latest scan's status
   scan.inaccessible_count       the latest scan's inaccessible count
 
@@ -230,7 +233,7 @@ def _per_path(conn, truth, key, value, relative_path, row):
     return None
 
 
-def _across(conn, truth, key, value, paths, rows):
+def _across(conn, truth, key, value, paths, rows, engine=None):
     """(ok, detail) for one set-level key, or None if it is not one."""
     found = [r for r in rows if r is not None]
     if key == "row_count":
@@ -268,6 +271,27 @@ def _across(conn, truth, key, value, paths, rows):
         import os
         present = [p for p in (os.path.expandvars(v) for v in value) if os.path.lexists(p)]
         return not present, f"canary files present: {present}"
+    if key == "csv_export_safe":
+        if engine is None:
+            return False, "no query engine was given to the check"
+        import csv
+        import os
+        import tempfile
+        from Phase2.gui import export_files
+        handle, out = tempfile.mkstemp(prefix="fo_cases_", suffix=".csv")
+        os.close(handle)
+        try:
+            export_files(engine, out, ["path.file_name", "path.relative"])
+            with open(out, encoding="utf-8-sig", newline="") as f:
+                rows_out = list(csv.reader(f))[1:]
+        finally:
+            os.unlink(out)
+        live = [cell for r in rows_out for cell in r if cell[:1] in ("=", "+", "-", "@", "\t", "\r")]
+        names = {r["file_name"] for r in found}
+        exported = {r[0] for r in rows_out}
+        missing = [n for n in names if n not in exported and "'" + n not in exported]
+        ok = (not live) == bool(value) and not missing
+        return ok, f"cells a spreadsheet would run: {live[:4]}; case files absent from the export: {missing}"
     if key == "inventory_scan.status":
         scan = _latest_scan(conn)
         return scan is not None and scan["status"] == value, f"scan={dict(scan) if scan else None}"
@@ -277,7 +301,7 @@ def _across(conn, truth, key, value, paths, rows):
     return None
 
 
-def assert_case(conn, truth, case, check):
+def assert_case(conn, truth, case, check, engine=None):
     """Run every expected key of one case through `check(name, ok, detail)`.
     Returns {key: "PASS" | "FAIL" | NOT ASSERTED}."""
     label = f"{case['id']} {case.get('condition') or ''}".strip()
@@ -291,7 +315,7 @@ def assert_case(conn, truth, case, check):
     rows = [_row(conn, p) for p in paths]
     outcome = {}
     for key, value in (case.get("expected") or {}).items():
-        result = _across(conn, truth, key, value, paths, rows) if paths else None
+        result = _across(conn, truth, key, value, paths, rows, engine) if paths else None
         if result is not None:
             ok, detail = result
             check(f"{label}: {key} = {value!r}", ok, detail)
@@ -317,13 +341,13 @@ def assert_case(conn, truth, case, check):
 # The whole list, and the scan totals
 # ---------------------------------------------------------------------------
 
-def assert_cases(conn, truth, check, project_dir=None, truth_path=None, home=None):
+def assert_cases(conn, truth, check, project_dir=None, truth_path=None, home=None, engine=None):
     """Every case of the truth (optionally only those of one `home`).
     Writes CASE_RESULTS.json beside the truth when `truth_path` is given."""
     cases = [c for c in truth.get("cases", []) if home is None or c.get("home") == home]
     results = {}
     for case in cases:
-        results[case["id"]] = assert_case(conn, truth, case, check)
+        results[case["id"]] = assert_case(conn, truth, case, check, engine)
     declined = truth.get("not_constructed", [])
     if declined:
         print(f"        ({len(declined)} matrix conditions not constructed on this machine: "

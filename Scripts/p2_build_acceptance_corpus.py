@@ -79,6 +79,12 @@ NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
 #: come from the user's document, never retyped here.
 MATRIX_CSV = Path("Research") / "ChatGPT Research" / "Personal_Archive_Manager_v1.1_Reconciliation.csv"
 
+#: The "executable" the corpus uses: a DOS exit stub (mov ax,4C00h; int 21h)
+#: followed by every byte value once. Not a program any 64-bit Windows can
+#: run, and nothing here runs anything; it exists to look like one to a
+#: reader -- NUL bytes and all -- where a single byte would read as text.
+TINY_PROGRAM = b"\xb8\x00\x4c\xcd\x21" + bytes(range(256))
+
 FILE_ATTRIBUTE_READONLY = 0x1
 FILE_ATTRIBUTE_HIDDEN = 0x2
 FILE_ATTRIBUTE_SYSTEM = 0x4
@@ -372,6 +378,21 @@ MARKERS.update({
     "05_Corruption/protected/sevenzip_password.7z!note": ("cipher seven secret", False),
     "05_Corruption/protected/sevenzip_headers.7z!note": ("cipher headers secret", False),
     "05_Corruption/misnamed/document.txt": ("pdf under txt marker", True),    # PDF bytes named .txt: read as PDF
+})
+
+#: 07_File_Types and 19_Extraction_Safety.
+MARKERS.update({
+    "07_File_Types/misnamed/photo.jpg": ("docx under jpg marker", True),          # a real .docx named .jpg: read by its bytes
+    "07_File_Types/misnamed/notes.docx": ("program under docx marker", False),    # a program named .docx: nothing to read
+    "19_Extraction_Safety/control_chars.txt": ("escapes before marker", True),     # two control characters: within the allowance
+    "19_Extraction_Safety/colour.log": ("ansi colour log marker", False),          # a colourised log: refused as binary
+    "19_Extraction_Safety/nul_bytes.txt": ("nulls before marker", False),          # a NUL byte means binary: refused whole
+    "19_Extraction_Safety/encodings/utf8_bom.txt": ("encoding utf8bom marker", True),
+    "19_Extraction_Safety/encodings/utf16le_bom.txt": ("encoding utf16le marker", True),
+    "19_Extraction_Safety/encodings/utf16be_nobom.txt": ("encoding utf16be marker", False),   # no BOM: the NULs read as binary
+    "19_Extraction_Safety/encodings/cp1252.txt": ("encoding cp1252 marker", True),
+    "19_Extraction_Safety/encodings/shift_jis.txt": ("encoding shiftjis marker", True),
+    "19_Extraction_Safety/encodings/utf8_with_stray_bytes.txt": ("encoding straybytes marker", True),
 })
 
 #: Files OCR is expected to flag for a person to look at.
@@ -1070,6 +1091,9 @@ class Corpus:
         self._links()
         self._corruption()
         self._metadata()
+        self._file_types()
+        self._extreme_structures()
+        self._extraction_safety()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -1831,12 +1855,12 @@ class Corpus:
             self.skipped.append(base + "/traversal/zip_slip.7z: py7zr not installed")
 
         # Y-016 -- executable content inside an archive: listed, never extracted.
-        self.add(base + "/executable/tools.zip", make_zip([("tool.com", b"\xc3"), ("tool.exe", b"not a program, but named as one\n"),
+        self.add(base + "/executable/tools.zip", make_zip([("tool.com", TINY_PROGRAM), ("tool.exe", b"not a program, but named as one\n"),
                                                            ("readme.txt", b"A zip that carries programs.\n")]), age_days=53, case="Y-016")
         self.case("Y-016", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
                                                                         "archive_members_include": ["tool.com", "tool.exe", "readme.txt"],
                                                                         "extracted_content.status": "extracted"}),
-                  safety=["tool.com is a single RET (0xC3), inert on 64-bit Windows; .com and .exe are not readable suffixes, so neither member is ever written out"],
+                  safety=["tool.com is a DOS exit stub, inert on 64-bit Windows; .com and .exe are not readable suffixes, so neither member is ever written out"],
                   notes="the members are listed; only readme.txt is read")
 
         # Y-017 / O-005 / E-011 -- password-protected archives: three shapes.
@@ -1926,6 +1950,154 @@ class Corpus:
         self.case("F-010", construction="G", classification="SCOPE", expected=dict(present, size_bytes=41),
                   matrix_expects="Detect/document support policy",
                   notes="the row is the main stream; the named stream is not enumerated, counted or read -- alternate data streams are out of scope, written down here")
+
+    def _file_types(self):
+        """07_File_Types: matrix section G (and A-021). The rule: an extension
+        is a label. Analyzers are chosen by it; extraction is chosen by it
+        and then reads the bytes."""
+        base = "07_File_Types"
+        present = {"file_state.state": "present"}
+        nothing = {"analyzer.status": "none", "extracted_content.status": "none"}
+
+        self.add(base + "/unknown/data.zzq", b"an extension nothing names\n", age_days=63, case="G-001")
+        self.case("G-001", construction="G", expected=dict(present, extension_key=".zzq", **nothing))
+        self.add(base + "/unknown/ledger.corp", b"a corporate application's own format, holding text\n", age_days=64, case="G-003")
+        self.case("G-003", construction="G", expected=dict(present, extension_key=".corp", **nothing),
+                  notes="recorded without assuming meaning; extraction is chosen by extension, so the text inside is not read")
+
+        # G-004 -- an Office owner file, exactly as Word and Excel leave them: the
+        # owner's name in ANSI then in UTF-16, 162 bytes, under the document's name.
+        owner = b"\x0cTom Example" + b"\x00" * 42 + b"\x0c" + "Tom Example".encode("utf-16-le") + b"\x00" * 84
+        self.add(base + "/temporary/~$Budget.xlsx", owner[:162], age_days=65, expect_analyzer_failure=True, case="G-004")
+        self.case("G-004", construction="G", expected=dict(present, extension_key=".xlsx", **{"analyzer.office.status": "error",
+                                                                                                "extracted_content.status": "error"}),
+                  notes="a real-corpus staple: Office's owner file carries the document's extension; both readers fail, the row stays")
+        self.add(base + "/temporary/report.lock", b"", age_days=66, case="G-005")
+        self.add(base + "/temporary/.~lock.report.odt#", b"Tom Example,tom,host,13.09.2026 19:00,file:///home/tom;\n", age_days=66, case="G-005")
+        self.case("G-005", construction="G", expected=dict(present, row_count=2, **nothing),
+                  notes="a .lock and LibreOffice's .~lock.<name>.odt# (extension '.odt#'): recorded, nothing reads them")
+        self.add(base + "/backup/report.bak", make_docx(["A backup copy under .bak."]), age_days=67, case="G-006")
+        self.add(base + "/backup/report.docx~", make_docx(["An editor's backup under a tilde."]), age_days=67, case="G-006")
+        self.case("G-006", construction="G", expected=dict(present, row_count=2, **nothing),
+                  notes="both hold a Word document; '.bak' and '.docx~' are extensions nothing names")
+        self.add(base + "/autosave/AutoRecovery save of report.asd", b"\xd0\xcf\x11\xe0" + b"\x00" * 508, age_days=68, case="G-007")
+        self.add(base + "/autosave/Backup of report.wbk", b"\xd0\xcf\x11\xe0" + b"\x00" * 508, age_days=68, case="G-007")
+        self.case("G-007", construction="G", expected=dict(present, row_count=2, **nothing))
+
+        # G-008 / G-009 / A-021 -- a program named as a document, a document named as a picture.
+        self.add(base + "/misnamed/notes.docx", TINY_PROGRAM, age_days=69, expect_analyzer_failure=True, case="G-008")
+        self.case("G-008", construction="G", expected=dict(present, **{"analyzer.office.status": "error", "extracted_content.status": "error",
+                                                                        "marker_indexed": False}),
+                  safety=["the 'program' is a DOS exit stub no 64-bit Windows runs; nothing here executes anything"],
+                  notes="the Office analyzer and extraction both fail on the bytes (the sniff calls them binary); the name is kept")
+        self.add(base + "/misnamed/photo.jpg", make_docx(["A Word document wearing a picture's name.",
+                                                          "Marker: %s." % marker(base + "/misnamed/photo.jpg")]),
+                 age_days=70, expect_analyzer_failure=True, case="G-009")
+        self.case("G-009", construction="G", expected=dict(present, **{"analyzer.image.status": "error", "extracted_content.status": "extracted",
+                                                                        "marker_indexed": True}),
+                  notes="the image analyzer fails; extraction, chosen by the .jpg name, reads the bytes as the Word document they are and finds the marker")
+        self.case("A-021", construction="G", expected={"file_state.state": "present"},
+                  notes="the misleading extensions of G-008 and G-009: the name is preserved, the bytes decide what is read")
+        self.case("A-021")["paths"].extend([(base + "/misnamed/notes.docx").replace("/", "\\"), (base + "/misnamed/photo.jpg").replace("/", "\\")])
+        self.case("G-002", construction="L", expected={"file_state.state": "present", "extension_key": ""}, notes="the same files as A-019")
+        self.case("G-002")["paths"].extend(self.case("A-019")["paths"])
+        self.case("G-010", construction="G", expected={"file_state.state": "present", "extension_key": "",
+                                                        "extracted_content.status": "skipped"},
+                  notes="Documents\\thumbnail: a picture with no extension, not a document -- recorded as not processed")
+        self.case("G-010")["paths"].append("Documents\\thumbnail")
+
+    def _extreme_structures(self):
+        """08_Extreme_Structures, the tool-safe part: emptiness. The big and
+        deep ones are in Hostile\\; the forty-level tree is A-004."""
+        base = "08_Extreme_Structures"
+        self.add_folder(base + "/empty_folder", case="H-001")
+        self.case("H-001", construction="L", classification="SCOPE", expected={},
+                  matrix_expects="Record folder",
+                  notes="folders are not rows in this program: the walk counts it ('Empty folders found' in the report, asserted through scan_expectations) and the folder tree does not show it")
+        self.add_folder(base + "/only_empty/level1/level2/level3/level4/level5", case="H-002")
+        self.case("H-002", construction="G", classification="SCOPE", expected={},
+                  matrix_expects="Complete traversal",
+                  notes="five folders with nothing but the next; the walk enters all five and counts the last as empty (the others hold a folder)")
+        for i in range(3):
+            self.add(base + "/only_hidden/hidden_%d.txt" % i, b"hidden, in a folder of hidden files\n", age_days=71,
+                     attributes=FILE_ATTRIBUTE_HIDDEN, case="H-003")
+        self.case("H-003", construction="G", expected={"file_state.state": "present", "row_count": 3, "attributes_has": ["Hidden"]})
+        self.case("H-009", construction="G", expected={"file_state.state": "present", "depth": 42}, notes="the forty-level tree of A-004")
+        self.case("H-009")["paths"].extend(self.case("A-004")["paths"])
+
+    def _extraction_safety(self):
+        """19_Extraction_Safety: the matrix's section 12.4 (Y-018..Y-023).
+        Extraction is a trust boundary: its input can be hostile and its
+        output can be a hazard."""
+        base = "19_Extraction_Safety"
+        present = {"file_state.state": "present"}
+
+        # Y-018 / Y-019 -- names that are formulas to a spreadsheet. The
+        # payloads are harmless: 1+1, and a hyperlink to a reserved domain.
+        for name in ("=1+1.txt", "+1.txt", "-1.txt", "@SUM(1).txt"):
+            self.add(base + "/formula_names/" + name, b"a name a spreadsheet would run\n", age_days=72, case="Y-018")
+        self.add(base + "/=HYPERLINK(example.invalid).d/inside.txt", b"in a folder named as a formula\n", age_days=72, case="Y-018")
+        self.case("Y-018", construction="G", expected=dict(present, row_count=5, csv_export_safe=True),
+                  safety=["the payloads are 1+1 and a .invalid hyperlink; the export must neutralise them, which is the assertion"],
+                  notes="found 2026-09-13 and fixed: the Files and results exports wrote such cells unguarded; csv_cell now prefixes an apostrophe")
+        self.case("Y-019", construction="G", expected={"csv_export_safe": True}, notes="the same files as Y-018: + - and @")
+        self.case("Y-019")["paths"].extend(self.case("Y-018")["paths"])
+
+        # Y-020 -- control characters before the marker: a bell and ANSI
+        # escapes are still text; a NUL byte makes the whole file binary.
+        self.add(base + "/control_chars.txt",
+                 b"\x07 a bell, one escape \x1b[0m and then: " + marker(base + "/control_chars.txt").encode("utf-8") + b"\n",
+                 age_days=73, case="Y-020")
+        self.case("Y-020", construction="G", expected=dict(present, **{"extracted_content.status": "extracted", "marker_indexed": True}),
+                  notes="two control characters (BEL, ESC) are within the sniff's allowance of max(2, length/200); the marker is found")
+        colour = "".join("\x1b[32m2026-01-%02d\x1b[0m \x1b[1mINFO\x1b[0m step %d finished\n" % (i % 28 + 1, i) for i in range(60))
+        colour += "\x1b[33mWARN\x1b[0m " + marker(base + "/colour.log") + "\n"
+        self.add(base + "/colour.log", colour.encode("utf-8"), age_days=73, case="Y-020c")
+        self.case("Y-020c", construction="G", condition="Text with ANSI colour codes (a terminal log)", classification="DEFECT",
+                  expected=dict(present, **{"extracted_content.status": "error", "marker_indexed": False}),
+                  matrix_expects="Extraction does not corrupt output",
+                  notes="observed 2026-09-13: ESC counts as a control character and a 3 KB log with 180 colour codes is refused as binary "
+                        "('not a recognised document format (binary)') -- a real-world shape (CI, npm, PowerShell transcripts). Minor; for the user's decision")
+        self.add(base + "/nul_bytes.txt",
+                 b"two nulls \x00\x00 and then: " + marker(base + "/nul_bytes.txt").encode("utf-8") + b"\n",
+                 age_days=73, case="Y-020b")
+        self.case("Y-020b", construction="G", condition="Text containing embedded null characters", classification="SCOPE",
+                  expected=dict(present, **{"extracted_content.status": "error", "marker_indexed": False}),
+                  matrix_expects="Extraction does not corrupt output",
+                  notes="observed 2026-09-13: fo_extractors.sniff calls any NUL byte without a UTF-16 BOM 'binary', so the file is refused whole "
+                        "('not a recognised document format (binary)') rather than read around the NULs; the output is not corrupted -- it is absent")
+
+        # Y-022 -- binary presented as text, at the top level and inside an archive.
+        noise = random_bytes(SEED + 22, 256 * 1024)
+        self.add(base + "/binary_as_text/noise.txt", noise, age_days=74, case="Y-022")
+        self.case("Y-022", construction="G", expected=dict(present, **{"extracted_content.status": "error"}),
+                  notes="observed 2026-09-13: the sniff's binary gate refuses it ('not a recognised document format (binary)'); no misleading text is produced")
+        self.add(base + "/binary_as_text/noise_inside.zip", make_zip([("noise.txt", random_bytes(SEED + 23, 100 * 1024))]),
+                 age_days=74, case="Y-022b")
+        self.case("Y-022b", construction="G", condition="Binary file presented as text, inside an archive", classification="DEFECT",
+                  expected=dict(present, **{"extracted_content.status": "extracted"}),
+                  matrix_expects="Do not produce misleading text output",
+                  notes="observed 2026-09-13: the archive-member text path (_member_text -> decode_bytes) has no sniff, so 100 KB of random bytes "
+                        "named .txt inside a zip became 102,419 characters of stored, indexed text -- the gate that protects a top-level file "
+                        "does not protect a member. Minor; for the user's decision")
+
+        # Y-023 -- six encodings of the same English line, each with its marker.
+        def line(key):
+            return "Encoding test: %s. Caf\u00e9, na\u00efve, \u65e5\u672c\u8a9e.\n" % marker(base + "/encodings/" + key)
+        self.add(base + "/encodings/utf8_bom.txt", b"\xef\xbb\xbf" + line("utf8_bom.txt").encode("utf-8"), age_days=75, case="Y-023")
+        self.add(base + "/encodings/utf16le_bom.txt", b"\xff\xfe" + line("utf16le_bom.txt").encode("utf-16-le"), age_days=75, case="Y-023")
+        self.add(base + "/encodings/utf16be_nobom.txt", line("utf16be_nobom.txt").encode("utf-16-be"), age_days=75, case="Y-023")
+        self.add(base + "/encodings/cp1252.txt", line("cp1252.txt").replace("\u65e5\u672c\u8a9e", "Muenchen").encode("cp1252") * 6, age_days=75, case="Y-023")
+        self.add(base + "/encodings/shift_jis.txt", line("shift_jis.txt").replace("Caf\u00e9, na\u00efve", "Kafe").encode("shift_jis") * 6, age_days=75, case="Y-023")
+        self.add(base + "/encodings/utf8_with_stray_bytes.txt",
+                 line("utf8_with_stray_bytes.txt").encode("utf-8") + b"\xff\xfe stray bytes that are not UTF-8 \xff\n", age_days=75, case="Y-023")
+        self.case("Y-023", construction="G", expected=dict(present, row_count=6),
+                  notes="five of six markers are found (UTF-8 BOM, UTF-16 LE BOM, cp1252, Shift-JIS, UTF-8 with stray bytes); see Y-023b for the sixth")
+        self.case("Y-023b", construction="G", condition="UTF-16 without a byte-order mark", classification="SCOPE",
+                  expected={"extracted_content.status": "error", "marker_indexed": False},
+                  matrix_expects="Detect/handle encoding uncertainty",
+                  notes="observed 2026-09-13: UTF-16 is recognised by its BOM only; without one the NUL bytes read as binary and the file is refused (LE behaves the same)")
+        self.case("Y-023b")["paths"].append((base + "/encodings/utf16be_nobom.txt").replace("/", "\\"))
 
     def _bulk(self):
         """Volume and size/date spread, so ranked reports actually rank."""

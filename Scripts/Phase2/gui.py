@@ -1204,6 +1204,21 @@ def scrollable_frame(parent):
     return inner
 
 
+def csv_cell(value):
+    """A cell a spreadsheet will not run.
+
+    A file named =1+1.txt is a formula the moment the export is opened in
+    Excel; so is a name beginning with + - or @, and a tab or return can be
+    stripped by an importer to expose one. Such a cell gets a leading
+    apostrophe -- visible in the sheet, and the price of an export that
+    cannot execute anything (matrix Y-018 / Y-019, found 2026-09-13).
+    Numbers are left alone: a size is never a formula.
+    """
+    if isinstance(value,str) and value[:1] in ("=","+","-","@","\t","\r"):
+        return "'"+value
+    return value
+
+
 def write_rows_csv(path, rows, columns=None):
     """Write dict rows to a CSV (UTF-8 with BOM, so Excel reads it). Returns the row count."""
     columns=list(columns or (rows[0].keys() if rows else []))
@@ -1212,7 +1227,7 @@ def write_rows_csv(path, rows, columns=None):
         writer=csv.writer(handle)
         writer.writerow(columns)
         for row in rows:
-            writer.writerow(["" if row.get(c) is None else row.get(c) for c in columns]); n+=1
+            writer.writerow(["" if row.get(c) is None else csv_cell(row.get(c)) for c in columns]); n+=1
     return n
 
 
@@ -1231,7 +1246,7 @@ def export_files(engine, path, columns, scope=None, search=None, filters=None, s
         while True:
             result=engine.list_files(scope=scope,search=search,filters=filters,limit=page,sort=sort,cursor=cursor,columns=columns)
             for row in result["rows"]:
-                writer.writerow(["" if row.get(c) is None else row.get(c) for c in columns]); n+=1
+                writer.writerow(["" if row.get(c) is None else csv_cell(row.get(c)) for c in columns]); n+=1
             cursor=result.get("next_cursor")
             if not cursor: break
     return n
