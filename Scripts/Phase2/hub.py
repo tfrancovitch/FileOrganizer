@@ -166,7 +166,10 @@ def show_hub(app):
         line(b["label"], value, action, status="ANALYZED" if not b["action"] else "",
              link=lambda exts=b["extensions"], lbl=b["label"]: app.show_files_for_extensions(exts, lbl))
     if summary["other"]:
-        line("Other", f"{summary['other']:,} files   ({_human_bytes(summary['other_bytes'])})   no analyzer handles these types",
+        other_text = f"{summary['other']:,} files   ({_human_bytes(summary['other_bytes'])})   no analyzer describes these types"
+        if summary.get("other_extractable"):
+            other_text += f"; text can be extracted from {summary['other_extractable']:,} of them"
+        line("Other", other_text,
              link=lambda: app.show_files_for_extensions(summary["all_bucket_extensions"], "Other", exclude=True))
     if summary.get("failed_files"):
         # The user's question: "16 analyzer failures -- what failures?" Files,

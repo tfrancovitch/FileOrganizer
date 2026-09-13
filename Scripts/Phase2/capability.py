@@ -469,6 +469,13 @@ def project_summary(conn):
                         "state": cap.state if cap else None})
     other = max(0, present - claimed)
     other_bytes = max(0, total_bytes - claimed_bytes)
+    # The buckets are the analyzers that describe a file. Extraction reads
+    # text from formats no bucket claims (CSV, JSON, HTML, RTF), so "no
+    # analyzer handles these types" is only half true of "Other": say how
+    # many of them can still have their text extracted.
+    bucket_exts = set().union(*(set(b["extensions"]) for b in buckets)) if buckets else set()
+    extract_entry = ext_map.get("content_extraction")
+    other_extractable = _sum_over(ext_counts, extract_entry[1] - bucket_exts)[0] if extract_entry else 0
     identified_bytes = _scalar(
         conn, "SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present' AND content_id IS NOT NULL")
 
@@ -508,7 +515,8 @@ def project_summary(conn):
     return {
         "present": present, "bytes": total_bytes, "roots": roots,
         "failed_files": failed_files,
-        "all_bucket_extensions": sorted(set().union(*(set(e[1]) for e in ext_map.values())) if ext_map else set()),
+        "all_bucket_extensions": sorted(bucket_exts),
+        "other_extractable": other_extractable,
         "inventory": caps.get("inventory"),
         "identity": identity, "duplicates": duplicates,
         "groups": groups, "members": members, "reclaimable_bytes": reclaimable,
