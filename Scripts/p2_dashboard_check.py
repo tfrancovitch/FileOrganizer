@@ -451,9 +451,37 @@ def test_worker(tmp: Path):
           titles.get("Mail\\agenda.eml") == "Agenda for Thursday" and titles.get("Mail\\discovery_schedule.msg") == "Discovery schedule",
           str({k: v for k, v in titles.items() if k.startswith("Mail")}))
     caps = capabilities(project_dir)
-    check("the extraction capability counts the not-document apart from the one unreadable file (the truncated PDF)",
-          "1 not documents" in caps["extraction"].detail and caps["extraction"].counts.get("not_documents") == 1
-          and caps["extraction"].counts.get("failed") == 1, caps["extraction"].detail)
+    con = connect(project_dir)
+    statuses = {}
+    for row in con.execute(
+            "SELECT fp.relative_path, ar.status FROM extracted_content ec JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id "
+            "JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id JOIN file_path fp ON fp.file_path_id=fs.file_path_id"):
+        statuses[row[0]] = row[1]
+    con.close()
+    listed = {rel: statuses.get(rel) for rel in truth["not_documents"]}
+    check("a photograph and a picture with no extension are recorded as not processed -- not documents, not failures",
+          all(v == "not_processed" for v in listed.values()), str(listed))
+    check("the extraction capability counts the not-documents (every swatch and photograph) apart from what could not be read",
+          "not documents" in caps["extraction"].detail and caps["extraction"].counts.get("not_documents") >= len(listed)
+          and caps["extraction"].counts.get("failed") >= 1, caps["extraction"].detail)
+    # OCR: the scans read cleanly, the poor scans flagged, with reasons.
+    con = connect(project_dir)
+    ocr = {}
+    for row in con.execute(
+            "SELECT fp.relative_path, ar.detail_json FROM analyzer_result ar JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id "
+            "JOIN analyzer a ON a.analyzer_id=rr.analyzer_id JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id "
+            "JOIN file_path fp ON fp.file_path_id=fs.file_path_id WHERE a.analyzer_key='content_extraction' AND ar.detail_json LIKE '%OcrPages%'"):
+        import json as _json
+        ocr[row[0]] = _json.loads(row[1])
+    con.close()
+    clean = {rel: ocr.get(rel, {}).get("OcrReview") for rel in truth["ocr_clean_expected"]}
+    flagged = {rel: (ocr.get(rel, {}).get("OcrReview"), ocr.get(rel, {}).get("OcrReviewReasons")) for rel in truth["ocr_review_expected"]}
+    check(f"OCR read the clean scans without a flag ({len(clean)} files: TIFF, JPEG, image-only PDF)",
+          all(v == "no" for v in clean.values()), str(clean))
+    check(f"OCR flagged the poor scans for review, with reasons ({len(flagged)} files)",
+          all(v[0] == "yes" and v[1] for v in flagged.values()), str(flagged))
+    check("the extraction capability says how many files OCR read and how many to double-check",
+          "read by OCR" in caps["extraction"].detail and caps["extraction"].counts.get("ocr_review") == len(flagged), caps["extraction"].detail)
 
     worker = make_worker(app_root, project_dir, RunRequest(INDEX_TEXT, "Index text"), log)
     worker.stop_event.set()            # stop at the first check
@@ -511,7 +539,9 @@ def test_worker(tmp: Path):
     n_text = truth["by_extension"].get(".txt", {}).get("count", 0) + truth["by_extension"].get(".md", {}).get("count", 0)
     check(f"text analyzer applicable count is exact ({n_text})", by_key["text"]["applicable"] == n_text,
           f"got {by_key['text']['applicable']}")
-    check("audio has no applicable files and costs nothing", by_key["audio"]["applicable"] == 0 and by_key["audio"]["seconds"] == 0)
+    n_audio = sum(v["count"] for k, v in truth["by_extension"].items() if k in (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".wma", ".opus", ".aiff"))
+    check(f"audio applicable count is exact ({n_audio}) and costs time only when there is some",
+          by_key["audio"]["applicable"] == n_audio and (by_key["audio"]["seconds"] > 0) == (n_audio > 0), str(by_key["audio"]["applicable"]))
     check("text analyzer was measured, not guessed", by_key["text"]["sample"] and by_key["text"]["sample"]["files_used"] > 0
           and not by_key["text"]["guessed"])
     check("extraction sample left no artifacts in the project", not list((project_dir / "Runs").rglob("fo_estimate_*")))
@@ -527,7 +557,8 @@ def test_worker(tmp: Path):
           and ext["pdf"]["pages_counted_files"] >= 1 and ext.get("families") and sum(f["files"] for f in ext["families"]) > 0,
           str({k: ext.get(k) for k in ("pdf", "families")}))
     check("the description shows the PDF pages, the per-page rate, and each family of the other documents",
-          "PDFs:" in text and "ms/page" in text and "Office documents:" in text and "text-like files:" in text and "email and mailboxes:" in text)
+          "PDFs:" in text and "ms/page" in text and "Office documents:" in text and "text-like files:" in text and "email and mailboxes:" in text
+          and "pictures (OCR" in text and "archives (" in text and "read by OCR" in text)
 
     # -- the Files page's engine support ------------------------------------
     section("9. Files page: sorted paging, columns, count, export, summary")
@@ -597,7 +628,7 @@ def test_worker(tmp: Path):
     check("summary buckets carry bytes that add up with 'other' to the total",
           sum(b["bytes"] for b in summary["buckets"]) + summary["other_bytes"] == summary["bytes"] == truth["totals"]["logical_bytes"])
     import fo_analyzer_engine as _eng
-    extraction_only = set(_eng.ADAPTER_BY_KEY["content_extraction"].declared_extensions) - set(summary["all_bucket_extensions"])
+    extraction_only = set(_eng.ADAPTER_BY_KEY["content_extraction"].extensions()) - set(summary["all_bucket_extensions"])
     n_other_extractable = sum(v["count"] for k, v in truth["by_extension"].items()
                               if ("" if k == "(none)" else k) in extraction_only)
     check(f"summary says how many 'Other' files can still have text extracted ({n_other_extractable})",
@@ -732,7 +763,7 @@ def test_gui_views(project_dir: Path):
         app.show_new_panel(); app.update()
         check("New Project shows the form", any("Create project" in t for t in _texts(app.content)))
         app.show_options(); app.update()
-        check("Options page exists (nothing to set yet)", "Options" in _texts(app.content))
+        check("Options page asks for a project when none is open", any("Open a project" in t for t in _texts(app.content)))
 
         app.open_project(project_dir)
         app.update()
@@ -825,6 +856,23 @@ def test_gui_views(project_dir: Path):
         for w in tops: w.destroy()
         app.show_saved(); app.update()
         check("Saved Queries page explains itself", any("Standard reports are the questions" in t for t in _texts(app.content)))
+        app.show_options(); app.update()
+        texts = _texts(app.content)
+        switches = [w for w in app.content.winfo_children() if isinstance(w, tk.ttk.Checkbutton)]
+        check("Options page offers the three extraction switches", len(switches) == 3, str(texts))
+        from Phase2.runner import load_settings as _ls
+        for w in switches:
+            if "archives" in str(w.cget("text")):
+                w.invoke(); w.invoke()          # off then on again: two saves
+        saved = _ls(project_dir)
+        check("a switch saves to the project's settings.json", "ExtractionArchives" in saved, str({k: v for k, v in saved.items() if k.startswith("Extraction")}))
+        app.show_hub(); app.update()
+        check("summary shows the OCR review line with Show which", any(t.startswith("OCR to double-check") for t in _texts(app.content)))
+        app.show_files_for_ocr_review(); app.update()
+        check("Show which opens the Files page on the flagged scans with the reasons column",
+              bool(app.current_rows) and all((r.get("analysis.ocr.quality") or 0) < 70 for r in app.current_rows)
+              and sorted(r.get("path.file_name") for r in app.current_rows) == ["scan_bad.pdf", "scan_faded.png"] and "analysis.ocr.reasons" in app.files_columns,
+              str([(r.get("path.file_name"), r.get("analysis.ocr.quality")) for r in app.current_rows]))
         app.show_evidence(); app.update()
         app.show_history(); app.update()
         app.show_hub(); app.update()
@@ -915,7 +963,7 @@ def test_gui_runner(tmp: Path):
         summaries = app.conn.execute("SELECT COUNT(*) FROM archive_summary").fetchone()[0]
         ingest = app.conn.execute("SELECT ingest_status FROM analyzer_run rr JOIN analyzer a ON a.analyzer_id=rr.analyzer_id WHERE a.analyzer_key='archive' ORDER BY analyzer_run_id DESC LIMIT 1").fetchone()[0]
         check("archive analysis through the window persists every member and a summary per archive",
-              finished and members == 5 and summaries == 2 and ingest == "completed",
+              finished and members >= 10 and summaries >= 5 and ingest == "completed",
               f"members={members} summaries={summaries} ingest={ingest}")
 
         # A long estimate asks first; No means nothing runs.

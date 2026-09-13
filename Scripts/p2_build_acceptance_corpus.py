@@ -25,8 +25,17 @@ report should be able to state is written to GROUND_TRUTH.json next to the
 corpus. Verification compares Phase 2's answers against that file -- never
 against the query engine being tested.
 
+The corpus is also the product's full test corpus: at least one file of
+every type the program handles -- every image, RAW, audio, video, archive
+and extractable-text format it names -- and the awkward cases (a scan that
+needs OCR, a scan too poor to trust, a photograph that is not a document,
+a mailbox, a file with no extension, a zip with a zip inside). Real
+third-party samples the builder cannot make itself (Apache Tika's PST,
+any WordPerfect or OneNote file the user provides) are copied in from
+`--samples` when present and listed in the ground truth as such.
+
 Usage:
-    python Scripts/p2_build_acceptance_corpus.py [--root C:\FOTest\P2Accept]
+    python Scripts/p2_build_acceptance_corpus.py [--root C:\FOTest] [--samples C:\FOTest\Samples]
 """
 from __future__ import annotations
 
@@ -38,6 +47,7 @@ import json
 import os
 import random
 import shutil
+import zipfile
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,7 +84,39 @@ MARKERS = {
     "Mail/archive.mbox": ("ferrule tally mailbox", True),         # the second message
     "Mail/saved_page.mht": ("tessellate archived page", True),
     "Mail/discovery_schedule.msg": ("barnacle ledger cadence", True),  # inside its attachment
+    "Mail/tika_mailbox.pst": ("is the original email", True),            # Apache Tika's test mailbox
+    "Documents/manual.odt": ("obsidian quill ledger", True),
+    "Documents/ledger_open.ods": ("ledger open marker phrase", True),
+    "Documents/deck_open.odp": ("deck open marker phrase", True),
+    "Documents/novel.epub": ("sable canticle ridge", True),
+    "Documents/memo_macro.docm": ("ambergris ledger macro", True),
+    "Documents/memo_template.dotx": ("ambergris ledger template", True),
+    "Documents/memo_macro_template.dotm": ("ambergris ledger both", True),
+    "Documents/ledger_macro.xlsm": ("ledger macro marker phrase", True),
+    "Documents/ledger_template.xltx": ("ledger template marker phrase", True),
+    "Documents/ledger_macro_template.xltm": ("ledger macro template marker phrase", True),
+    "Documents/deck_macro.pptm": ("deck macro marker phrase", True),
+    "Documents/deck_template.potx": ("deck template marker phrase", True),
+    "Documents/deck_macro_template.potm": ("deck macro template marker phrase", True),
+    "Documents/deck_show.ppsx": ("deck show marker phrase", True),
+    "Documents/deck_macro_show.ppsm": ("deck macro show marker phrase", True),
+    "Code/app.py": ("tessellate ledger routine", True),
+    "Code/settings.toml": ("quorum lantern setting", True),
+    "Code/captions.srt": ("subtitle ochre cadence", True),
+    "Archives/bundle.zip": ("nested quince memo", True),            # in a .docx inside a zip inside the zip
+    "Archives/bundle.7z": ("sevenzip harrow note", True),
+    "Scans/scan_letter.tif": ("scanned lantern covenant", True),    # only OCR can find these four
+    "Scans/scan_letter.jpg": ("photographed ledger clause", True),
+    "Scans/scanned_only.pdf": ("scanned tessera brief", True),
+    "Scans/scan_pages.pdf": ("second page tessera", True),          # page two of a mixed PDF
 }
+
+#: Files OCR is expected to flag for a person to look at.
+OCR_REVIEW_EXPECTED = ["Scans/scan_faded.png", "Scans/scan_bad.pdf"]
+#: Files OCR is expected to read cleanly (no review flag).
+OCR_CLEAN_EXPECTED = ["Scans/scan_letter.tif", "Scans/scan_letter.jpg", "Scans/scanned_only.pdf"]
+#: Files that are not documents: extraction records them as not processed.
+NOT_DOCUMENTS = ["Scans/holiday_photo.jpg", "Documents/thumbnail"]
 
 
 def marker(relpath: str) -> str:
@@ -253,6 +295,174 @@ def make_mht(title: str, paragraphs: list[str]) -> bytes:
             "Content-Location: http://example.invalid/page\r\n\r\n" + html + "\r\n------=_Part--\r\n").encode("utf-8")
 
 
+def make_odt(paragraphs: list[str]) -> bytes:
+    """A minimal but valid OpenDocument Text package."""
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2">'
+        '<office:body><office:text>' + "".join("<text:p>%s</text:p>" % p for p in paragraphs) +
+        '</office:text></office:body></office:document-content>')
+    manifest = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">'
+        '<manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>'
+        '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>'
+        '</manifest:manifest>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("mimetype"), b"application/vnd.oasis.opendocument.text", compress_type=zipfile.ZIP_STORED)
+        zf.writestr("content.xml", content.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("META-INF/manifest.xml", manifest.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
+    return normalize_ooxml(buf.getvalue())
+
+
+def make_epub(title: str, chapters: list[tuple[str, str]]) -> bytes:
+    """A minimal EPUB 3: container, package with spine, one XHTML per chapter."""
+    items = "".join('<item id="c%d" href="chapter%d.xhtml" media-type="application/xhtml+xml"/>' % (i, i)
+                    for i in range(len(chapters)))
+    spine = "".join('<itemref idref="c%d"/>' % i for i in range(len(chapters)))
+    opf = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
+           '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="uid">urn:uuid:test</dc:identifier>'
+           '<dc:title>%s</dc:title><dc:creator>Corpus Builder</dc:creator><dc:language>en</dc:language></metadata>'
+           '<manifest>%s</manifest><spine>%s</spine></package>' % (title, items, spine))
+    container = ('<?xml version="1.0" encoding="UTF-8"?>'
+                 '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                 '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("mimetype"), b"application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/content.opf", opf.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
+        for i, (heading, body) in enumerate(chapters):
+            xhtml = ('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>%s</title></head>'
+                     '<body><h1>%s</h1><p>%s</p></body></html>' % (heading, heading, body))
+            zf.writestr("OEBPS/chapter%d.xhtml" % i, xhtml.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
+    return normalize_ooxml(buf.getvalue())
+
+
+_OOXML_MAIN_TYPES = {
+    ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
+    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    ".dotm": "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+}
+
+
+def make_word_variant(paragraphs: list[str], ext: str) -> bytes:
+    """A .docm / .dotx / .dotm: a python-docx document with the package's
+    main-part content type rewritten to the variant's. Structurally what
+    Word writes for a document without macros."""
+    base = make_docx(paragraphs)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(base)) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info)
+            if info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+                    _OOXML_MAIN_TYPES[ext].encode("ascii"))
+            dst.writestr(info, data)
+    return normalize_ooxml(buf.getvalue())
+
+
+def make_zip(entries: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, data)
+    return buf.getvalue()
+
+
+def make_7z(entries: list[tuple[str, bytes]]) -> bytes | None:
+    try:
+        import py7zr
+    except ImportError:
+        return None
+    buf = io.BytesIO()
+    with py7zr.SevenZipFile(buf, "w") as archive:
+        for name, data in entries:
+            archive.writef(io.BytesIO(data), name)
+    return buf.getvalue()
+
+
+def render_page(lines: list[str], size=(1700, 2200), font_size=44, fill="black", background="white"):
+    """A page of text as a picture -- what a scanner produces, minus the
+    scanner. Letter size at 200 dpi."""
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", size, background)
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except OSError:
+        font = ImageFont.load_default()
+    y = 160
+    for line in lines:
+        draw.text((160, y), line, fill=fill, font=font)
+        y += int(font_size * 1.6)
+    return img
+
+
+def degrade(img):
+    """Blur it, wash it out, tilt it, add noise: a copier's fourth-generation copy."""
+    from PIL import ImageEnhance, ImageFilter
+    out = img.filter(ImageFilter.GaussianBlur(2.5))
+    out = ImageEnhance.Contrast(out).enhance(0.45)
+    out = out.rotate(3.5, expand=False, fillcolor=(235, 235, 235))
+    rng = random.Random(SEED + 7)
+    pixels = out.load()
+    for _ in range(4000):
+        x, y = rng.randrange(out.width), rng.randrange(out.height)
+        pixels[x, y] = (40, 40, 40)
+    return out
+
+
+def image_bytes(img, fmt: str, **kw) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format=fmt, **kw)
+    return buf.getvalue()
+
+
+def make_raw_tiff(make: str, model: str, when: str) -> bytes:
+    """A TIFF with EXIF -- the structure every TIFF-based camera RAW shares
+    (DNG, CR2, NEF, ARW, PEF ...), which is what the RAW analyzer reads."""
+    from PIL import Image
+    img = Image.new("RGB", (96, 64), (110, 90, 70))
+    exif = Image.Exif()
+    exif[0x010F] = make
+    exif[0x0110] = model
+    exif[0x8769] = {0x9003: when, 0x829A: (1, 250), 0x829D: (40, 10), 0x8827: 400, 0x920A: (35, 1)}
+    return image_bytes(img, "TIFF", exif=exif.tobytes())
+
+
+def ffmpeg_bytes(args: list[str], ext: str) -> bytes | None:
+    """One small media file from ffmpeg's synthetic sources, or None when
+    ffmpeg is not on PATH or refuses the format."""
+    import subprocess
+    import tempfile
+    if shutil.which("ffmpeg") is None:
+        return None
+    tmp = tempfile.NamedTemporaryFile(prefix="fo_media_", suffix=ext, delete=False)
+    tmp.close()
+    try:
+        cmd = (["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin"] + args +
+               ["-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", "-map_metadata", "-1", tmp.name])
+        result = subprocess.run(cmd, capture_output=True, timeout=120,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode != 0:
+            return None
+        return Path(tmp.name).read_bytes()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 def make_gzip(payload: bytes) -> bytes:
     import gzip
     buf = io.BytesIO()
@@ -266,10 +476,12 @@ def make_gzip(payload: bytes) -> bytes:
 # --------------------------------------------------------------------------
 
 class Corpus:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, samples: Path | None = None):
         self.root = root
+        self.samples = samples
         self.files: list[dict] = []
         self.rng = random.Random(SEED)
+        self.skipped: list[str] = []          # what could not be made here, and why
 
     def add(self, relpath: str, data: bytes, *, age_days: int, note: str = "",
             expect_analyzer_failure: bool = False):
@@ -294,11 +506,19 @@ class Corpus:
 
     def build(self):
         self._documents()
+        self._more_documents()
+        self._code_and_config()
+        self._archives()
         self._known_duplicates()
         self._images()
+        self._every_image_format()
+        self._scans()
+        self._raw()
+        self._media()
         self._malformed()
         self._edge_cases()
         self._bulk()
+        self._samples()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -384,8 +604,8 @@ class Corpus:
         self.add("Documents/README", (
             f"Read me first. {marker('Documents/README')}.\n").encode("utf-8"),
             age_days=20, note="FTS marker: no extension")
-        self.add("Documents/thumbnail", b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4,
-                 age_days=21, note="no extension, not a document: recorded as not processed")
+        self.add("Documents/thumbnail", make_png(16, 16, (200, 30, 30)),
+                 age_days=21, note="a picture with no extension, not a document: recorded as not processed")
 
         # Email: the marker is inside an attachment or a forwarded message,
         # so finding it proves the whole chain, not just the headers.
@@ -415,6 +635,73 @@ class Corpus:
         ]), age_days=50, note="FTS marker: mht")
         self.add("Mail/discovery_schedule.msg", p2_fixture_blobs.blob("discovery_schedule.msg"),
                  age_days=40, note="FTS marker: Outlook msg, in its attachment")
+
+    def _more_documents(self):
+        """OpenDocument, EPUB, and the Office Open XML variants."""
+        import p2_fixture_blobs
+        self.add("Documents/manual.odt", make_odt([
+            "Manual, chapter one.", f"The {marker('Documents/manual.odt')} is described here."]),
+            age_days=410, note="FTS marker: odt (built)")
+        for name in ("ledger_open.ods", "deck_open.odp", "ledger_macro.xlsm", "ledger_template.xltx",
+                     "ledger_macro_template.xltm", "deck_macro.pptm", "deck_template.potx",
+                     "deck_macro_template.potm", "deck_show.ppsx", "deck_macro_show.ppsm"):
+            self.add("Documents/" + name, p2_fixture_blobs.blob(name), age_days=95, note="FTS marker: genuine Office output")
+        self.add("Documents/ledger_xml2003.xml", p2_fixture_blobs.blob("ledger_xml2003.xml"), age_days=96,
+                 note="Excel 2003 XML spreadsheet (genuine)")
+        self.add("Documents/novel.epub", make_epub("A Short Novel", [
+            ("Chapter One", "It began quietly."),
+            ("Chapter Two", f"By the {marker('Documents/novel.epub')} the weather had turned.")]),
+            age_days=900, note="FTS marker: epub, second chapter")
+        for ext, phrase in ((".docm", marker("Documents/memo_macro.docm")), (".dotx", marker("Documents/memo_template.dotx")),
+                            (".dotm", marker("Documents/memo_macro_template.dotm"))):
+            stem = {".docm": "memo_macro", ".dotx": "memo_template", ".dotm": "memo_macro_template"}[ext]
+            self.add("Documents/%s%s" % (stem, ext), make_word_variant(["Memo variant.", f"Marker: {phrase}."], ext),
+                     age_days=97, note="FTS marker: Word variant (content type rewritten from a docx)")
+
+    def _code_and_config(self):
+        """Source code, scripts, configuration, subtitles, markup -- text under other names."""
+        self.add("Code/app.py", (
+            "#!/usr/bin/env python3\n\"\"\"The %s lives in this docstring.\"\"\"\n\n"
+            "def main():\n    return 42\n" % marker("Code/app.py")).encode("utf-8"), age_days=30, note="FTS marker: py")
+        self.add("Code/settings.toml", ("[service]\nname = \"corpus\"\nnote = \"%s\"\n" % marker("Code/settings.toml")).encode("utf-8"),
+                 age_days=31, note="FTS marker: toml")
+        self.add("Code/captions.srt", ("1\n00:00:01,000 --> 00:00:03,000\n%s\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond caption.\n"
+                                       % marker("Code/captions.srt")).encode("utf-8"), age_days=32, note="FTS marker: srt")
+        plain = {
+            "Code/script.js": "function tally(a, b) { return a + b; }\n",
+            "Code/module.ts": "export const tally = (a: number, b: number): number => a + b;\n",
+            "Code/styles.css": "body { margin: 0; font-family: sans-serif; }\n",
+            "Code/build.sh": "#!/bin/sh\nset -e\necho building\n",
+            "Code/Deploy.ps1": "param([string]$Target)\nWrite-Host \"deploying to $Target\"\n",
+            "Code/query.sql": "SELECT name, total FROM ledger WHERE total > 100 ORDER BY total DESC;\n",
+            "Code/config.yml": "service:\n  name: corpus\n  replicas: 2\n",
+            "Code/settings.ini": "[general]\nname=corpus\nverbose=1\n",
+            "Code/app.cfg": "name = corpus\nmode = test\n",
+            "Code/captions.vtt": "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nA caption in WebVTT.\n",
+            "Code/notes.rst": "Notes\n=====\n\nA reStructuredText file.\n",
+            "Code/paper.tex": "\\documentclass{article}\n\\begin{document}\nA LaTeX source file.\n\\end{document}\n",
+            "Code/main.c": "#include <stdio.h>\nint main(void) { puts(\"hello\"); return 0; }\n",
+            "Code/Program.cs": "class Program { static void Main() { System.Console.WriteLine(\"hello\"); } }\n",
+            "Code/Main.java": "public class Main { public static void main(String[] a) { System.out.println(\"hello\"); } }\n",
+        }
+        for i, (rel, body) in enumerate(sorted(plain.items())):
+            self.add(rel, body.encode("utf-8"), age_days=40 + i)
+
+    def _archives(self):
+        """Documents inside archives, two levels deep."""
+        memo = make_docx(["Nested memo.", f"The {marker('Archives/bundle.zip')} is inside a zip inside a zip."])
+        inner = make_zip([("inner/memo.docx", memo), ("inner/readme.txt", b"inner readme\n")])
+        self.add("Archives/bundle.zip", make_zip([("notes.txt", b"outer notes\n"), ("inner.zip", inner),
+                                                  ("picture.png", make_png(8, 8, (1, 2, 3)))]),
+                 age_days=120, note="FTS marker: docx inside a zip inside the zip")
+        seven = make_7z([("note.txt", ("A 7z note: %s.\n" % marker("Archives/bundle.7z")).encode("utf-8")),
+                         ("memo.docx", make_docx(["Also inside the 7z."]))])
+        if seven is not None:
+            self.add("Archives/bundle.7z", seven, age_days=121, note="FTS marker: txt inside a 7z")
+        else:
+            self.skipped.append("Archives/bundle.7z: py7zr not installed")
+        self.add("Archives/plain.zip", make_zip([("a.txt", b"a\n"), ("b.txt", b"b\n")]), age_days=122,
+                 note="zip with plain members")
 
     def _known_duplicates(self):
         """Exact duplicates with a precomputed reclaimable-byte total."""
@@ -458,6 +745,124 @@ class Corpus:
         Image.new("RGB", (120, 80), (90, 140, 90)).save(buf, format="JPEG", quality=85)
         return buf.getvalue()
 
+    def _every_image_format(self):
+        """One picture in every format the image analyzer names."""
+        from PIL import Image
+        img = Image.new("RGB", (48, 32), (30, 120, 200))
+        for ext, fmt, kw in ((".jpeg", "JPEG", {"quality": 80}), (".jfif", "JPEG", {"quality": 80}),
+                             (".gif", "GIF", {}), (".bmp", "BMP", {}), (".tiff", "TIFF", {}), (".tif", "TIFF", {}),
+                             (".webp", "WEBP", {}), (".ico", "ICO", {}), (".jp2", "JPEG2000", {})):
+            try:
+                self.add("Images/formats/swatch" + ext, image_bytes(img, fmt, **kw), age_days=200)
+            except Exception as exc:                            # noqa: BLE001
+                self.skipped.append("Images/formats/swatch%s: %s" % (ext, exc))
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+            for ext, fmt in ((".heic", "HEIF"), (".heif", "HEIF"), (".avif", "AVIF")):
+                try:
+                    self.add("Images/formats/swatch" + ext, image_bytes(img, fmt), age_days=201)
+                except Exception as exc:                        # noqa: BLE001
+                    self.skipped.append("Images/formats/swatch%s: %s" % (ext, exc))
+        except ImportError:
+            self.skipped.append("Images/formats/swatch.heic .heif .avif: pillow-heif not installed")
+
+    def _scans(self):
+        """Pages with no text layer: OCR's work, and the judgement of it."""
+        from PIL import Image
+        page1 = render_page(["SCANNED LETTER", "", "To whom it may concern,",
+                             "The %s is hereby recorded." % marker("Scans/scan_letter.tif"),
+                             "Yours faithfully, The Corpus Builder."])
+        page2 = render_page(["Page two of the scanned letter.", "Nothing further."])
+        buf = io.BytesIO()
+        page1.save(buf, format="TIFF", save_all=True, append_images=[page2], dpi=(200, 200))
+        self.add("Scans/scan_letter.tif", buf.getvalue(), age_days=700, note="FTS marker: two-page scan, OCR only")
+        photo_page = render_page(["PHOTOGRAPHED PAGE", "", "The %s applies." % marker("Scans/scan_letter.jpg")])
+        self.add("Scans/scan_letter.jpg", image_bytes(photo_page, "JPEG", quality=80, dpi=(200, 200)),
+                 age_days=701, note="FTS marker: scan as JPEG, OCR only")
+        faded = degrade(render_page(["FADED COPY", "", "The faded quorum affidavit is barely legible.",
+                                     "Fourth-generation photocopy, tilted and blurred."]))
+        self.add("Scans/scan_faded.png", image_bytes(faded, "PNG", dpi=(200, 200)), age_days=702,
+                 note="OCR review expected: blurred, faint, tilted, speckled")
+        only = render_page(["BRIEF, SCANNED", "", "The %s is submitted." % marker("Scans/scanned_only.pdf")])
+        buf = io.BytesIO()
+        only.save(buf, format="PDF", resolution=200.0)
+        self.add("Scans/scanned_only.pdf", buf.getvalue(), age_days=703, note="FTS marker: image-only PDF, OCR only")
+        bad = degrade(render_page(["BAD SCAN", "", "A page no reader should trust without a look."]))
+        buf = io.BytesIO()
+        bad.save(buf, format="PDF", resolution=200.0)
+        self.add("Scans/scan_bad.pdf", buf.getvalue(), age_days=704, note="OCR review expected: image-only PDF, degraded")
+        # A PDF with a real text page first and a scanned page second.
+        mixed_text = make_pdf("Page one has a text layer.")
+        scanned = render_page(["Page two is a scan.", "The %s is only here." % marker("Scans/scan_pages.pdf")])
+        try:
+            from pypdf import PdfReader, PdfWriter
+            writer = PdfWriter()
+            writer.append(PdfReader(io.BytesIO(mixed_text)))
+            buf = io.BytesIO()
+            scanned.save(buf, format="PDF", resolution=200.0)
+            writer.append(PdfReader(io.BytesIO(buf.getvalue())))
+            out = io.BytesIO()
+            writer.write(out)
+            self.add("Scans/scan_pages.pdf", out.getvalue(), age_days=705, note="FTS marker: text page + scanned page")
+        except Exception as exc:                                # noqa: BLE001
+            self.skipped.append("Scans/scan_pages.pdf: %s" % exc)
+        gradient = Image.new("RGB", (640, 480))
+        px = gradient.load()
+        for x in range(640):
+            for y in range(480):
+                px[x, y] = (x * 255 // 639, y * 255 // 479, 128)
+        self.add("Scans/holiday_photo.jpg", image_bytes(gradient, "JPEG", quality=85), age_days=706,
+                 note="a photograph, not a document: extraction records it as not processed")
+
+    def _raw(self):
+        """Camera RAW: every TIFF-based format the RAW analyzer names, as a
+        TIFF with EXIF; the others need real camera files."""
+        for i, ext in enumerate((".dng", ".cr2", ".nef", ".arw", ".pef", ".srw", ".rwl", ".3fr", ".kdc",
+                                 ".erf", ".iiq", ".nrw", ".sr2", ".srf")):
+            self.add("Raw/shot" + ext, make_raw_tiff("CorpusCam", "Model " + ext[1:].upper(),
+                                                     "2024:05:%02d 08:00:00" % (i + 1)), age_days=500 + i)
+        for ext in (".orf", ".rw2", ".raf", ".x3f", ".cr3", ".raw", ".mrw"):
+            self.skipped.append("Raw/shot%s: not TIFF-based; needs a real camera file" % ext)
+
+    def _media(self):
+        """One audio file and one video file in every format the analyzers name."""
+        tone = ["-f", "lavfi", "-i", "sine=frequency=440:duration=1"]
+        audio = {".wav": [], ".mp3": ["-c:a", "libmp3lame", "-b:a", "64k"], ".flac": ["-c:a", "flac"],
+                 ".m4a": ["-c:a", "aac", "-b:a", "64k"], ".aac": ["-c:a", "aac", "-b:a", "64k", "-f", "adts"],
+                 ".ogg": ["-c:a", "libvorbis"], ".wma": ["-c:a", "wmav2", "-b:a", "64k"],
+                 ".opus": ["-c:a", "libopus", "-b:a", "48k"], ".aiff": ["-c:a", "pcm_s16be"]}
+        for ext, codec in audio.items():
+            data = ffmpeg_bytes(tone + codec, ext)
+            if data is None:
+                self.skipped.append("Media/tone%s: ffmpeg not on PATH or refused the format" % ext)
+            else:
+                self.add("Media/tone" + ext, data, age_days=150)
+        pattern = ["-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10"]
+        video = {".mp4": ["-c:v", "libx264", "-pix_fmt", "yuv420p"], ".mkv": ["-c:v", "libx264", "-pix_fmt", "yuv420p"],
+                 ".avi": ["-c:v", "mpeg4"], ".mov": ["-c:v", "libx264", "-pix_fmt", "yuv420p"],
+                 ".wmv": ["-c:v", "wmv2"], ".flv": ["-c:v", "flv"], ".webm": ["-c:v", "libvpx"],
+                 ".m4v": ["-c:v", "libx264", "-pix_fmt", "yuv420p"], ".mpg": ["-c:v", "mpeg2video"],
+                 ".mpeg": ["-c:v", "mpeg2video"], ".3gp": ["-c:v", "h263", "-s", "176x144"]}
+        for ext, codec in video.items():
+            data = ffmpeg_bytes(pattern + codec, ext)
+            if data is None:
+                self.skipped.append("Media/clip%s: ffmpeg not on PATH or refused the format" % ext)
+            else:
+                self.add("Media/clip" + ext, data, age_days=151)
+
+    def _samples(self):
+        """Third-party files the builder cannot make: copied in when present."""
+        import p2_fixture_blobs
+        self.add("Mail/tika_mailbox.pst", p2_fixture_blobs.blob("tika_testPST_variousBodyTypes.pst"), age_days=3000,
+                 note="FTS marker: Apache Tika's test PST (Apache-2.0), four messages")
+        if self.samples and self.samples.is_dir():
+            for path in sorted(self.samples.iterdir()):
+                if path.suffix.lower() in (".wpd", ".one", ".pst", ".orf", ".rw2", ".raf", ".x3f", ".cr3", ".raw", ".mrw") and path.is_file():
+                    self.add("Samples/" + path.name, path.read_bytes(), age_days=2000, note="third-party sample from " + str(self.samples))
+        else:
+            self.skipped.append("Samples/: no samples folder (WordPerfect, OneNote and non-TIFF RAW need real files)")
+
     def _malformed(self):
         """Deliberate analyzer failures, so the quality reports have rows."""
         self.add("Malformed/truncated.pdf", b"%PDF-1.4\n1 0 obj\n<</Type/Catalog",
@@ -468,6 +873,11 @@ class Corpus:
                  age_days=62, note="invalid PNG", expect_analyzer_failure=True)
         self.add("Malformed/corrupt.gz", b"\x1f\x8b\x08\x00" + b"\xff" * 24,
                  age_days=63, note="invalid GZIP", expect_analyzer_failure=True)
+        self.add("Malformed/truncated.zip", make_zip([("a.txt", b"a" * 4000)])[:600],
+                 age_days=64, note="truncated ZIP", expect_analyzer_failure=True)
+        self.add("Malformed/not_really.pst", b"!BDN" + bytes(self.rng.getrandbits(8) for _ in range(2000)),
+                 age_days=65, note="PST signature over garbage", expect_analyzer_failure=True)
+        self.add("Malformed/empty.msg", b"", age_days=66, note="zero-byte Outlook message")
 
     def _edge_cases(self):
         self.add("Edge/empty.txt", b"", age_days=10, note="zero bytes")
@@ -560,6 +970,10 @@ class Corpus:
             },
             "expected_analyzer_failures": sorted(
                 f["relative_path"] for f in self.files if f["expect_analyzer_failure"]),
+            "ocr_review_expected": [p.replace("/", "\\") for p in OCR_REVIEW_EXPECTED],
+            "ocr_clean_expected": [p.replace("/", "\\") for p in OCR_CLEAN_EXPECTED],
+            "not_documents": [p.replace("/", "\\") for p in NOT_DOCUMENTS],
+            "skipped": sorted(self.skipped),
             "zero_byte_files": sorted(
                 f["relative_path"] for f in self.files if f["size_bytes"] == 0),
             "files": sorted(self.files, key=lambda f: f["relative_path"]),
@@ -569,8 +983,10 @@ class Corpus:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", default=r"C:\FOTest\P2Accept",
-                    help="directory to build the corpus under (recreated)")
+    ap.add_argument("--root", default=r"C:\FOTest",
+                    help="directory holding Corpus\\ and GROUND_TRUTH.json (Corpus is recreated)")
+    ap.add_argument("--samples", default=None,
+                    help="folder of third-party samples to copy in (default: <root>\\Samples)")
     args = ap.parse_args()
 
     base = Path(args.root)
@@ -578,8 +994,9 @@ def main():
     if corpus_dir.exists():
         shutil.rmtree(corpus_dir)
     corpus_dir.mkdir(parents=True)
+    samples = Path(args.samples) if args.samples else base / "Samples"
 
-    corpus = Corpus(corpus_dir)
+    corpus = Corpus(corpus_dir, samples)
     corpus.build()
     truth = corpus.ground_truth()
 
@@ -597,6 +1014,8 @@ def main():
     print(f"reclaimable bytes : {d['total_reclaimable_bytes']:,}")
     print(f"analyzer failures : {len(truth['expected_analyzer_failures'])} expected")
     print(f"older than 5y     : {truth['age']['modified_before_cutoff']}")
+    for line in truth["skipped"]:
+        print(f"not made          : {line}")
 
 
 if __name__ == "__main__":

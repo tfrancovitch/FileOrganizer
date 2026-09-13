@@ -6,3 +6,4 @@
 * text=auto eol=lf
 *.png binary
 *.zip binary
+Resources/Fixtures/** binary
