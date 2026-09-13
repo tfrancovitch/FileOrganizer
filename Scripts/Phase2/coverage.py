@@ -130,6 +130,7 @@ def evidence_health(conn, scope=None):
         "stale_hashes": 0,
         "cloud_offline": 0,
         "current_analyzer_failures": 0,
+        "files_with_analyzer_failures": 0,
     })
     clause, bind = _file_scope_clause(scope)
     join_fp = bool(clause and "fp." in clause)
@@ -167,9 +168,13 @@ def evidence_health(conn, scope=None):
     # It is deliberately not scope-filtered: every row sharing a
     # file_observation_id shares its file_path_id, so scope membership is
     # identical for the whole series and filtering it would change nothing.
-    result["current_analyzer_failures"] = conn.execute(
+    # Two counts from one shape: attempts that failed, and the files those
+    # attempts belong to. A person reads "16 analyzer failures" as sixteen
+    # analyzers; what happened is sixteen FILES that could not be analysed,
+    # and the strip says that.
+    result["current_analyzer_failures"], result["files_with_analyzer_failures"] = conn.execute(
         """
-        SELECT COUNT(*)
+        SELECT COUNT(*), COUNT(DISTINCT fs.file_path_id)
           FROM analyzer_result ar
           JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
           JOIN analyzer a ON a.analyzer_id=rr.analyzer_id
@@ -190,11 +195,12 @@ def evidence_health(conn, scope=None):
                        OR (n.analyzed_utc=ar.analyzed_utc
                            AND n.analyzer_result_id>ar.analyzer_result_id)))
         """, ar_bind
-    ).fetchone()[0]
+    ).fetchone()
 
     # Preserve coverage warning, add health warnings.
     if result["stale_hashes"]:
         result["warnings"].append(f"{result['stale_hashes']} current locations have stale/non-authoritative content identity.")
     if result["current_analyzer_failures"]:
-        result["warnings"].append(f"{result['current_analyzer_failures']} current analyzer attempts failed.")
+        result["warnings"].append(f"{result['files_with_analyzer_failures']} file(s) could not be analysed "
+                                  f"({result['current_analyzer_failures']} failed attempt(s)).")
     return result

@@ -62,6 +62,62 @@ FILE_FIELDS = {
     "hash.authority": "CASE WHEN fs.content_id IS NULL THEN 'absent' WHEN fs.content_observation_id=fs.current_observation_id THEN 'current' ELSE 'stale' END",
 }
 
+
+def _latest_analysis(expr, extra=""):
+    """A file-entity column drawn from analysis: the value the newest CURRENT
+    analyzer result carries for this file, or NULL.
+
+    Correlated on fs.current_observation_id, so a result from an earlier
+    observation never shows against the file's current state, and taken from
+    the newest attempt that has a value, so a re-run supersedes an older one.
+    A scalar subquery per row: fine for a page of 200, and ORDER BY on it
+    costs one seek per file through ix_analyzer_result_observation.
+    """
+    return (f"(SELECT {expr} FROM analyzer_result lar "
+            f"JOIN analyzer_run lrr ON lrr.analyzer_run_id=lar.analyzer_run_id "
+            f"JOIN analyzer la ON la.analyzer_id=lrr.analyzer_id "
+            f"WHERE lar.file_observation_id=fs.current_observation_id AND ({expr}) IS NOT NULL{extra} "
+            f"ORDER BY lar.analyzed_utc DESC, lar.analyzer_result_id DESC LIMIT 1)")
+
+
+# The latest CURRENT attempt per analyzer that ended in error -- the same
+# rule evidence_health() counts by -- so a superseded error never shows.
+_CURRENT_ERROR = (
+    "(SELECT la.label || ': ' || COALESCE(lar.error_message,'') FROM analyzer_result lar "
+    "JOIN analyzer_run lrr ON lrr.analyzer_run_id=lar.analyzer_run_id "
+    "JOIN analyzer la ON la.analyzer_id=lrr.analyzer_id "
+    "WHERE lar.file_observation_id=fs.current_observation_id AND lar.status='error' "
+    "AND NOT EXISTS (SELECT 1 FROM analyzer_result n JOIN analyzer_run nr ON nr.analyzer_run_id=n.analyzer_run_id "
+    "JOIN analyzer na ON na.analyzer_id=nr.analyzer_id WHERE n.file_observation_id=lar.file_observation_id "
+    "AND na.analyzer_key=la.analyzer_key AND (n.analyzed_utc>lar.analyzed_utc OR (n.analyzed_utc=lar.analyzed_utc "
+    "AND n.analyzer_result_id>lar.analyzer_result_id))) "
+    "ORDER BY lar.analyzed_utc DESC LIMIT 1)")
+
+FILE_FIELDS.update({
+    "analysis.title": _latest_analysis("lar.title"),
+    "analysis.author": _latest_analysis("lar.author"),
+    "analysis.content_created_reported": _latest_analysis("lar.content_created_reported"),
+    "analysis.width_px": _latest_analysis("lar.width_px"),
+    "analysis.height_px": _latest_analysis("lar.height_px"),
+    "analysis.duration_seconds": _latest_analysis("lar.duration_seconds"),
+    "analysis.word_count": _latest_analysis("lar.word_count"),
+    "analysis.char_count": _latest_analysis("lar.char_count"),
+    "analysis.pdf.page_count": _latest_analysis("CAST(json_extract(lar.detail_json,'$.PageCount') AS INTEGER)"),
+    "analysis.camera.make": _latest_analysis("json_extract(lar.detail_json,'$.CameraMake')"),
+    "analysis.camera.model": _latest_analysis("json_extract(lar.detail_json,'$.CameraModel')"),
+    "analysis.archive.entry_count": (
+        "(SELECT ars.entry_total_count FROM archive_summary ars JOIN analyzer_result lar "
+        "ON lar.analyzer_result_id=ars.analyzer_result_id "
+        "WHERE lar.file_observation_id=fs.current_observation_id "
+        "ORDER BY lar.analyzed_utc DESC LIMIT 1)"),
+    "analysis.error": _CURRENT_ERROR,
+    "analysis.analyzed_count": (
+        "(SELECT COUNT(DISTINCT la.analyzer_key) FROM analyzer_result lar "
+        "JOIN analyzer_run lrr ON lrr.analyzer_run_id=lar.analyzer_run_id "
+        "JOIN analyzer la ON la.analyzer_id=lrr.analyzer_id "
+        "WHERE lar.file_observation_id=fs.current_observation_id)"),
+})
+
 HISTORY_FIELDS = {
     "path.id": "o.file_path_id",
     "path.file_name": "fp.file_name",
@@ -841,6 +897,75 @@ class QueryEngine:
         else:
             result["next_cursor"]=None
         return result
+
+    def field_values(self, field, scope=None, search=None, filters=None, limit=500):
+        """Distinct values of one file field within the question, with counts.
+
+        What a spreadsheet's filter dropdown shows: every value the column
+        takes here, most common first. Built from the same scope, search and
+        filters the Files page is showing, so the list is of what is on the
+        page's question, not of the whole project.
+        """
+        q,preds=self._files_query(scope,search,filters)
+        if preds: q["where"]={"all":preds} if len(preds)>1 else preds[0]
+        q["group_by"]=[{"id":"v","field":field}]
+        q["aggregates"]=[{"id":"n","function":"count"}]
+        q["sort"]=[{"ref":{"kind":"aggregate","id":"n"},"direction":"desc"},{"ref":{"kind":"group","id":"v"},"direction":"asc"}]
+        q["semantic_limit"]=int(limit)
+        return [(row["v"],int(row["n"])) for row in self.execute(q)["rows"]]
+
+    def file_analysis(self, file_path_id, member_limit=200):
+        """Everything the analyzers recorded about one file's current state.
+
+        One entry per CURRENT analyzer result (latest attempt per analyzer):
+        the analyzer, status, when, every promoted column, every detail
+        field, the error if any, the extracted-text reference if any, and
+        for an archive its summary and up to `member_limit` members. This is
+        what the Metadata Explorer shows -- all of it, not a summary of it.
+        """
+        rows=self.conn.execute("""
+            SELECT ar.analyzer_result_id, a.analyzer_key, a.label, ar.status, ar.analyzed_utc,
+                   ar.title, ar.author, ar.content_created_reported, ar.width_px, ar.height_px,
+                   ar.duration_seconds, ar.word_count, ar.char_count, ar.detail_json,
+                   ar.error_kind, ar.error_message, r.run_folder
+              FROM file_state fs
+              JOIN analyzer_result ar ON ar.file_observation_id=fs.current_observation_id
+              JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
+              JOIN analyzer a ON a.analyzer_id=rr.analyzer_id
+              LEFT JOIN run r ON r.run_id=rr.run_id
+             WHERE fs.file_path_id=?
+               AND NOT EXISTS (SELECT 1 FROM analyzer_result n JOIN analyzer_run nr ON nr.analyzer_run_id=n.analyzer_run_id
+                                WHERE n.file_observation_id=ar.file_observation_id AND nr.analyzer_id=rr.analyzer_id
+                                  AND (n.analyzed_utc>ar.analyzed_utc OR (n.analyzed_utc=ar.analyzed_utc AND n.analyzer_result_id>ar.analyzer_result_id)))
+             ORDER BY a.sort_order, a.analyzer_key""",(file_path_id,)).fetchall()
+        out=[]
+        for row in rows:
+            entry={"analyzer_key":row["analyzer_key"],"label":row["label"],"status":row["status"],
+                   "analyzed_utc":row["analyzed_utc"],"run_folder":row["run_folder"],"fields":[],
+                   "error":None,"archive":None,"members":[],"text":None}
+            for label,col in (("Title","title"),("Author","author"),("Created (reported by the file)","content_created_reported"),
+                              ("Width (px)","width_px"),("Height (px)","height_px"),("Duration (s)","duration_seconds"),
+                              ("Words","word_count"),("Characters","char_count")):
+                if row[col] not in (None,""): entry["fields"].append((label,row[col]))
+            try: detail=json.loads(row["detail_json"]) if row["detail_json"] else {}
+            except ValueError: detail={}
+            for k,v in detail.items():
+                if v not in (None,""): entry["fields"].append((k,v))
+            if row["status"]=="error":
+                entry["error"]=(row["error_kind"] or "error")+": "+(row["error_message"] or "")
+            ars=self.conn.execute("SELECT analysis_mode,entry_total_count,entry_recorded_count,truncated,"
+                                  "total_uncompressed_bytes,total_compressed_bytes FROM archive_summary WHERE analyzer_result_id=?",
+                                  (row["analyzer_result_id"],)).fetchone()
+            if ars:
+                entry["archive"]=dict(ars)
+                entry["members"]=[dict(m) for m in self.conn.execute(
+                    "SELECT entry_path,entry_size_bytes,entry_compressed_size_bytes FROM archive_member "
+                    "WHERE analyzer_result_id=? ORDER BY sequence LIMIT ?",(row["analyzer_result_id"],int(member_limit)))]
+            ec=self.conn.execute("SELECT status,source_type,char_count,word_count,extracted_relpath,artifact_exists "
+                                 "FROM extracted_content WHERE analyzer_result_id=?",(row["analyzer_result_id"],)).fetchone()
+            if ec: entry["text"]=dict(ec)
+            out.append(entry)
+        return out
 
     def count_files(self, scope=None, search=None, filters=None):
         """How many current present files the Files page's question covers."""

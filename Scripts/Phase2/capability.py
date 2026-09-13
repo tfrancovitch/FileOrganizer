@@ -158,6 +158,31 @@ def current_duplicate_counts(conn):
     return int(groups or 0), int(members or 0), None
 
 
+def _failed_counts(conn):
+    """analyzer key -> files whose CURRENT attempt by that analyzer ended in error."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT a.analyzer_key, COUNT(DISTINCT fs.file_path_id)
+              FROM analyzer_result ar
+              JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
+              JOIN analyzer a ON a.analyzer_id=rr.analyzer_id
+              JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id
+             WHERE ar.status='error'
+               AND NOT EXISTS (
+                   SELECT 1 FROM analyzer_result n
+                   JOIN analyzer_run nr ON nr.analyzer_run_id=n.analyzer_run_id
+                   JOIN analyzer na ON na.analyzer_id=nr.analyzer_id
+                   WHERE n.file_observation_id=ar.file_observation_id
+                     AND na.analyzer_key=a.analyzer_key
+                     AND (n.analyzed_utc>ar.analyzed_utc
+                          OR (n.analyzed_utc=ar.analyzed_utc AND n.analyzer_result_id>ar.analyzer_result_id)))
+             GROUP BY a.analyzer_key""").fetchall()
+        return {r[0]: r[1] for r in rows}
+    except Exception:
+        return {}
+
+
 def project_capabilities(conn):
     """Everything this project can and cannot currently answer.
 
@@ -418,6 +443,7 @@ def project_summary(conn):
 
     ext_counts = _counts_by_extension(conn)
     analyzed = _analyzed_counts(conn)
+    failed = _failed_counts(conn)
     ext_map = _analyzer_extension_map()
     buckets = []
     claimed = 0
@@ -437,6 +463,8 @@ def project_summary(conn):
         cap = caps.get(f"analyze.{key}")
         buckets.append({"key": key, "label": BUCKET_LABELS[key], "files": files, "bytes": size,
                         "analysed": analyzed.get(key, 0) if files else 0,
+                        "failed": failed.get(key, 0) if files else 0,
+                        "extensions": sorted(exts),
                         "action": cap.action if cap else None,
                         "state": cap.state if cap else None})
     other = max(0, present - claimed)
@@ -458,8 +486,29 @@ def project_summary(conn):
     else:
         text_state = "extracted, not indexed"
 
+    # Files whose current attempt by ANY analyzer failed: distinct files, so a
+    # file two analyzers choked on counts once, as the person would count it.
+    failed_files = _scalar(
+        conn, """
+        SELECT COUNT(DISTINCT fs.file_path_id)
+          FROM analyzer_result ar
+          JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
+          JOIN analyzer a ON a.analyzer_id=rr.analyzer_id
+          JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id
+         WHERE ar.status='error'
+           AND NOT EXISTS (
+               SELECT 1 FROM analyzer_result n
+               JOIN analyzer_run nr ON nr.analyzer_run_id=n.analyzer_run_id
+               JOIN analyzer na ON na.analyzer_id=nr.analyzer_id
+               WHERE n.file_observation_id=ar.file_observation_id
+                 AND na.analyzer_key=a.analyzer_key
+                 AND (n.analyzed_utc>ar.analyzed_utc
+                      OR (n.analyzed_utc=ar.analyzed_utc AND n.analyzer_result_id>ar.analyzer_result_id)))""")
+
     return {
         "present": present, "bytes": total_bytes, "roots": roots,
+        "failed_files": failed_files,
+        "all_bucket_extensions": sorted(set().union(*(set(e[1]) for e in ext_map.values())) if ext_map else set()),
         "inventory": caps.get("inventory"),
         "identity": identity, "duplicates": duplicates,
         "groups": groups, "members": members, "reclaimable_bytes": reclaimable,
