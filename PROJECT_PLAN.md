@@ -410,10 +410,13 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? 113 now, OCR included. What remains is samples for WordPerfect, OneNote and the non-TIFF camera RAW formats, and the adversarial corpus of the Master Matrix in `C:\FOTest\Research`.
 
-**Unpushed:** the `phase2` branch is **68 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **69 commits** and exists only on this machine.
 
-**Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
-the decisions already settled, and the traps, for a session picking this up cold.
+**Handoffs:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the environment,
+the rules, the decisions already settled, the defects and the traps, for a session
+picking this up cold; `Docs\Handoffs\PHASE_2_REMAINING_AND_ADVERSARIAL_HANDOFF.md`
+(2026-09-13) is what to do next — the remaining Phase 2 items, and the adversarial
+test corpus designed in `C:\FOTest\Research\`.
 
 ---
 
