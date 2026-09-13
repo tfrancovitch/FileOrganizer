@@ -101,7 +101,7 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **136 / 136**, four consecutive runs — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, and every view of the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **149 / 149** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, and every view of the real window |
 | **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.4 GB reclaimable. **All seven analyzers run on the real project: 30 min against a ~51 min estimate; 31,254 files analysed, 16 per-file errors recorded with reasons; 30,112 archive members listed** (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md`) |
 | **Source immutability, real folder** | **41,056 / 41,056 unchanged** in size and modification time after the Pre-Scan, Full Fingerprinting, all seven analyzers and the archive re-run |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
@@ -129,6 +129,7 @@ query engine being tested.
 | 17 | ffprobe spawned without `CREATE_NO_WINDOW` — under pythonw every probe flashed a console window ("a bunch of brief windows popped up") | Flag added |
 | 18 | `needs_caution` bound its threshold at definition time; found by the check that tried to lower it | Read when called |
 | 19 | **Archive members were never persisted by a Dashboard run.** The streaming persistence path passed `results=` to a writer that never accepted it and never called the summary writer; every run with a `.zip` raised, was caught as a warning, reported "succeeded", and stored zero member rows with the ingest status stuck at *running*. No fixture had an archive; the real corpus had 462 | Both writers take the batch; summaries written; a persistence failure marks its analyzer run *failed* with the reason. 30,112 members persisted on re-run; the suite now carries zips through the window |
+| 20 | **"Unexpected Error" on a mouse-wheel turn after leaving the Reports page.** The scrolling list bound the wheel application-wide (`bind_all`) to its own canvas; the next page destroyed the canvas but the binding stayed, so the first wheel turn anywhere raised `invalid command name` | `clear()` drops the wheel binding with the page; the handler checks its canvas still exists. The suite turns the wheel after leaving Reports and expects silence |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -185,6 +186,31 @@ the interface, not questions asked of a corpus. See `Docs\Handoffs\P2.12_CLOSEOU
 The exploration stopped at the crash. The questions of the corpus itself — what is
 taking the space, which duplicates matter — are still to be asked.
 
+### The third real-use session — 2026-09-12, the real corpus explored
+
+The seven analyzers had run on the real project (30 min, ~51 estimated). The user
+explored the reworked window and wrote `Phase 2 Human Test 2 - Real Corpus
+Notes 2.txt`. This is the first session whose notes include questions **of the
+corpus** — "how can 11 files be 0 B?", "16 analyzer failures — which, and why?",
+"where is the data the analyzers collected?" — alongside the interface notes.
+Every note acted on the same day:
+
+| Note | Done |
+|---|---|
+| The type buckets on the summary should be clickable and open the file list on just that type | They are links; "PDFs" opens the Files page on the PDFs, largest first; "Other" opens everything no analyzer handles |
+| "16 analyzer failures" — analyzers or files? Want a diagnosis | Files. The summary says "Could not be analyzed  16 files (5 images, 11 office documents)" with **Show which**; the strip says "16 files could not be analyzed — click to see which"; both open the list with the reason in a column (11 are not real Office files — "not an OLE2 structured storage file"; 2 images exceed the decompression-bomb limit; 2 could not be identified; 1 PDF is truncated) |
+| The home page should invite exploring; "Collect more evidence" no longer applies after a full fingerprint | The summary ends with **Explore the files** and **Reports**; the doors button appears only while fingerprinting is incomplete |
+| 11 files at 0 B — how? | They are genuinely empty (Google Takeout placeholders and the like); the display stays "0 B" at the user's request |
+| The folder tree does not expand; wants to pick a subfolder | Expands to any depth, lazily; picking a folder scopes the page |
+| Size vs Allocated? What is a hard link? | "Allocated" is now **Size on disk**; Choose columns… describes every column, including those two |
+| Filtering by Hash Status showed a blank box; wants the list of values, like Excel, for every filter | Value columns show a checklist of the values present with counts, All / None, drawn from the page's own question |
+| The analyzers' metadata should be columns | Title, Author, Pages, Width, Height, Duration, Words, Camera make/model, Archive entries, Reason not analyzed — sortable and filterable, server-side |
+| Metadata Explorer not useful — where is the collected data? | It now shows everything recorded about the file: every field of every analyzer, the archive's members, the error |
+| Reports page: scroll wheel → "Unexpected Error" | Defect 20 |
+
+The user's decision on text extraction (~40 h estimated) is still open, and the
+`phase2` branch is still unpushed.
+
 ### What remains before Phase 2 closes
 
 The living plan's own completion criteria:
@@ -193,9 +219,9 @@ The living plan's own completion criteria:
 |---|---|
 | Acceptance run against a meaningful real project | **Partial → mostly met** — Pre-Scan and Full Fingerprinting on 41,056 real files, estimate honoured; analysis on a copy; the exploration was cut short by the crash before questions were asked |
 | Shareable evidence reviewed | Partial |
-| **Real user questions recorded** | **Partial** — two sessions' notes recorded and acted on; still about the interface, because the second session crashed before the corpus was questioned |
+| **Real user questions recorded** | **Partial → mostly met** — three sessions' notes recorded and acted on; the third session's include the first questions of the corpus itself (the empty files, the files that could not be analyzed, where the collected data is). The space and duplicate questions are still to be asked |
 | Analytical gaps classified | Partial |
-| High-value deficiencies corrected or deferred | **Done** — 18 defects, all fixed |
+| High-value deficiencies corrected or deferred | **Done** — 20 defects, all fixed |
 | Real source immutability confirmed | **Done — on the real folder**: 41,056 / 41,056 unchanged after every run |
 | **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not evidenced** — the session did not reach a verdict |
 
@@ -302,12 +328,17 @@ rather than time-boxed, and it does not exist for network shares.
 9. The seven analyzers run on the real project at the user's request; immutability
    confirmed on the real folder; defect 19 found and fixed ✔
 
+**Done 2026-09-12, later — the third session, the real corpus explored**
+10. Every note acted on: clickable buckets, the failures named and listed with
+    reasons, value lists on filters, analysis columns, the explorer showing
+    everything, the folder tree, Explore the files; defect 20 found and fixed ✔
+
 **To close Phase 2** — the user's decision
-10. Extract and index the 4,060 documents, or not (~40 h estimated; it will ask)
-11. Ask the corpus things — what is taking the space, which duplicate groups are
+11. Extract and index the 4,060 documents, or not (~40 h estimated; it will ask)
+12. Ask the corpus things — what is taking the space, which duplicate groups are
     worth acting on, what is in the archives — and record what was asked and
     whether it answered
-12. Sign the closeout; Phase 3 handoff follows from it
+13. Sign the closeout; Phase 3 handoff follows from it
 
 **Decisions still open**
 - Does a re-run constitute a new project?
@@ -315,7 +346,7 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? Email (`.msg`, `.pst`, `.eml`) is the largest gap for legal use.
 
-**Unpushed:** the `phase2` branch is **41 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **49 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.

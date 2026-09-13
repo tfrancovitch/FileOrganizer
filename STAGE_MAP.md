@@ -68,7 +68,9 @@ type, by folder, by age, largest files, largest folders, what could not be read.
 ## The three doors
 
 After the prescan the user chooses what to invest next. **None of these is final**
-— all three remain available from the query interface afterwards.
+— the doors stay reachable from the project summary ("Collect more evidence...")
+until every file is fingerprinted, at which point they have nothing left to do and
+the button goes away.
 
 | Door | Run kind | Cost | What it buys |
 |---|---|---|---|
