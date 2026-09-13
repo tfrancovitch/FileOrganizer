@@ -368,11 +368,6 @@ class PstFile:
                 hnid = struct.unpack("<I", value)[0]
                 if hnid == 0:
                     continue
-                if ptype == PT_OBJECT:
-                    if subs is None:
-                        subs = self.subnodes(bid_sub)
-                    props[pid] = (ptype, subs.get(hnid))
-                    continue
                 if hnid & 0x1F == 0:
                     payload = self._heap_item(blocks, hnid)
                 else:
@@ -382,6 +377,15 @@ class PstFile:
                     if entry is None:
                         continue
                     payload = self.data(entry[0])
+                if ptype == PT_OBJECT:
+                    # [MS-PST] 2.3.3.5: the payload is {Nid, ulSize}; the Nid
+                    # names the subnode holding the embedded object -- for an
+                    # attached message, that message's own property context.
+                    if len(payload) >= 4:
+                        if subs is None:
+                            subs = self.subnodes(bid_sub)
+                        props[pid] = (ptype, subs.get(struct.unpack_from("<I", payload, 0)[0]))
+                    continue
                 if ptype == PT_UNICODE:
                     props[pid] = (ptype, payload.decode("utf-16-le", errors="replace").rstrip("\x00"))
                 elif ptype == PT_STRING8:
@@ -452,7 +456,8 @@ class PstFile:
                     ap = self.property_context(sub_bd, sub_bs)
                 except PstError:
                     continue
-                name = self._text(ap, PR_ATTACH_LONG_NAME) or self._text(ap, PR_ATTACH_SHORT_NAME)
+                name = (self._text(ap, PR_ATTACH_LONG_NAME) or self._text(ap, PR_ATTACH_SHORT_NAME)
+                        or self._text(ap, PR_DISPLAY_NAME))
                 method = ap.get(PR_ATTACH_METHOD, (PT_INT32, ATTACH_BY_VALUE))[1]
                 data = ap.get(PR_ATTACH_DATA)
                 embedded = None
