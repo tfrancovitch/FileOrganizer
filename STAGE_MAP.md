@@ -155,7 +155,7 @@ applies to, and reports `no_applicable_files` as a distinct, successful state.
 | `VideoAnalysis.ps1` | Video | needs ffprobe | Technical metadata |
 | `TextFileAnalysis.ps1` | Text / Markdown | `.txt .md` | Word counts, tags, links |
 | `ArchiveAnalysis.ps1` | Archives | `.zip .7z` | **Lists members without extracting** |
-| `ContentExtraction.ps1` | Text extraction | `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .txt .md` — each read by its bytes, not its name | Extracted-text artifacts |
+| `ContentExtraction.ps1` | Text extraction | `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .xml .log .vcf .ics .txt .md`, files with no extension, and email `.eml .mbox .mht .mhtml .msg .pst .ost` — each read by its bytes, not its name; email attachments included | Extracted-text artifacts |
 
 Writes `analyzer_run`, `analyzer_result`, plus `archive_member` /
 `archive_summary` and `extracted_content`.
@@ -211,12 +211,12 @@ build leaves no half index.
 
 You may do 1 without 2, and 2 without 3.
 
-> **Coverage limit worth knowing:** extraction handles fourteen formats, and a
+> **Coverage limit worth knowing:** extraction handles twenty-six formats, and a
 > file is read as what its bytes are (a `.doc` holding RTF is read as RTF; a
-> `.xls` holding an HTML export as HTML). Text inside a `.log`, `.xml`, an
-> extensionless file, an email file, or an image-only PDF (OCR) is never
-> extracted and therefore never searchable — and today the search returns zero
-> results without saying so.
+> `.xls` holding an HTML export as HTML; a README with no extension as text).
+> Text inside an image-only PDF or a scanned picture (OCR), an OpenDocument or
+> EPUB file, or source code is never extracted and therefore never searchable —
+> and today the search returns zero results without saying so.
 
 ---
 

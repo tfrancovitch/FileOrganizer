@@ -4,11 +4,11 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-12, evening — text extraction widened to fourteen formats
+**Last updated:** 2026-09-13 — text extraction widened to twenty-six formats, email included
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction
-covers 7,900 of its files at a ~17-minute estimate and awaits the user's decision;
+covers 8,240 of its files at a 20–30-minute estimate and awaits the user's decision;
 closeout drafted
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
@@ -94,7 +94,7 @@ query engine being tested.
 
 | Check | Result |
 |---|---|
-| Acceptance suite | **37 / 37** — twelve marker phrases, one per extractable format, each found only in its own file |
+| Acceptance suite | **47 / 47** — twenty-two marker phrases, one per extractable format, each found only in its own file |
 | Standard reports, headless, no parameters | **31 / 31** |
 | Exact duplicates | 4 groups, 68,889 reclaimable bytes, 11 members — **exact** |
 | Same-size-different-bytes decoy | Correctly **not** grouped |
@@ -102,7 +102,7 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **157 / 157** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in twelve formats found through the index, and every view of the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **160 / 160** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in twenty-two formats found through the index (the email ones only inside attachments), and every view of the real window |
 | **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.4 GB reclaimable. **All seven analyzers run on the real project: 30 min against a ~51 min estimate; 31,254 files analysed, 16 per-file errors recorded with reasons; 30,112 archive members listed** (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md`) |
 | **Source immutability, real folder** | **41,056 / 41,056 unchanged** in size and modification time after the Pre-Scan, Full Fingerprinting, all seven analyzers and the archive re-run |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
@@ -142,11 +142,11 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 
 ### Known limits
 
-- **Text extraction covers fourteen formats** — `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .txt .md`, each read by what its bytes are rather than what its name says. Not covered: text inside a `.log`, `.xml`, `.vcf`, `.ics` or extensionless file (one-line additions), email (`.msg`, `.pst`, `.eml`), OpenDocument, and **image-only PDFs, which need OCR**. Text the product cannot extract is never searchable, **and the search says nothing about it.**
+- **Text extraction covers twenty-six formats** — `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .xml .log .vcf .ics .txt .md`, files with no extension, and email as `.eml .mbox .mht .mhtml .msg .pst .ost` — each read by what its bytes are rather than what its name says, attachments included. Not covered: OpenDocument, EPUB, source code and configuration files, and **image-only PDFs and scanned images, which need OCR**. The `.pst` reader is written to the specification but has not yet met a real file. Text the product cannot extract is never searchable, **and the search says nothing about it.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
-- **Text extraction has not yet run on the real corpus.** It was estimated at ~40 hours on 2026-09-12 (defect 22); with PDF text through PDFium and the estimate counting pages, the same corpus now estimates at **~17 minutes for 7,900 files**. The true figure is unknown until it runs; it is the user's decision.
+- **Text extraction has not yet run on the real corpus.** It was estimated at ~40 hours on 2026-09-12 (defect 22); with PDF text through PDFium, the estimate counting pages and sampling each family of document apart, the same corpus now estimates at **20–30 minutes for 8,240 files** (the spread is the sample: six files per family, timed cold or warm). The true figure is unknown until it runs; it is the user's decision.
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
@@ -227,6 +227,23 @@ honest estimate, and the missing formats. Same day:
 
 The corpus's extractable set went from 4,060 files to 7,900. The `phase2` branch
 is still unpushed.
+
+**2026-09-13.** The user asked for the rest: `.log .xml .vcf .ics`, files with no
+extension, and email — `.msg`, `.pst`, `.eml` — and asked what else belongs and how
+OCR would work. Built the same day, with `.mbox`, `.mht/.mhtml` and `.ost` alongside
+because they are the same readers:
+
+| Asked for | Done |
+|---|---|
+| `.log .xml .vcf .ics` | Read as text; XML kept raw so its element names stay searchable |
+| Files with no extension | Read by their bytes (312 in the corpus: 280 text, 8 HTML, 24 pictures and programs); a picture with no extension is recorded as *not a document*, not as a failure, and the summary counts those apart |
+| `.eml`, `.mbox`, `.mht` | Standard-library MIME parsing; every message rendered the same way — headers, body as text, then each attachment's text through the ordinary readers, forwarded messages included; an .mbox is read one message at a time |
+| Outlook `.msg` | Read from its OLE2 streams — Unicode and 8-bit strings, dates from the fixed-property stream, attachments and embedded messages, HTML and compressed-RTF bodies. **Verified on messages written by Outlook 2016** (kept as a fixture) |
+| Outlook `.pst` (and `.ost`) | `fo_pst.py`: a read-only reader written to [MS-PST] — both block encodings, both file layouts, data and subnode trees, heap, BTree-on-heap, property context; messages found by walking the node tree, folders by the parent chain; Outlook never involved, because Outlook opens a PST for writing. **Not yet verified on a real file** — Outlook automation hung on creating one and the corpus has none; the first real PST decides |
+| The estimate | Non-PDF documents are now sampled by family (Office, email, text-like) — one sample across all of them swung between 17 minutes and an hour on the same project |
+
+The extractable set is now 8,240 of the corpus's 41,056 files. An email's subject,
+sender and date are its Title, Author and Created columns.
 
 ### What remains before Phase 2 closes
 
@@ -354,8 +371,13 @@ rather than time-boxed, and it does not exist for network shares.
 11. PDF text through PDFium; the estimate counts pages; `.doc .ppt .xls .rtf
     .html .csv .json` read by their bytes; defects 21–24 ✔
 
+**Done 2026-09-13 — the rest of the formats**
+11a. `.log .xml .vcf .ics`, files with no extension, and email in every shape
+     (`.eml .mbox .mht .msg .pst`); the estimate samples by family ✔ — the
+     `.pst` reader awaits its first real file
+
 **To close Phase 2** — the user's decision
-12. Extract and index the 7,900 documents, or not (~17 min estimated; just over
+12. Extract and index the 8,240 documents, or not (20–30 min estimated; over
     the 15-minute caution, so it will ask "Begin now?" once)
 13. Ask the corpus things — what is taking the space, which duplicate groups are
     worth acting on, what is in the archives — and record what was asked and
@@ -366,9 +388,9 @@ rather than time-boxed, and it does not exist for network shares.
 - Does a re-run constitute a new project?
 - Is consumer mode a preference or a separate edition?
 - Does the journal need to be tamper-evident, or merely out of the way?
-- Should text extraction cover more formats? Fourteen are covered now; email (`.msg`, `.pst`, `.eml`) is the largest remaining gap for legal use, and image-only PDFs need OCR.
+- Should text extraction cover more formats? Twenty-six are covered now, email included. What remains is OCR for image-only PDFs and scanned images (the engine is the user's choice — see the 2026-09-13 note in the handoff), and the long tail: OpenDocument, EPUB, source code and configuration files.
 
-**Unpushed:** the `phase2` branch is **54 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **60 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.
