@@ -93,8 +93,9 @@ failed and everything else continues.
 | Category | Packages |
 |---|---|
 | Images | `Pillow`, `imagehash`; `pillow-heif` for HEIC/HEIF |
-| PDF | `pypdf`, `pdfplumber` |
+| PDF | `pypdf`, `pdfplumber`; `pypdfium2` (installed with pdfplumber) reads text 25-30x faster |
 | Office | `python-docx`, `openpyxl`, `python-pptx`, `olefile` |
+| Text extraction | the PDF and Office packages, `chardet`; `xlrd` for `.xls` text. Word and PowerPoint 97-2003, RTF, HTML, CSV and JSON need nothing extra |
 | RAW photos | `exifread` |
 | Audio | `mutagen` + **ffprobe** on PATH |
 | Video | **ffprobe** on PATH |
