@@ -183,7 +183,8 @@ ANALYZER_SPECS = [
                   "author": ("Author", _text_or_none),
                   "content_created_reported": ("Created", _text_or_none)},
         detail=["SourceType", "ExtractedTextFile", "TextSha256",
-                "ReusedExisting", "Messages"],
+                "ReusedExisting", "Messages", "EntriesRead", "EntriesSkipped",
+                "OcrEngine", "OcrPages", "OcrQuality", "OcrReview", "OcrReviewReasons"],
         script_name="ContentExtraction.ps1", engine_name="ContentExtraction.py",
         secondary_artifact="ExtractedText", kind="extraction"),
 ]

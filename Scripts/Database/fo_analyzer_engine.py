@@ -431,7 +431,7 @@ class ExtractionAdapter(AnalyzerAdapter):
             raise AnalyzerEngineError(self.import_error() or "module unavailable")
         folder = Path(context["extract_folder"])
         folder.mkdir(parents=True, exist_ok=True)
-        return module.make_analyze_fn(folder)
+        return module.make_analyze_fn(folder, options=context.get("extraction"))
 
     def apply(self, result, payload):
         result.fields = dict(payload)
@@ -504,12 +504,19 @@ ADAPTERS = [
                    declared_extensions={".zip", ".7z"}),
     ExtractionAdapter("content_extraction", "Content Extraction",
                       "ContentExtraction", None, extensions_attr="EXTENSIONS",
-                      declared_extensions={".pdf", ".docx", ".pptx", ".xlsx",
-                                           ".txt", ".md", ".doc", ".ppt", ".xls",
-                                           ".rtf", ".html", ".htm", ".csv", ".json",
-                                           ".xml", ".log", ".vcf", ".ics", "",
-                                           ".eml", ".mbox", ".mht", ".mhtml",
-                                           ".msg", ".pst", ".ost"}),
+                      # Mirrors ContentExtraction.EXTENSIONS (b6_regression C.F004 holds them equal).
+                      declared_extensions={
+                                           "", ".7z", ".bash", ".bat", ".bmp", ".c", ".cc", ".cfg", ".cjs", ".cmake", ".cmd",
+                                           ".conf", ".cpp", ".cs", ".css", ".csv", ".doc", ".docm", ".docx", ".dotm", ".dotx",
+                                           ".eml", ".env", ".epub", ".gif", ".go", ".gradle", ".h", ".heic", ".heif", ".hpp",
+                                           ".htm", ".html", ".ics", ".ini", ".java", ".jfif", ".jpeg", ".jpg", ".js", ".json",
+                                           ".jsx", ".kt", ".kts", ".less", ".log", ".lua", ".m", ".mbox", ".md", ".mht", ".mhtml",
+                                           ".mjs", ".msg", ".odg", ".odp", ".ods", ".odt", ".one", ".ost", ".pdf", ".php", ".pl",
+                                           ".pm", ".png", ".potm", ".potx", ".ppsm", ".ppsx", ".ppt", ".pptm", ".pptx",
+                                           ".properties", ".ps1", ".psd1", ".psm1", ".pst", ".py", ".pyw", ".r", ".rb", ".reg",
+                                           ".rs", ".rst", ".rtf", ".scss", ".sh", ".sql", ".srt", ".swift", ".tex", ".tif",
+                                           ".tiff", ".toml", ".ts", ".tsx", ".txt", ".vb", ".vbs", ".vcf", ".vtt", ".webp", ".wpd",
+                                           ".xls", ".xlsm", ".xlsx", ".xltm", ".xltx", ".xml", ".yaml", ".yml", ".zip", ".zsh"}),
 ]
 
 ADAPTER_BY_KEY = {a.key: a for a in ADAPTERS}

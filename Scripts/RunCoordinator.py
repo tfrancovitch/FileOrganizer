@@ -351,6 +351,13 @@ class StageHandle(object):
 # Run coordinator
 # ---------------------------------------------------------------------------
 
+def extraction_options(settings):
+    """The Options page's three switches, from settings.json; on unless off."""
+    return {"ocr": bool(settings.get("ExtractionOcr", True)),
+            "pictures": bool(settings.get("ExtractionPictures", True)),
+            "archives": bool(settings.get("ExtractionArchives", True))}
+
+
 class RunCoordinator(object):
     r"""Records one execution session.
 
@@ -2240,7 +2247,8 @@ class RunCoordinator(object):
                 skip_cloud_only=skip_cloud_only,
                 should_continue=self.should_continue)
 
-            context = {"extract_folder": str(inventory_dir / "ExtractedText")}
+            context = {"extract_folder": str(inventory_dir / "ExtractedText"),
+                       "extraction": extraction_options(settings)}
 
             # Results are persisted INCREMENTALLY. This prevents
             # B5-E.F007.
