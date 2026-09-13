@@ -539,6 +539,33 @@ def test_worker(tmp: Path):
     check("caution threshold: 15 minutes and over asks, under does not",
           needs_caution(16 * 60) and not needs_caution(14 * 60) and not needs_caution(None))
 
+    # -- the third session's asks: value lists, analysis columns, failures, the explorer
+    c = connect(project_dir, write=True)
+    engine = QueryEngine(c, saved_store=SavedQueryStore(c), fts_manager=FtsManager(c, project_dir))
+    values = dict(engine.field_values("hash.status"))
+    check("field_values lists a column's values with counts that add up to the total",
+          sum(values.values()) == n_files and set(values) <= {"unique_by_hash", "confirmed_duplicate", "size_unique"}, str(values))
+    ext_values = engine.field_values("path.extension", filters=[{"condition": {"left": {"kind": "field", "id": "file.size_bytes"}, "op": "gte", "value": {"kind": "literal", "value": 1}}}])
+    check("field_values honours the page's other filters", sum(n for _, n in ext_values) == n_files - len(truth["zero_byte_files"]), str(sum(n for _, n in ext_values)))
+    pages = engine.list_files(sort=("analysis.pdf.page_count", "desc"), limit=3, columns=["path.file_name", "analysis.pdf.page_count", "analysis.title"])["rows"]
+    check("analysis columns come through on the file entity and sort server-side",
+          pages and pages[0]["analysis.pdf.page_count"] is not None and all(
+              (pages[i]["analysis.pdf.page_count"] or 0) >= (pages[i + 1]["analysis.pdf.page_count"] or 0) for i in range(len(pages) - 1)),
+          str([(r["path.file_name"], r["analysis.pdf.page_count"]) for r in pages]))
+    failure_filter = [{"relation": {"relation": "current_analysis", "quantifier": "any",
+                                    "where": {"condition": {"left": {"kind": "field", "id": "analysis.status"}, "op": "eq", "value": {"kind": "literal", "value": "error"}}}}}]
+    failed_rows = engine.list_files(filters=failure_filter, limit=50, columns=["path.file_name", "path.relative", "analysis.error"])["rows"]
+    expected_failures = {f.replace("/", "\\") for f in truth["expected_analyzer_failures"]}
+    got_failures = {r["path.relative"] for r in failed_rows}
+    check("the failures view lists exactly the files ground truth expects to fail, each with a reason",
+          got_failures & {"Malformed\\broken.png", "Malformed\\not_really.docx", "Malformed\\truncated.pdf"} == {"Malformed\\broken.png", "Malformed\\not_really.docx", "Malformed\\truncated.pdf"}
+          and all(r["analysis.error"] for r in failed_rows), f"got {sorted(got_failures)} expected {sorted(expected_failures)}")
+    zips = engine.list_files(filters=[{"condition": {"left": {"kind": "field", "id": "path.extension"}, "op": "in", "values": [{"kind": "literal", "value": ".pdf"}]}}], limit=5, columns=["path.file_name"])["rows"]
+    detail = engine.file_analysis(zips[0]["path.id"]) if zips else []
+    check("file_analysis returns every analyzer's fields for a file",
+          detail and any(e["label"] == "PDF Analysis" and any(k == "PageCount" for k, _ in e["fields"]) for e in detail), str([(e["label"], len(e["fields"])) for e in detail]))
+    c.close()
+
     return project_dir
 
 
@@ -689,6 +716,33 @@ def test_gui_views(project_dir: Path):
 
         app.show_reports(); app.update()
         check("Reports page lists all 31 with Run first", _texts(app.content).count("Run") == 31)
+        app.show_hub(); app.update()
+        dialogs.clear()
+        app.event_generate("<MouseWheel>", delta=-120); app.update()
+        check("a wheel turn after leaving the Reports list does not raise (the stale binding is dropped)",
+              not any(d[0] == "showerror" for d in dialogs), str(dialogs))
+        texts = _texts(app.content)
+        check("summary offers Explore the files and Reports, and no doors once fingerprinting is complete",
+              "Explore the files" in texts and "Reports" in texts and "Collect more evidence..." not in texts, str(texts[-6:]))
+        check("summary names the files that could not be analyzed, with a button to show them",
+              any(t.startswith("Could not be analyzed") for t in texts) and "Show which" in texts, str([t for t in texts if "analyz" in t.lower()]))
+        app.show_files_for_extensions([".txt", ".md"], "Text / Markdown"); app.update()
+        n_text = app.conn.execute("SELECT COUNT(*) FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id WHERE fs.state='present' AND LOWER(fp.extension_key) IN ('.txt','.md')").fetchone()[0]
+        check("clicking a bucket opens the Files page on just that bucket, largest first",
+              any(f" of {n_text}" in t for t in _texts(app.content)) and app.files_sort == ("file.size_bytes", "desc"), str([t for t in _texts(app.content) if t.startswith("Files")]))
+        app.show_files_for_failures(); app.update()
+        check("the failures view shows only files that could not be analyzed, with the reason column",
+              any(t.startswith("Files 1") for t in _texts(app.content)) and "analysis.error" in app.files_columns and all(r.get("analysis.error") for r in app.current_rows), str(len(app.current_rows)))
+        app.clear_query(); app.update()
+        roots = app.conn.execute("SELECT source_root_id FROM source_root WHERE is_active=1").fetchall()
+        top = app._subfolders(roots[0][0], "")
+        deeper = app._subfolders(roots[0][0], "Bulk")
+        check("the folder tree expands to any depth", "Bulk" in top and "data" in deeper, f"top={top[:5]} under Bulk={deeper}")
+        app.show_files(); app.update()
+        app.show_metadata(app.current_rows[0]["path.id"], app.current_rows[0]["path.file_name"]); app.update()
+        tops = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)]
+        check("the Metadata Explorer opens with the file's analyzer results", bool(tops))
+        for w in tops: w.destroy()
         app.show_saved(); app.update()
         check("Saved Queries page explains itself", any("Standard reports are the questions" in t for t in _texts(app.content)))
         app.show_evidence(); app.update()
