@@ -468,7 +468,7 @@ def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
     import fo_analyzer_engine
 
     out = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
-           "error": None}
+           "pages_read": 0, "error": None}
     adapter = fo_analyzer_engine.ADAPTER_BY_KEY.get(key)
     if adapter is None:
         out["error"] = "unknown analyzer"
@@ -525,6 +525,8 @@ def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
                     out["text_bytes"] += int(payload.get("CharCount") or 0)
                 except (TypeError, ValueError):
                     pass
+            if key == "content_extraction" and path.lower().endswith(".pdf"):
+                out["pages_read"] += _pdf_page_count(path)
         out["elapsed"] = time.perf_counter() - started
     finally:
         if scratch:
@@ -556,6 +558,128 @@ def _pessimistic_seconds(count, total_bytes, measurement, safety):
             "overhead_seconds": overhead, "seconds": work + overhead}
 
 
+def _pdf_page_count(path):
+    r"""Pages in one PDF, counted in milliseconds; 0 when it cannot be opened."""
+    import fo_analyzer_engine
+    long_path = fo_analyzer_engine.openable_path(path)
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        pdfium = None
+    if pdfium is not None:
+        try:
+            doc = pdfium.PdfDocument(long_path)
+            try:
+                return len(doc)
+            finally:
+                doc.close()
+        except Exception:                                       # noqa: BLE001
+            return 0            # a PDF PDFium cannot open has no countable pages
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(long_path).pages)
+    except Exception:                                           # noqa: BLE001
+        return 0
+
+
+def _pdf_page_totals(conn):
+    r"""(PDF files with a page count recorded by the PDF analyzer, their pages).
+
+    The count is of CURRENT, present, local PDFs whose newest PDF-analysis
+    result carries PageCount -- what the summary would call analysed.
+    """
+    try:
+        row = conn.execute("""
+            SELECT COUNT(*), COALESCE(SUM(pages), 0) FROM (
+                SELECT (SELECT CAST(json_extract(ar.detail_json, '$.PageCount') AS INTEGER)
+                          FROM analyzer_result ar
+                          JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id
+                          JOIN analyzer a ON a.analyzer_id = rr.analyzer_id
+                         WHERE ar.file_observation_id = fs.current_observation_id
+                           AND a.analyzer_key = 'pdf' AND ar.status = 'analyzed'
+                         ORDER BY ar.analyzed_utc DESC, ar.analyzer_result_id DESC LIMIT 1) AS pages
+                  FROM file_state fs
+                  JOIN file_path fp ON fp.file_path_id = fs.file_path_id
+                 WHERE fs.state = 'present' AND COALESCE(fs.is_offline_or_cloud, 0) = 0
+                   AND LOWER(COALESCE(fp.extension_key, '')) IN ('.pdf', 'pdf'))
+             WHERE pages IS NOT NULL""").fetchone()
+        return int(row[0] or 0), int(row[1] or 0)
+    except Exception:                                           # noqa: BLE001
+        return 0, 0
+
+
+def _estimate_extraction(conn, rows, safety, sample_files):
+    r"""Text extraction, in two parts: PDFs by PAGE, everything else by file
+    and by byte.
+
+    A PDF's extraction time follows its page count, not its size: a 150 MB
+    art book and a 1 MB brief with the same number of pages take about the
+    same time, because the reader never decodes the pictures. Extrapolating
+    the first real corpus by bytes put a ~2 h run at ~40 h. So the PDF half
+    samples PDFs, measures seconds per page, and multiplies by the pages the
+    PDF analyzer has already counted (a PDF it has not seen is given the
+    sample's mean). The other half is the usual max(files x per-file,
+    bytes / rate) over the non-PDF documents.
+    """
+    pdf_rows = [r for r in rows if r[0].lower().endswith(".pdf")]
+    other_rows = [r for r in rows if not r[0].lower().endswith(".pdf")]
+    empty = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
+             "pages_read": 0, "error": None}
+    m_pdf = measure_analyzer("content_extraction", spread_sample(pdf_rows, sample_files)) if pdf_rows else dict(empty)
+    if m_pdf["error"]:
+        return {"error": m_pdf["error"]}
+    m_other = measure_analyzer("content_extraction", spread_sample(other_rows, sample_files)) if other_rows else dict(empty)
+    if m_other["error"]:
+        return {"error": m_other["error"]}
+
+    pdf_local = [r for r in pdf_rows if not r[2]]
+    pdf_count = len(pdf_local)
+    pdf_bytes = sum(r[1] for r in pdf_local)
+    pdf = None
+    pdf_seconds = 0.0
+    if pdf_count:
+        known_files, known_pages = _pdf_page_totals(conn)
+        if m_pdf["pages_read"] and m_pdf["elapsed"] > 0 and m_pdf["files_used"]:
+            per_page = m_pdf["elapsed"] / float(m_pdf["pages_read"])
+            mean_pages = m_pdf["pages_read"] / float(m_pdf["files_used"])
+            unknown = max(0, pdf_count - known_files)
+            pages = known_pages + unknown * mean_pages
+            work = pages * per_page
+            work = work / safety if safety > 0 else work
+            overhead = pdf_count * (PERSIST_SECONDS_PER_FILE + EXPORT_SECONDS_PER_FILE)
+            pdf_seconds = work + overhead
+            pdf = {"files": pdf_count, "bytes": pdf_bytes, "pages": int(round(pages)),
+                   "pages_counted_files": min(known_files, pdf_count), "seconds_per_page": per_page,
+                   "sample": m_pdf, "seconds": pdf_seconds, "guessed": False}
+        else:
+            model = _pessimistic_seconds(pdf_count, pdf_bytes, m_pdf, safety)
+            pdf_seconds = model["seconds"]
+            pdf = {"files": pdf_count, "bytes": pdf_bytes, "pages": None, "pages_counted_files": 0,
+                   "seconds_per_page": None, "sample": m_pdf, "seconds": pdf_seconds,
+                   "guessed": model["guessed"]}
+
+    other_local = [r for r in other_rows if not r[2]]
+    other_model = _pessimistic_seconds(len(other_local), sum(r[1] for r in other_local), m_other, safety) \
+        if other_local else {"per_file_seconds": None, "bytes_per_sec": None, "guessed": False,
+                             "by_files_seconds": 0.0, "by_bytes_seconds": 0.0, "overhead_seconds": 0.0, "seconds": 0.0}
+
+    merged = dict(empty)
+    for m in (m_pdf, m_other):
+        for k in ("files_used", "bytes_read", "text_bytes", "pages_read"):
+            merged[k] += m[k]
+        merged["elapsed"] += m["elapsed"]
+    return {"error": None, "sample": merged, "pdf": pdf,
+            "other": {"files": len(other_local), "bytes": sum(r[1] for r in other_local),
+                      "sample": m_other, **other_model},
+            "per_file_seconds": other_model["per_file_seconds"],
+            "bytes_per_sec": other_model["bytes_per_sec"],
+            "guessed": bool(other_model["guessed"] and (pdf is None or pdf["guessed"])),
+            "by_files_seconds": other_model["by_files_seconds"],
+            "by_bytes_seconds": other_model["by_bytes_seconds"],
+            "overhead_seconds": other_model["overhead_seconds"],
+            "seconds": pdf_seconds + other_model["seconds"]}
+
+
 def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_FILES):
     r"""Estimate one analysis run, analyzer by analyzer. Returns a breakdown.
 
@@ -580,6 +704,16 @@ def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_
                 "cloud_skipped": cloud, "sample": None, "seconds": 0.0, "error": None,
                 "guessed": False, "per_file_seconds": None, "bytes_per_sec": None}
         if count == 0:
+            out["analyzers"].append(item)
+            continue
+        if key == "content_extraction":
+            model = _estimate_extraction(conn, rows, safety, sample_files)
+            if model["error"]:
+                item["error"] = model["error"]
+                out["analyzers"].append(item)
+                continue
+            item.update(model)
+            out["total_seconds"] += model["seconds"]
             out["analyzers"].append(item)
             continue
         measurement = measure_analyzer(key, spread_sample(rows, sample_files))
@@ -638,7 +772,9 @@ def describe_analysis(breakdown):
             continue
         lines.append(head + "   ->  %s" % format_duration(a["seconds"]))
         sample = a["sample"] or {}
-        if a["guessed"]:
+        if a.get("pdf") is not None or a.get("other") is not None:
+            lines.extend(_describe_extraction(a))
+        elif a["guessed"]:
             lines.append("    no file could be sampled; this is a flat guess, not a measurement")
         else:
             lines.append("    sampled %d file(s), %s in %.2f s: %.1f ms/file, %s/s"
@@ -658,6 +794,40 @@ def describe_analysis(breakdown):
     else:
         lines.append("Nothing here can run: no applicable files, or a missing dependency.")
     return "\n".join(lines)
+
+
+def _describe_extraction(a):
+    """Extraction's two halves: PDFs by page, other documents by file."""
+    lines = []
+    pdf = a.get("pdf")
+    if pdf:
+        if pdf["pages"] is not None:
+            s = pdf["sample"]
+            counted = ("every one counted by the PDF analyzer" if pdf["pages_counted_files"] >= pdf["files"]
+                       else "%s counted by the PDF analyzer, the rest given the sample's mean"
+                       % "{:,}".format(pdf["pages_counted_files"]))
+            lines.append("    PDFs: %s files, %s pages (%s)   ->  %s"
+                         % ("{:,}".format(pdf["files"]), "{:,}".format(pdf["pages"]), counted,
+                            format_duration(pdf["seconds"])))
+            lines.append("        sampled %d file(s), %s pages in %.2f s: %.1f ms/page"
+                         % (s["files_used"], "{:,}".format(s["pages_read"]), s["elapsed"],
+                            pdf["seconds_per_page"] * 1000.0))
+        else:
+            lines.append("    PDFs: %s files   ->  %s (pages could not be counted; estimated by size)"
+                         % ("{:,}".format(pdf["files"]), format_duration(pdf["seconds"])))
+    other = a.get("other")
+    if other and other["files"]:
+        s = other["sample"]
+        lines.append("    other documents: %s files, %s   ->  %s"
+                     % ("{:,}".format(other["files"]), _mb(other["bytes"]), format_duration(other["seconds"])))
+        if other["guessed"]:
+            lines.append("        no file could be sampled; this is a flat guess, not a measurement")
+        else:
+            lines.append("        sampled %d file(s), %s in %.2f s: %.1f ms/file, %s/s"
+                         % (s["files_used"], _mb(s["bytes_read"]), s["elapsed"],
+                            other["per_file_seconds"] * 1000.0,
+                            _mb(other["bytes_per_sec"]) if other["bytes_per_sec"] else "n/a"))
+    return lines
 
 
 def describe_indexing(breakdown):
