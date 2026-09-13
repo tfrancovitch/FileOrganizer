@@ -19,6 +19,7 @@ The keys, and what they assert. Per path (every path the case lists):
   analyzer.status               every non-extraction analyzer row == value;
                                 "none" asserts there are no such rows
   analyzer.<key>.status         that analyzer's row (image, pdf, office, ...)
+  analyzer.<key>.detail         fields of that analyzer's detail_json == the given values
   extracted_content.status      the extraction row's status; "none" = no row
   file_name                     file_path.file_name == value (byte-exact)
   file_name_length              len(file_name) == value
@@ -127,6 +128,22 @@ def _analyzer_rows(conn, observation_id):
     return {key: status for key, status in rows}
 
 
+def _analyzer_detail(conn, observation_id, analyzer_key):
+    """The detail_json of one analyzer's row for the current observation, as a dict."""
+    if observation_id is None:
+        return None
+    row = conn.execute(
+        "SELECT r.detail_json FROM analyzer_result r JOIN analyzer_run ar USING (analyzer_run_id) "
+        "JOIN analyzer a USING (analyzer_id) WHERE r.file_observation_id = ? AND a.analyzer_key = ? "
+        "ORDER BY r.analyzer_result_id DESC LIMIT 1", (observation_id, analyzer_key)).fetchone()
+    if row is None or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except ValueError:
+        return None
+
+
 def _extraction_status(conn, observation_id):
     if observation_id is None:
         return None
@@ -189,6 +206,11 @@ def _per_path(conn, truth, key, value, relative_path, row):
         if value == "none":
             return got is None, f"{m.group(1)}={got!r}"
         return got == value, f"{m.group(1)}={got!r}"
+    m = re.fullmatch(r"analyzer\.([a-z_]+)\.detail", key)
+    if m:
+        detail = _analyzer_detail(conn, obs_id, m.group(1)) or {}
+        wrong = {k: detail.get(k) for k, v in value.items() if str(detail.get(k)) != str(v)}
+        return not wrong, f"{m.group(1)} detail differs: {wrong} (have {dict(list(detail.items())[:6])})"
     if key == "extracted_content.status":
         got = _extraction_status(conn, obs_id)
         if value == "none":

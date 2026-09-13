@@ -106,9 +106,15 @@ def ext_path(path) -> str:
     edges; the builder must too, or it cannot make the corpus the scanner is
     built to survive. Off Windows the path is returned as it is.
     """
-    text = os.path.abspath(str(path))
+    # Not os.path.abspath on an absolute path: that is Win32's
+    # GetFullPathName, which strips a trailing dot or space -- the very
+    # names the prefix exists to keep. (Found when `dot.` came out as `dot`.)
+    text = str(path)
+    if not os.path.isabs(text):
+        text = os.path.abspath(text)
     if os.name != "nt" or text.startswith("\\\\?\\"):
         return text
+    text = text.replace("/", "\\")
     if text.startswith("\\\\"):
         return "\\\\?\\UNC\\" + text[2:]
     return "\\\\?\\" + text
@@ -195,17 +201,47 @@ def _is_reparse(entry) -> bool:
     return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def reset_acl(path) -> None:
-    """Put a file or folder's ACL back to what it inherits.
+def icacls(path, *arguments) -> bool:
+    r"""Run icacls on one path, however long the path is.
 
-    `icacls /reset` is what undoes an explicit deny the builder placed for an
-    access case. The owner of a file can always rewrite its ACL, so this
-    works without elevation on anything the builder made.
+    icacls refuses a path over 260 characters in both its plain and its
+    \\?\ form. For those, a junction in %TEMP% is pointed at the parent
+    folder and icacls is given the short path through it; the junction is
+    removed afterwards. The owner of a file can always rewrite its ACL, so
+    none of this needs elevation on anything the builder made.
     """
     if os.name != "nt":
-        return
-    subprocess.run(["icacls", plain_path(path), "/reset", "/Q"],
-                   capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return False
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    plain = plain_path(path)
+    if len(plain) <= 250:
+        result = subprocess.run(["icacls", plain, *arguments], capture_output=True, creationflags=flags)
+        return result.returncode == 0 and b"Failed processing 0" in result.stdout
+    import _winapi
+    import tempfile
+    # The nearest ancestor short enough for CreateJunction (no \\?\ there
+    # either); the remainder is spelt out through the bridge.
+    ancestor, remainder = plain, ""
+    while len(ancestor) > 200:
+        ancestor, tail = os.path.split(ancestor)
+        remainder = os.path.join(tail, remainder) if remainder else tail
+    bridge = os.path.join(tempfile.gettempdir(), "fo_acl_bridge_%d" % os.getpid())
+    if len(os.path.join(bridge, remainder)) > 250:
+        raise OSError("path too long to reach through one junction: %s" % plain)
+    if os.path.lexists(bridge):
+        os.rmdir(bridge)
+    _winapi.CreateJunction(ancestor, bridge)
+    try:
+        result = subprocess.run(["icacls", os.path.join(bridge, remainder), *arguments], capture_output=True, creationflags=flags)
+        return result.returncode == 0 and b"Failed processing 0" in result.stdout
+    finally:
+        os.rmdir(bridge)
+
+
+def reset_acl(path) -> None:
+    """Put a file or folder's ACL back to what it inherits: what undoes an
+    explicit deny the builder placed for an access case."""
+    icacls(path, "/reset", "/Q")
 
 
 def enable_case_sensitivity(directory) -> bool:
@@ -762,6 +798,13 @@ def make_7z(entries: list[tuple[str, bytes]], password: str | None = None,
     fixed = helpers.ArchiveTimestamp.from_datetime(NOW.timestamp())
     original = helpers.ArchiveTimestamp.from_now
     helpers.ArchiveTimestamp.from_now = classmethod(lambda cls: fixed)
+    # An encrypted archive also draws a random AES initialisation vector
+    # (py7zr.compressor.get_random_bytes); a fixed one keeps the two
+    # password-protected archives the same bytes on every build. The IV
+    # only has to be unpredictable to an attacker, and these have no secret.
+    import py7zr.compressor as compressor
+    original_random = compressor.get_random_bytes
+    compressor.get_random_bytes = lambda n: random_bytes(SEED + 77, n)
     try:
         buf = io.BytesIO()
         with py7zr.SevenZipFile(buf, "w", password=password) as archive:
@@ -775,6 +818,7 @@ def make_7z(entries: list[tuple[str, bytes]], password: str | None = None,
         return buf.getvalue()
     finally:
         helpers.ArchiveTimestamp.from_now = original
+        compressor.get_random_bytes = original_random
 
 
 def render_page(lines: list[str], size=(1700, 2200), font_size=44, fill="black", background="white"):
@@ -2129,7 +2173,8 @@ class Corpus:
 
         by_hash: dict[str, list[dict]] = {}
         for f in self.files:
-            by_hash.setdefault(f["sha256"], []).append(f)
+            if f.get("sha256"):                  # a symbolic link carries no bytes of its own
+                by_hash.setdefault(f["sha256"], []).append(f)
 
         groups = []
         reclaimable = 0
@@ -2236,32 +2281,121 @@ class HostileCorpus(Corpus):
     a folder the walk cannot list, a junction back to its parent, three
     names for one file, `CON`, ten thousand files in one directory, a 4 GB
     file that occupies nothing. Built only on request, scanned by its own
-    project, asserted by its own check, and removed by `remove_tree`, which
-    restores every ACL on the way out.
+    project (`P2Hostile`), asserted by `p2_hostile_check.py`, and removed by
+    `remove_tree`, which restores every ACL on the way out.
 
-    Families are added one matrix category at a time; each is a `_h_*`
-    method. None yet: this is the scaffold, so the flags, the truth file and
-    the teardown exist before the first hostile artefact does.
+    Its truth differs from `Corpus\`'s in three ways: hard-linked paths
+    share one physical object (no reclaimable bytes between them); files
+    under a denied folder are `unobservable` -- written, but not in `files`,
+    because nothing can list them; and `expected_present_rows` allows for
+    the rows the engine is known to fold (A-014's chimera), so the check
+    can hold the count while the defect is listed.
     """
     home = "Hostile"
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unobservable: list[dict] = []     # written, but under a folder the walk cannot list
+        self.folded: list[dict] = []           # {kept, dropped}: pairs the engine is known to fold into one row
+        self.physical: dict[str, str] = {}     # relative_path -> the relative_path it is a hard link of
+        self.symlinks: list[dict] = []         # file symlinks: the row is the link, the bytes are the target's
+        self.denied: list[str] = []            # folders whose listing is denied (setup/teardown by icacls)
+        self.conflations: list[dict] = []      # file symlinks the engine is known to group with their targets
+
     def build(self):
         self._h_naming()
+        self._h_identity()
+        self._h_links()
+        self._h_access()
+        self._h_extreme()
+        self._h_compound()
+
+    # -- helpers -------------------------------------------------------------
+
+    def _user(self):
+        return "%s\\%s" % (os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", ""))
+
+    def deny(self, relpath: str, rights: str = "(RD,X)"):
+        """Deny the current user `rights` on a path the builder made. The
+        owner can always undo it; remove_tree does, with icacls /reset."""
+        if not icacls(ext_path(self.root / relpath), "/deny", "%s:%s" % (self._user(), rights), "/Q"):
+            raise OSError("could not deny %s on %s" % (rights, relpath))
+
+    def fold(self, *, kept: str, dropped: str):
+        """Record that the engine is known to keep one row for two files:
+        the `kept` name survives carrying the `dropped` file's observation
+        (A-014's chimera), so the engine's totals lack the kept file's bytes
+        and one row."""
+        self.folded.append({"kept": kept, "dropped": dropped})
+
+    def add_hardlink(self, relpath: str, of: str, *, case: str | None = None):
+        """Another directory entry for an existing file's bytes."""
+        original = next(f for f in self.files if f["relative_path"] == of.replace("/", "\\"))
+        os.makedirs(ext_path((self.root / relpath).parent), exist_ok=True)
+        os.link(ext_path(self.root / of), ext_path(self.root / relpath))
+        relative = relpath.replace("/", "\\")
+        self.files.append(dict(original, relative_path=relative, note="hard link of " + original["relative_path"]))
+        self.physical[relative] = self.physical.get(original["relative_path"], original["relative_path"])
+        if case:
+            self.case(case)["paths"].append(relative)
+
+    def add_symlink(self, relpath: str, target, *, is_dir: bool = False, case: str | None = None, note: str = ""):
+        """A symbolic link (needs Developer Mode or elevation; Python asks
+        for the unprivileged kind). `target` is a corpus-relative path or an
+        absolute one. A directory link joins link_folders (the walk skips
+        it); a file link is a row of its own whose bytes are the target's."""
+        link = self.root / relpath
+        os.makedirs(ext_path(link.parent), exist_ok=True)
+        absolute = target if os.path.isabs(str(target)) else plain_path(ext_path(self.root / target))
+        os.symlink(absolute, ext_path(link), target_is_directory=is_dir)
+        relative = relpath.replace("/", "\\")
+        if is_dir:
+            self.link_folders.append(relative)
+        else:
+            self.files.append({"relative_path": relative, "size_bytes": 0, "sha256": None,
+                               "extension": Path(relpath).suffix.lower(), "modified_utc": None, "age_days": 0,
+                               "note": note or ("symbolic link to " + str(target)), "expect_analyzer_failure": False,
+                               "symlink_target": str(target)})
+            self.symlinks.append({"relative_path": relative, "target": str(target)})
+        if case:
+            self.case(case)["paths"].append(relative)
+
+    def add_junction(self, relpath: str, target, *, case: str | None = None):
+        """A directory junction; the walk skips it whatever it points at."""
+        import _winapi
+        link = self.root / relpath
+        os.makedirs(ext_path(link.parent), exist_ok=True)
+        absolute = target if os.path.isabs(str(target)) else plain_path(ext_path(self.root / target))
+        stand_in = not os.path.isdir(ext_path(absolute))
+        if stand_in:                                  # CreateJunction wants an existing target: make one, then take it away
+            os.makedirs(ext_path(absolute))
+        _winapi.CreateJunction(absolute, plain_path(ext_path(link)))
+        if stand_in:
+            os.rmdir(ext_path(absolute))
+        relative = relpath.replace("/", "\\")
+        self.link_folders.append(relative)
+        if case:
+            self.case(case)["paths"].append(relative)
+
+    # -- families ------------------------------------------------------------
 
     def _h_naming(self):
-        """01_Naming, the hostile half: what changes a project's totals."""
+        """01_Naming, the hostile half: what changes a project's totals or
+        what no tool but this program's own opens."""
+        present = {"file_state.state": "present"}
+
         # A-014 / Y-009 / Y-053 -- case-only names in a case-sensitive directory.
         # Found 2026-09-13: the walk yields both files (its count and byte
         # total say so) but the ingest keys a path by its lower-cased name,
         # so the second folds into the first -- and the surviving row is a
         # chimera: the first file's name with the second file's size. The
-        # summary then disagrees with the walk's own count. Recorded as a
-        # DEFECT for the user's decision; the expectation stays the matrix's.
+        # summary then disagrees with the walk's own count.
         case_dir = self.root / "01_Naming" / "case_sensitive"
         os.makedirs(ext_path(case_dir), exist_ok=True)
         if enable_case_sensitivity(case_dir):
             self.add("01_Naming/case_sensitive/Report.txt", b"capital R\n", age_days=30, case="A-014")
             self.add("01_Naming/case_sensitive/report.txt", b"small r\n", age_days=31, case="A-014")
+            self.fold(kept="01_Naming\\case_sensitive\\Report.txt", dropped="01_Naming\\case_sensitive\\report.txt")
             self.case("A-014", construction="G", classification="DEFECT", matrix_expects="two objects: one row each, both present",
                       expected={"row_count": 1},
                       setup=["icacls <dir> /grant <user>:(F)", "fsutil file setCaseSensitiveInfo <dir> enable"],
@@ -2275,13 +2409,229 @@ class HostileCorpus(Corpus):
             for case_id in ("A-014", "Y-009", "Y-053"):
                 self.decline(case_id, "the case-sensitivity flag could not be set on this volume")
 
+        # A-007 -- trailing space, trailing dot: only \\?\ makes or opens them.
+        self.add("01_Naming/trailing/space ", b"a name ending in a space, no extension\n", age_days=32, case="A-007")
+        self.add("01_Naming/trailing/dot.", b"a name ending in a dot, no extension\n", age_days=32, case="A-007")
+        self.case("A-007", construction="G", expected=dict(present, row_count=2, **{"hash_status": ["size_unique", "unique_by_hash"]}),
+                  notes="Win32 strips a trailing space or dot unless the path is \\\\?\\-prefixed; every reader here prefixes")
+
+        # A-016 -- reserved device names.
+        for name, body in (("CON", b"the console's name\n"), ("NUL.txt", b"NUL with an extension\n"),
+                           ("COM1", b"a serial port's name\n"), ("LPT1.log", b"a printer port's name with an extension\n")):
+            self.add("01_Naming/reserved/" + name, body, age_days=33, case="A-016")
+        self.add("01_Naming/reserved/AUX.docx", make_docx(["A Word document named after a device."]), age_days=33, case="A-016")
+        self.case("A-016", construction="G", expected=dict(present, row_count=5, **{"hash_status": ["size_unique", "unique_by_hash"]}),
+                  notes="NUL.txt and LPT1.log keep their extensions; AUX.docx is analysed and read like any other document")
+
+        # A-003b -- a path of about two thousand characters (200 levels).
+        deep = "01_Naming/very_deep/" + "/".join("d%03d" % i for i in range(1, 201)) + "/leaf.txt"
+        self.add(deep, b"two hundred levels down\n", age_days=34, case="A-003b")
+        self.case("A-003b", construction="G", condition="Complete path of about 1,000 characters (200 levels)",
+                  expected=dict(present, path_length_gt=1000, depth=202, **{"extracted_content.status": "extracted"}))
+
+        # A-022 / H-008 / H-007 -- ten thousand files in one directory.
+        rng = random.Random(SEED + 8)
+        for i in range(10000):
+            self.add("01_Naming/fan_out/f%05d.txt" % i, ("file %d " % i).encode("ascii") * rng.randint(1, 40),
+                     age_days=rng.randint(1, 2000), case="A-022" if i < 3 else None)
+        self.case("A-022", construction="G", expected=dict(present, row_count=3),
+                  notes="10,000 files in one directory; the case lists three of them, the totals count them all, the walk lists the directory whole")
+        for twin, note in (("H-008", "the same directory"), ("H-007", "the same ten thousand tiny files")):
+            self.case(twin, construction="G", expected={"file_state.state": "present"}, notes=note)
+            self.case(twin)["paths"].extend(self.case("A-022")["paths"])
+
+    def _h_identity(self):
+        """02_Identity: one physical object, several names."""
+        present = {"file_state.state": "present"}
+        blob = random_bytes(SEED + 9, 48 * 1024)
+        self.add("02_Identity/hard_links/original.bin", blob, age_days=40, case="Y-001")
+        self.add_hardlink("02_Identity/hard_links/alias_1.bin", "02_Identity/hard_links/original.bin", case="Y-001")
+        self.add_hardlink("02_Identity/hard_links/elsewhere/alias_2.bin", "02_Identity/hard_links/original.bin", case="Y-001")
+        self.case("Y-001", construction="G", expected=dict(present, row_count=3, hard_link_count=3, same_physical_object=True,
+                                                           duplicate_group_members=3, hard_link_alias_count=2, reclaimable_bytes=0),
+                  notes="three directory entries, one file: the duplicate projection counts one physical copy and nothing to reclaim")
+        for twin in ("Y-002", "Y-052"):
+            self.case(twin, construction="G", expected={"same_physical_object": True, "reclaimable_bytes": 0}, notes="the same three entries as Y-001")
+            self.case(twin)["paths"].extend(self.case("Y-001")["paths"])
+        self.case("C-016", construction="G", expected={"same_physical_object": True}, notes="multiple paths to one object: the hard links of Y-001 (junctions to one folder are in 03_Links)")
+        self.case("C-016")["paths"].extend(self.case("Y-001")["paths"])
+
+    def _h_links(self):
+        """03_Links, the hostile half: symbolic links and junctions -- what
+        the walk must recognise and refuse to enter."""
+        present = {"file_state.state": "present"}
+        self.add("03_Links/targets/document.txt", b"The file the links point at.\n", age_days=41)
+        self.add("03_Links/targets/folder/inside.txt", b"Inside the folder the links point at.\n", age_days=41)
+        try:
+            self.add_symlink("03_Links/file_link.txt", "03_Links/targets/document.txt", case="C-011")
+        except OSError as exc:
+            for case_id in ("C-011", "C-012", "C-013", "Z-001b"):
+                self.decline(case_id, "symbolic links cannot be created here (%s); Developer Mode or elevation is needed" % exc)
+        else:
+            self.case("C-011", construction="G", classification="DEFECT",
+                      expected=dict(present, is_reparse_point=1, reparse_tag=0xA000000C, size_bytes=0,
+                                    duplicate_group_members=2, reclaimable_bytes=29),
+                      matrix_expects="Correctly classify link/object; do not conflate a link with its target",
+                      notes="observed 2026-09-13: the row is the link (reparse point, size 0), but the hash stage opens the path, Windows resolves it, "
+                            "and the link is hashed as its target's bytes -- so the duplicate report groups link and target and offers the target's 29 bytes "
+                            "as reclaimable. Deleting the link reclaims nothing; deleting the target breaks the link. For the user's decision")
+            self.conflations.append({"link": "03_Links\\file_link.txt", "target": "03_Links\\targets\\document.txt", "bytes": 29})
+            self.add_symlink("03_Links/folder_link", "03_Links/targets/folder", is_dir=True, case="C-012")
+            self.case("C-012", construction="G", expected={"rows_below": 0},
+                      notes="a directory symlink is skipped ('Symlinks / junctions (not recursed)'); the target's files appear once, at their real path")
+            self.add_symlink("03_Links/broken_file_link.txt", "03_Links/targets/deleted.txt", case="C-013",
+                             note="symbolic link to a file that does not exist")
+            self.add_symlink("03_Links/broken_folder_link", "03_Links/targets/deleted_folder", is_dir=True, case="C-013c")
+            self.case("C-013c", construction="G", condition="Broken symbolic link to a folder", expected={"rows_below": 0},
+                      notes="skipped like any directory link, target or no target; no row, no error")
+            self.case("C-013", construction="G", classification="SCOPE",
+                      expected={"file_state.state": "present"},
+                      matrix_expects="Record link and unresolved target",
+                      notes="the file link is a present row (reparse point) whose hash stage reports FILE MISSING; the folder link is skipped without error; neither records a target")
+            self.case("C-013b", construction="G", condition="Broken symbolic link to a file: the hash stage",
+                      expected={"is_reparse_point": 1, "hash.error_kind": "FILE MISSING"})
+            self.case("C-013b")["paths"].append("03_Links\\broken_file_link.txt")
+            self.add_symlink("03_Links/link_out_of_root.md", plain_path(ext_path(self.root.parent / "README.md")), case="Z-001b")
+            self.case("Z-001b", construction="G", condition="File symbolic link whose target is outside the root", classification="SCOPE",
+                      expected=dict(present, is_reparse_point=1, size_bytes=0),
+                      matrix_expects="the scan never follows a link out of the root",
+                      notes="the row is inside the root and is marked a reparse point; the hash stage reads C:\\FOTest\\README.md through it -- bytes from outside the root under a path inside it")
+        self.add_junction("03_Links/junction_to_folder", "03_Links/targets/folder", case="C-014")
+        self.case("C-014", construction="G", expected={"rows_below": 0}, notes="skipped; the target's files appear once, at their real path")
+        self.add_junction("03_Links/loop/back_to_parent", "03_Links/loop", case="C-015")
+        self.add("03_Links/loop/note.txt", b"a folder whose junction points at itself\n", age_days=42)
+        self.case("C-015", construction="G", expected={"rows_below": 0}, notes="a junction to its own parent: skipped, the walk ends")
+        self.add_junction("03_Links/two_to_one/first", "03_Links/targets/folder", case="C-016b")
+        self.add_junction("03_Links/two_to_one/second", "03_Links/targets/folder", case="C-016b")
+        self.case("C-016b", construction="G", condition="Two junctions to the same folder", expected={"rows_below": 0},
+                  notes="both skipped; inside.txt is one row, under targets")
+        self.add_junction("03_Links/junction_out_of_root", plain_path(ext_path(self.root.parent / "Research" / "Samples")), case="Z-001")
+        self.case("Z-001", construction="G", condition="Junction whose target is outside the root", expected={"rows_below": 0},
+                  notes="skipped like any junction; nothing outside the root is listed")
+        self.add_junction("03_Links/cycle/a_to_b", "03_Links/cycle/b", case="X-003b")
+        os.makedirs(ext_path(self.root / "03_Links/cycle/b"), exist_ok=True)
+        self.add_junction("03_Links/cycle/b/b_to_a", "03_Links/cycle", case="X-003b")
+        self.case("X-003b", construction="G", condition="Junction cycle: a -> b -> a", expected={"rows_below": 0},
+                  notes="both junctions skipped; the walk completes")
+
+    def _h_access(self):
+        """04_Access: what exists but cannot be read, and what cannot be listed."""
+        present = {"file_state.state": "present"}
+        self.add("04_Access/read_denied.txt", b"a file whose bytes the user may not read\n", age_days=43, case="D-002")
+        self.deny("04_Access/read_denied.txt", "(R)")
+        self.case("D-002", construction="G", expected=dict(present, **{"hash.error_kind": "ACCESS DENIED", "analyzer.status": "error",
+                                                                        "extracted_content.status": "error"}),
+                  setup=["icacls <file> /deny <user>:(R)"], teardown=["icacls <file> /reset"],
+                  notes="listed and stat'ed (present, size, timestamps); every reader is refused: the hash stage says ACCESS DENIED, the analyzers error")
+        for twin in ("D-004", "D-007"):
+            self.case(twin, construction="G", expected={"hash.error_kind": "ACCESS DENIED"}, notes="the same file as D-002")
+            self.case(twin)["paths"].append("04_Access\\read_denied.txt")
+        for i in range(3):
+            self.add("04_Access/denied_folder/secret_%d.txt" % i, b"under a folder nobody may list\n", age_days=44, unobservable=True)
+        self.deny("04_Access/denied_folder")
+        self.denied.append("04_Access\\denied_folder")
+        self.case("D-003", construction="G", expected={"file_observation.status": "inaccessible",
+                                                        "file_observation.error_kind": "DIRECTORY ACCESS ERROR", "rows_below": 0,
+                                                        "inventory_scan.status": "completed_with_warnings"},
+                  setup=["icacls <dir> /deny <user>:(RD,X)"], teardown=["icacls <dir> /reset"],
+                  notes="the folder's own path is an inaccessible row; its three files are unobservable and have no rows; the scan completes with warnings")
+        self.case("D-003")["paths"].append("04_Access\\denied_folder")
+        self.case("V-001", construction="G", expected={"file_observation.status": "inaccessible"}, notes="the protected directory of D-003")
+        self.case("V-001")["paths"].append("04_Access\\denied_folder")
+
+    def _h_extreme(self):
+        """08_Extreme_Structures, the hostile half: size and count."""
+        present = {"file_state.state": "present"}
+        self.add("08_Extreme_Structures/four_gb_sparse.bin", b"G" * 4096, age_days=45, sparse_to=4 * 1024 ** 3, case="H-006")
+        self.case("H-006", construction="G", expected=dict(present, size_bytes=4 * 1024 ** 3, attributes_has=["SparseFile"], allocated_lt_size=True,
+                                                           hash_status=["size_unique", "unique_by_hash"]),
+                  notes="4 GiB in the directory, 4 KB on disk; the hash stage reads four gigabytes of zeros; the largest-files report lists it first")
+        self.add("08_Extreme_Structures/hundred_thousand_members.zip", make_zip([("m%06d.txt" % i, b"") for i in range(100000)], level=1),
+                 age_days=46, case="Y-014c")
+        self.case("Y-014c", construction="G", condition="Archive with 100,000 members",
+                  expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                            "analyzer.archive.detail": {"EntryCount": "100000", "EntriesRecorded": "10000", "Truncated": "True", "AnalysisMode": "capped"}}),
+                  notes="every member counted, ten thousand rows kept, and the listing says it is capped")
+        line = ("lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt " * 4096 * 4).encode("ascii")
+        self.add("08_Extreme_Structures/one_line_16mb.txt", line, age_days=47, compress=True, case="Y-021")
+        self.case("Y-021", construction="G", expected=dict(present, size_bytes=len(line), **{"extracted_content.status": "extracted"}),
+                  notes="one line of 16 MB: read whole (no cap exists), stored and indexed whole; the time and the index size are the observation")
+
+    def _h_compound(self):
+        """90_COMPOUND: the matrix's cross-layer scenarios that need this tree."""
+        deep = "90_COMPOUND/X-002/" + "/".join("level%02d" % i for i in range(1, 41)) + "/denied"
+        self.add(deep + "/inside.txt", b"under a denied folder at the bottom of a long path\n", age_days=48, unobservable=True)
+        self.deny(deep)
+        self.denied.append(deep.replace("/", "\\"))
+        self.case("X-002", construction="G", condition="Long path + inaccessible folder",
+                  expected={"file_observation.status": "inaccessible", "file_observation.error_kind": "DIRECTORY ACCESS ERROR", "rows_below": 0},
+                  setup=["icacls <dir> /deny <user>:(RD,X)"], teardown=["icacls <dir> /reset"],
+                  notes="the error row carries a path over 260 characters")
+        self.case("X-002")["paths"].append(deep.replace("/", "\\"))
+        for i in range(20):
+            self.deny("01_Naming/fan_out/f%05d.txt" % (i * 500), "(R)")
+        self.case("X-015", construction="G", condition="Massive directory + inaccessible entries",
+                  expected={"file_state.state": "present", "hash.error_kind": "ACCESS DENIED"},
+                  setup=["icacls <20 files> /deny <user>:(R)"], teardown=["icacls <file> /reset"],
+                  notes="twenty of the ten thousand are read-denied: present, hashed as ACCESS DENIED; the other 9,980 hashed; the scan completes (a file error is not a directory error)")
+        self.case("X-015")["paths"].extend("01_Naming\\fan_out\\f%05d.txt" % (i * 500) for i in range(20))
+        self.add("90_COMPOUND/X-004/tree/a.txt", b"tree file a\n" * 3, age_days=49, case="X-004")
+        self.add("90_COMPOUND/X-004/tree - Copy/a.txt", b"tree file a\n" * 3, age_days=50, case="X-004")
+        self.add_junction("90_COMPOUND/X-004/tree/broken_junction", "90_COMPOUND/X-004/nowhere", case="X-004")
+        self.add_junction("90_COMPOUND/X-004/tree - Copy/broken_junction", "90_COMPOUND/X-004/nowhere", case="X-004")
+        self.case("X-004", construction="G", condition="Duplicate folder tree containing broken links",
+                  expected={"duplicate_group_members": 2},
+                  notes="the two a.txt group; the broken junctions (target never made) are skipped like any junction")
+
+    # -- truth ---------------------------------------------------------------
+
+    def add(self, relpath, data, *, unobservable: bool = False, **kwargs):
+        if not unobservable:
+            return super().add(relpath, data, **kwargs)
+        # Written, then hidden behind a denied folder: it exists and nothing
+        # can list it. Recorded apart from `files`, so the totals are what
+        # the walk can see.
+        before = len(self.files)
+        super().add(relpath, data, **kwargs)
+        self.unobservable.append(self.files.pop(before))
+
     def ground_truth(self) -> dict:
         truth = super().ground_truth()
         truth["generator"] = "p2_build_acceptance_corpus.py --hostile"
-        # Not a document corpus: the marker, OCR and not-document lists
-        # describe `Corpus\`, and would mislead a check reading this file.
         for key in ("fts_markers", "ocr_review_expected", "ocr_clean_expected", "not_documents"):
             truth[key] = {} if isinstance(truth[key], dict) else []
+        # Duplicates by physical object, not by directory entry: hard-linked
+        # paths are one file. Symbolic links carry no bytes of their own.
+        by_hash: dict[str, list[dict]] = {}
+        for f in self.files:
+            if f.get("sha256"):
+                by_hash.setdefault(f["sha256"], []).append(f)
+        groups, reclaimable = [], 0
+        for digest, members in sorted(by_hash.items()):
+            physical = {self.physical.get(m["relative_path"], m["relative_path"]) for m in members}
+            if len(members) < 2:
+                continue
+            waste = members[0]["size_bytes"] * (len(physical) - 1)
+            reclaimable += waste
+            groups.append({"sha256": digest, "size_bytes": members[0]["size_bytes"], "member_count": len(members),
+                           "physical_copies": len(physical), "reclaimable_bytes": waste,
+                           "members": sorted(m["relative_path"] for m in members)})
+        truth["duplicates"] = {"group_count": len(groups), "total_reclaimable_bytes": reclaimable, "groups": groups}
+        truth["totals"]["logical_bytes"] = sum(f["size_bytes"] for f in self.files)
+        sizes = {f["relative_path"]: f["size_bytes"] for f in self.files}
+        truth["hostile"] = {
+            "expected_present_rows": len(self.files) - len(self.folded),
+            "expected_logical_bytes": truth["totals"]["logical_bytes"] - sum(sizes[f["kept"]] for f in self.folded),
+            "folded": sorted(self.folded, key=lambda f: f["kept"]),
+            "symlink_conflations": sorted(self.conflations, key=lambda c: c["link"]),
+            "unobservable": sorted(f["relative_path"] for f in self.unobservable),
+            "denied_folders": sorted(self.denied),
+            "symlinks": sorted(self.symlinks, key=lambda x: x["relative_path"]),
+            "hard_links": dict(sorted(self.physical.items())),
+            "link_folders": sorted(self.link_folders),
+        }
+        truth["scan_expectations"]["access_errors"] = len(self.denied)
+        truth["scan_expectations"]["links_skipped"] = len(self.link_folders)
         return truth
 
 
