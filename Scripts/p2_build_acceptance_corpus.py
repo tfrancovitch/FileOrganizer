@@ -34,8 +34,25 @@ third-party samples the builder cannot make itself (Apache Tika's PST,
 any WordPerfect or OneNote file the user provides) are copied in from
 `--samples` when present and listed in the ground truth as such.
 
+Since 2026-09-13 the corpus also carries the adversarial cases of the user's
+Master Corpus Matrix (`C:\FOTest\Research\`). Every case is registered with
+its matrix ID and an expected result written in this program's own vocabulary
+(`file_state.state`, `file_observation.status`, `hash_status`, ...), and the
+ground truth lists them under `cases` -- the manifest the matrix's section 5
+asks for, computed by the builder rather than typed. Cases that cannot be
+built on this machine are listed under `not_constructed` with the reason.
+
+Two trees, one builder. `Corpus\` holds what is static and tool-safe: the
+suites build a copy of it in %TEMP% on every run and the user opens it in
+Explorer. `Hostile\` (`--hostile`) holds what breaks naive tools or changes
+a scan's overall status -- denied folders, junction loops, hard links,
+reserved names, ten thousand files in one directory -- under its own project
+and its own check, and `--teardown` removes it, restoring every ACL first.
+
 Usage:
-    python Scripts/p2_build_acceptance_corpus.py [--root C:\FOTest] [--samples C:\FOTest\Samples]
+    python Scripts/p2_build_acceptance_corpus.py [--root C:\FOTest] [--samples C:\FOTest\Research\Samples]
+    python Scripts/p2_build_acceptance_corpus.py --hostile [--root C:\FOTest]
+    python Scripts/p2_build_acceptance_corpus.py --teardown [--root C:\FOTest]
 """
 from __future__ import annotations
 
@@ -47,6 +64,8 @@ import json
 import os
 import random
 import shutil
+import stat
+import subprocess
 import zipfile
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -54,6 +73,132 @@ from pathlib import Path
 
 SEED = 20260908
 NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
+
+#: Where the matrix's reconciliation lives, relative to --root. Read when
+#: present so each case's condition text, priority, disposition and layer
+#: come from the user's document, never retyped here.
+MATRIX_CSV = Path("Research") / "ChatGPT Research" / "Personal_Archive_Manager_v1.1_Reconciliation.csv"
+
+FILE_ATTRIBUTE_READONLY = 0x1
+FILE_ATTRIBUTE_DIRECTORY = 0x10
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+# --------------------------------------------------------------------------
+# Paths the way Win32 needs them
+# --------------------------------------------------------------------------
+
+def ext_path(path) -> str:
+    r"""The \\?\ form of an absolute path, for every write and delete.
+
+    It is what crosses MAX_PATH (LongPathsEnabled is 0 on the build machine)
+    and what switches off name normalisation, so a name with a trailing dot
+    or space, or a reserved device name like CON, is created and removed as
+    written. The scanner and every reader already do this at their own
+    edges; the builder must too, or it cannot make the corpus the scanner is
+    built to survive. Off Windows the path is returned as it is.
+    """
+    text = os.path.abspath(str(path))
+    if os.name != "nt" or text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def plain_path(path) -> str:
+    r"""The \\?\ prefix taken off again, for tools that do not accept it."""
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    if text.startswith("\\\\?\\"):
+        return text[4:]
+    return text
+
+
+def _is_reparse(entry) -> bool:
+    try:
+        attributes = entry.stat(follow_symlinks=False).st_file_attributes
+    except (OSError, AttributeError):
+        return False
+    return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def reset_acl(path) -> None:
+    """Put a file or folder's ACL back to what it inherits.
+
+    `icacls /reset` is what undoes an explicit deny the builder placed for an
+    access case. The owner of a file can always rewrite its ACL, so this
+    works without elevation on anything the builder made.
+    """
+    if os.name != "nt":
+        return
+    subprocess.run(["icacls", plain_path(path), "/reset", "/Q"],
+                   capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def remove_tree(path) -> None:
+    r"""Delete a corpus tree the way shutil.rmtree cannot.
+
+    Through \\?\, so long paths and reserved names go; clearing the
+    read-only attribute where a delete is refused; never entering a
+    junction or symbolic link (the link itself is removed, its target is
+    not touched -- a junction back to the parent must not become a
+    recursive delete of the parent); and resetting the ACL of anything a
+    deny keeps closed. Everything the builder can make, this can unmake.
+    """
+    root = ext_path(path)
+    if not os.path.lexists(root):
+        return
+    if os.path.isdir(root) and not os.path.islink(root):
+        _remove_directory(root)
+    else:
+        _remove_file(root)
+
+
+def _remove_file(p):
+    try:
+        os.unlink(p)
+    except PermissionError:
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            os.unlink(p)
+        except PermissionError:
+            reset_acl(p)
+            os.chmod(p, stat.S_IWRITE)
+            os.unlink(p)
+
+
+def _remove_directory(d):
+    try:
+        entries = list(os.scandir(d))
+    except PermissionError:
+        reset_acl(d)
+        entries = list(os.scandir(d))
+    for entry in entries:
+        p = os.path.join(d, entry.name)
+        if entry.is_dir(follow_symlinks=False):
+            if _is_reparse(entry):
+                os.rmdir(p)                 # the junction or link, not what it points at
+            else:
+                _remove_directory(p)
+        else:
+            _remove_file(p)
+    try:
+        os.rmdir(d)
+    except PermissionError:
+        os.chmod(d, stat.S_IWRITE)
+        reset_acl(d)
+        os.rmdir(d)
+
+
+def read_matrix(csv_path) -> dict[str, dict]:
+    """The reconciliation CSV as {id: row}, or {} when it is not there."""
+    csv_path = Path(csv_path) if csv_path else None
+    if csv_path is None or not csv_path.is_file():
+        return {}
+    with open(csv_path, encoding="utf-8-sig", newline="") as handle:
+        return {row["id"].strip(): row for row in csv.DictReader(handle) if row.get("id")}
 
 # Marker phrases are unique nonsense trigrams so an FTS hit cannot be accidental.
 # `indexable` records whether content extraction covers that format: every
@@ -264,6 +409,11 @@ def make_eml(subject: str, sender: str, to: str, date: str, body: str,
         msg.add_attachment(data, maintype="text", subtype="plain", filename=name)
     if forwarded is not None:
         msg.add_attachment(forwarded, filename="forwarded.eml")
+    if msg.is_multipart():
+        # The generator invents a random boundary at every call, which made
+        # the two multipart messages the only files in the corpus whose
+        # bytes changed between builds. Fixed, so their hashes are truth.
+        msg.set_boundary("----=_Corpus_Boundary_" + hashlib.sha256(subject.encode()).hexdigest()[:12])
     return msg.as_bytes()
 
 
@@ -376,16 +526,39 @@ def make_zip(entries: list[tuple[str, bytes]]) -> bytes:
     return buf.getvalue()
 
 
-def make_7z(entries: list[tuple[str, bytes]]) -> bytes | None:
+def make_7z(entries: list[tuple[str, bytes]], password: str | None = None,
+            encrypt_header: bool = False, unchecked_names: bool = False) -> bytes | None:
+    """A 7z archive with fixed entry timestamps.
+
+    py7zr stamps every member with the clock (`ArchiveTimestamp.from_now`
+    three times per file), so the same bytes made a different archive on
+    every build; it is pinned to NOW for the duration of the write.
+    `password` encrypts the members; `encrypt_header` hides the names too.
+    `unchecked_names` writes member names py7zr's own `writef` refuses
+    (`..\\`, absolute paths) -- for the archive-safety cases, where the
+    corpus needs exactly the archive a hostile source would ship.
+    """
     try:
         import py7zr
+        from py7zr import helpers
     except ImportError:
         return None
-    buf = io.BytesIO()
-    with py7zr.SevenZipFile(buf, "w") as archive:
-        for name, data in entries:
-            archive.writef(io.BytesIO(data), name)
-    return buf.getvalue()
+    fixed = helpers.ArchiveTimestamp.from_datetime(NOW.timestamp())
+    original = helpers.ArchiveTimestamp.from_now
+    helpers.ArchiveTimestamp.from_now = classmethod(lambda cls: fixed)
+    try:
+        buf = io.BytesIO()
+        with py7zr.SevenZipFile(buf, "w", password=password) as archive:
+            if password and encrypt_header:
+                archive.set_encrypted_header(True)
+            for name, data in entries:
+                if unchecked_names:
+                    archive._writef(io.BytesIO(data), name)    # noqa: SLF001 -- deliberate
+                else:
+                    archive.writef(io.BytesIO(data), name)
+        return buf.getvalue()
+    finally:
+        helpers.ArchiveTimestamp.from_now = original
 
 
 def render_page(lines: list[str], size=(1700, 2200), font_size=44, fill="black", background="white"):
@@ -422,7 +595,16 @@ def degrade(img):
 def image_bytes(img, fmt: str, **kw) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format=fmt, **kw)
-    return buf.getvalue()
+    return pin_pdf_dates(buf.getvalue()) if fmt.upper() == "PDF" else buf.getvalue()
+
+
+def pin_pdf_dates(data: bytes) -> bytes:
+    """Pillow's PDF writer stamps /CreationDate and /ModDate with the clock.
+    Both are replaced by NOW, digit for digit, so no xref offset moves and
+    the scanned PDFs hash the same on every build."""
+    import re
+    fixed = NOW.strftime("D:%Y%m%d%H%M%SZ").encode("ascii")
+    return re.sub(rb"D:\d{14}Z", fixed, data)
 
 
 def make_raw_tiff(make: str, model: str, when: str) -> bytes:
@@ -476,23 +658,32 @@ def make_gzip(payload: bytes) -> bytes:
 # --------------------------------------------------------------------------
 
 class Corpus:
-    def __init__(self, root: Path, samples: Path | None = None):
+    #: Which tree this builder makes; the truth records it on every case.
+    home = "Corpus"
+
+    def __init__(self, root: Path, samples: Path | None = None, matrix: dict | None = None):
         self.root = root
         self.samples = samples
+        self.matrix = matrix or {}
         self.files: list[dict] = []
         self.rng = random.Random(SEED)
         self.skipped: list[str] = []          # what could not be made here, and why
+        self.cases: dict[str, dict] = {}      # matrix ID -> the case record (see case())
+        self.not_constructed: list[dict] = []  # matrix IDs this machine cannot build, and why
 
     def add(self, relpath: str, data: bytes, *, age_days: int, note: str = "",
-            expect_analyzer_failure: bool = False):
+            expect_analyzer_failure: bool = False, case: str | None = None):
         path = self.root / relpath
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        target = ext_path(path)
+        os.makedirs(ext_path(path.parent), exist_ok=True)
+        with open(target, "wb") as handle:
+            handle.write(data)
         stamp = NOW - timedelta(days=age_days)
         ts = stamp.timestamp()
-        os.utime(path, (ts, ts))
+        os.utime(target, (ts, ts))
+        relative = relpath.replace("/", "\\")
         self.files.append({
-            "relative_path": relpath.replace("/", "\\"),
+            "relative_path": relative,
             "size_bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "extension": Path(relpath).suffix.lower(),
@@ -500,6 +691,67 @@ class Corpus:
             "age_days": age_days,
             "note": note,
             "expect_analyzer_failure": expect_analyzer_failure,
+        })
+        if case:
+            self.case(case)["paths"].append(relative)
+
+    # -- the matrix's cases ---------------------------------------------------
+
+    def case(self, case_id: str, *, expected: dict | None = None, construction: str | None = None,
+             setup=(), teardown=(), safety=(), notes: str = "", matrix_expects: str | None = None) -> dict:
+        """Register (or update) the matrix condition this corpus embodies.
+
+        `expected` is written in this program's vocabulary -- column names and
+        the values a check asserts (`file_observation.status = 'inaccessible'`,
+        `path_length > 260`). Condition text, priority, disposition and layer
+        come from the reconciliation CSV when it is present; `matrix_expects`
+        is the matrix's own wording where it wants more than the program
+        records, so the gap stays visible beside the assertion.
+        """
+        record = self.cases.get(case_id)
+        if record is None:
+            row = self.matrix.get(case_id, {})
+            record = self.cases[case_id] = {
+                "id": case_id,
+                "condition": row.get("condition"),
+                "priority": row.get("priority"),
+                "disposition": row.get("disposition"),
+                "layer": row.get("layer"),
+                "construction_in_matrix": row.get("construction"),
+                "construction": None,
+                "home": self.home,
+                "paths": [],
+                "setup": [],
+                "teardown": [],
+                "expected": {},
+                "matrix_expects": row.get("expected_behavior"),
+                "safety": [],
+                "status": "PLANNED",
+                "classification": None,
+                "notes": "",
+            }
+        if expected:
+            record["expected"].update(expected)
+        if construction:
+            record["construction"] = construction
+        if matrix_expects:
+            record["matrix_expects"] = matrix_expects
+        record["setup"].extend(setup)
+        record["teardown"].extend(teardown)
+        record["safety"].extend(s for s in safety if s not in record["safety"])
+        if notes:
+            record["notes"] = (record["notes"] + " " + notes).strip()
+        return record
+
+    def decline(self, case_id: str, reason: str):
+        """A matrix condition this machine cannot build: recorded, not skipped silently."""
+        row = self.matrix.get(case_id, {})
+        self.not_constructed.append({
+            "id": case_id,
+            "condition": row.get("condition"),
+            "priority": row.get("priority"),
+            "construction_in_matrix": row.get("construction"),
+            "reason": reason,
         })
 
     # -- content families ---------------------------------------------------
@@ -787,11 +1039,11 @@ class Corpus:
         only = render_page(["BRIEF, SCANNED", "", "The %s is submitted." % marker("Scans/scanned_only.pdf")])
         buf = io.BytesIO()
         only.save(buf, format="PDF", resolution=200.0)
-        self.add("Scans/scanned_only.pdf", buf.getvalue(), age_days=703, note="FTS marker: image-only PDF, OCR only")
+        self.add("Scans/scanned_only.pdf", pin_pdf_dates(buf.getvalue()), age_days=703, note="FTS marker: image-only PDF, OCR only")
         bad = degrade(render_page(["BAD SCAN", "", "A page no reader should trust without a look."]))
         buf = io.BytesIO()
         bad.save(buf, format="PDF", resolution=200.0)
-        self.add("Scans/scan_bad.pdf", buf.getvalue(), age_days=704, note="OCR review expected: image-only PDF, degraded")
+        self.add("Scans/scan_bad.pdf", pin_pdf_dates(buf.getvalue()), age_days=704, note="OCR review expected: image-only PDF, degraded")
         # A PDF with a real text page first and a scanned page second.
         mixed_text = make_pdf("Page one has a text layer.")
         scanned = render_page(["Page two is a scan.", "The %s is only here." % marker("Scans/scan_pages.pdf")])
@@ -804,7 +1056,7 @@ class Corpus:
             writer.append(PdfReader(io.BytesIO(buf.getvalue())))
             out = io.BytesIO()
             writer.write(out)
-            self.add("Scans/scan_pages.pdf", out.getvalue(), age_days=705, note="FTS marker: text page + scanned page")
+            self.add("Scans/scan_pages.pdf", pin_pdf_dates(out.getvalue()), age_days=705, note="FTS marker: text page + scanned page")
         except Exception as exc:                                # noqa: BLE001
             self.skipped.append("Scans/scan_pages.pdf: %s" % exc)
         gradient = Image.new("RGB", (640, 480))
@@ -976,37 +1228,98 @@ class Corpus:
             "skipped": sorted(self.skipped),
             "zero_byte_files": sorted(
                 f["relative_path"] for f in self.files if f["size_bytes"] == 0),
+            "cases": self._case_records(),
+            "not_constructed": sorted(self.not_constructed, key=lambda c: c["id"]),
             "files": sorted(self.files, key=lambda f: f["relative_path"]),
         }
+
+    def _case_records(self) -> list[dict]:
+        """Every registered case, sorted by ID. A case with artefacts on disk
+        is CONSTRUCTED; one registered without any stays PLANNED."""
+        out = []
+        for case_id in sorted(self.cases):
+            record = dict(self.cases[case_id])
+            record["paths"] = sorted(record["paths"])
+            if record["status"] == "PLANNED" and record["paths"]:
+                record["status"] = "CONSTRUCTED"
+            out.append(record)
+        return out
+
+
+class HostileCorpus(Corpus):
+    r"""The second tree: what must not go into `Corpus\`.
+
+    Anything that breaks naive tooling or changes a scan's overall status --
+    a folder the walk cannot list, a junction back to its parent, three
+    names for one file, `CON`, ten thousand files in one directory, a 4 GB
+    file that occupies nothing. Built only on request, scanned by its own
+    project, asserted by its own check, and removed by `remove_tree`, which
+    restores every ACL on the way out.
+
+    Families are added one matrix category at a time; each is a `_h_*`
+    method. None yet: this is the scaffold, so the flags, the truth file and
+    the teardown exist before the first hostile artefact does.
+    """
+    home = "Hostile"
+
+    def build(self):
+        pass
+
+    def ground_truth(self) -> dict:
+        truth = super().ground_truth()
+        truth["generator"] = "p2_build_acceptance_corpus.py --hostile"
+        # Not a document corpus: the marker, OCR and not-document lists
+        # describe `Corpus\`, and would mislead a check reading this file.
+        for key in ("fts_markers", "ocr_review_expected", "ocr_clean_expected", "not_documents"):
+            truth[key] = {} if isinstance(truth[key], dict) else []
+        return truth
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=r"C:\FOTest",
-                    help="directory holding Corpus\\ and GROUND_TRUTH.json (Corpus is recreated)")
+                    help="directory holding Corpus\\, Hostile\\ and the ground-truth files (the tree built is recreated)")
     ap.add_argument("--samples", default=None,
-                    help="folder of third-party samples to copy in (default: <root>\\Samples)")
+                    help="folder of third-party samples to copy in (default: <root>\\Research\\Samples)")
+    ap.add_argument("--matrix", default=None,
+                    help="the matrix reconciliation CSV (default: <root>\\%s)" % MATRIX_CSV)
+    ap.add_argument("--hostile", action="store_true",
+                    help="build Hostile\\ and HOSTILE_GROUND_TRUTH.json instead of Corpus\\")
+    ap.add_argument("--teardown", action="store_true",
+                    help="remove Hostile\\ (ACLs restored, links not followed) and its truth file; build nothing")
     args = ap.parse_args()
 
     base = Path(args.root)
-    corpus_dir = base / "Corpus"
-    if corpus_dir.exists():
-        shutil.rmtree(corpus_dir)
-    corpus_dir.mkdir(parents=True)
-    samples = Path(args.samples) if args.samples else base / "Samples"
+    samples = Path(args.samples) if args.samples else base / "Research" / "Samples"
+    matrix = read_matrix(Path(args.matrix) if args.matrix else base / MATRIX_CSV)
 
-    corpus = Corpus(corpus_dir, samples)
+    if args.teardown:
+        hostile_dir = base / "Hostile"
+        remove_tree(hostile_dir)
+        truth_path = base / "HOSTILE_GROUND_TRUTH.json"
+        if truth_path.exists():
+            truth_path.unlink()
+        print(f"removed           : {hostile_dir} and {truth_path.name}")
+        return
+
+    if args.hostile:
+        corpus_dir, truth_path, builder = base / "Hostile", base / "HOSTILE_GROUND_TRUTH.json", HostileCorpus
+    else:
+        corpus_dir, truth_path, builder = base / "Corpus", base / "GROUND_TRUTH.json", Corpus
+    remove_tree(corpus_dir)
+    os.makedirs(ext_path(corpus_dir))
+
+    corpus = builder(corpus_dir, samples, matrix)
     corpus.build()
     truth = corpus.ground_truth()
-
-    truth_path = base / "GROUND_TRUTH.json"
     truth_path.write_text(json.dumps(truth, indent=2, ensure_ascii=False), encoding="utf-8")
 
     t = truth["totals"]
     d = truth["duplicates"]
     print(f"corpus            : {corpus_dir}")
     print(f"ground truth      : {truth_path}")
+    print(f"matrix rows       : {len(matrix)}" + ("" if matrix else "  (reconciliation CSV not found; case text left blank)"))
     print(f"files             : {t['file_count']:,}")
     print(f"logical bytes     : {t['logical_bytes']:,}")
     print(f"extensions        : {t['distinct_extensions']}")
@@ -1014,6 +1327,7 @@ def main():
     print(f"reclaimable bytes : {d['total_reclaimable_bytes']:,}")
     print(f"analyzer failures : {len(truth['expected_analyzer_failures'])} expected")
     print(f"older than 5y     : {truth['age']['modified_before_cutoff']}")
+    print(f"cases             : {len(truth['cases'])} registered, {len(truth['not_constructed'])} not constructed here")
     for line in truth["skipped"]:
         print(f"not made          : {line}")
 

@@ -1043,7 +1043,24 @@ def main():
             fo_log.reset_app_log()
         except Exception:                                       # noqa: BLE001
             pass
-        shutil.rmtree(tmp, ignore_errors=True)
+        # The window arms faulthandler on Logs\faulthandler.log and keeps the
+        # handle for the life of the process -- by design, so a native crash
+        # is written down. This process is ending; release it so the scratch
+        # root can go. Twenty-three earlier runs had left that one file behind.
+        import faulthandler
+        import gc
+        faulthandler.disable()
+        gc.collect()
+        # The builder's remover, not rmtree: it goes through \\?\ (long
+        # paths, reserved names), clears read-only attributes, and removes a
+        # link rather than following it. rmtree(ignore_errors=True) left
+        # whatever it could not delete behind in %TEMP%, silently.
+        try:
+            import p2_build_acceptance_corpus as corpus_builder
+            corpus_builder.remove_tree(tmp)
+        except Exception as exc:                                # noqa: BLE001
+            print(f"  (scratch root not fully removed: {exc})")
+            shutil.rmtree(tmp, ignore_errors=True)
     print()
     if FAILURES:
         print(f"{len(FAILURES)} DASHBOARD CHECK(S) FAILED:")
