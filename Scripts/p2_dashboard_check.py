@@ -670,8 +670,11 @@ def test_worker(tmp: Path):
     check("the failures view lists exactly the files ground truth expects to fail, each with a reason",
           got_failures & {"Malformed\\broken.png", "Malformed\\not_really.docx", "Malformed\\truncated.pdf"} == {"Malformed\\broken.png", "Malformed\\not_really.docx", "Malformed\\truncated.pdf"}
           and all(r["analysis.error"] for r in failed_rows), f"got {sorted(got_failures)} expected {sorted(expected_failures)}")
-    zips = engine.list_files(filters=[{"condition": {"left": {"kind": "field", "id": "path.extension"}, "op": "in", "values": [{"kind": "literal", "value": ".pdf"}]}}], limit=5, columns=["path.file_name"])["rows"]
-    detail = engine.file_analysis(zips[0]["path.id"]) if zips else []
+    # A PDF whose analysis is known to succeed -- "the first .pdf" was fine
+    # until the corpus gained PDFs that are meant to fail (05_Corruption).
+    pdfs = engine.list_files(search="research_note.pdf", limit=5, columns=["path.file_name"])["rows"]
+    pdfs = [r for r in pdfs if r["path.file_name"] == "research_note.pdf"]
+    detail = engine.file_analysis(pdfs[0]["path.id"]) if pdfs else []
     check("file_analysis returns every analyzer's fields for a file",
           detail and any(e["label"] == "PDF Analysis" and any(k == "PageCount" for k, _ in e["fields"]) for e in detail), str([(e["label"], len(e["fields"])) for e in detail]))
     c.close()

@@ -46,13 +46,23 @@ Across the case's paths:
   hard_link_alias_count         that group's hard-link alias count
   not_grouped                   no path is in a current duplicate group
   rows_below                    file_path rows under the first path (a folder)
+  archive_members_include       every listed member name has an archive_member
+                                row for the first path (raw names, as shipped)
+  canary_absent                 none of the listed paths exists on disk
+                                (%VAR% expanded) -- nothing escaped an archive
   inventory_scan.status         the latest scan's status
   scan.inaccessible_count       the latest scan's inaccessible count
 
 A key nobody implemented is reported as NOT ASSERTED, never silently passed.
-A case whose `classification` is SCOPE asserts its `expected` all the same --
-the builder wrote the documented current behaviour there -- and the report
-prints the matrix's own wording beside it so the gap stays in view.
+
+Classified cases. A case always asserts what the builder wrote in
+`expected`, which is what the program does today; `classification` says
+how to read a pass. SCOPE: a recorded limit, the matrix wants more and
+`matrix_expects` says what. DEFECT: the program is wrong and the assertion
+pins the wrong behaviour so the suite stays green while the defect is
+listed -- the plan's defect table carries it, and the day it is fixed this
+check fails and says so, which is when the builder's expectation moves.
+Both are printed before the case's checks and listed in CASE_RESULTS.json.
 
 The truth's `scan_expectations` (totals the builder computed: hidden files,
 empty folders, paths over 260, links skipped, ...) are compared with the
@@ -241,6 +251,18 @@ def _across(conn, truth, key, value, paths, rows):
         n = conn.execute("SELECT COUNT(*) FROM file_path WHERE relative_path LIKE ? ESCAPE '!'",
                          (paths[0].replace("!", "!!").replace("%", "!%").replace("_", "!_") + "\\%",)).fetchone()[0]
         return n == value, f"rows below={n}"
+    if key == "archive_members_include":
+        if not found:
+            return False, "no rows"
+        names = {r[0] for r in conn.execute(
+            "SELECT m.entry_path FROM archive_member m JOIN analyzer_result r ON r.analyzer_result_id = m.analyzer_result_id "
+            "WHERE r.file_observation_id = ?", (found[0]["current_observation_id"],))}
+        missing = [v for v in value if v not in names]
+        return not missing, f"members={sorted(names)[:8]}{'...' if len(names) > 8 else ''}; missing {missing}"
+    if key == "canary_absent":
+        import os
+        present = [p for p in (os.path.expandvars(v) for v in value) if os.path.lexists(p)]
+        return not present, f"canary files present: {present}"
     if key == "inventory_scan.status":
         scan = _latest_scan(conn)
         return scan is not None and scan["status"] == value, f"scan={dict(scan) if scan else None}"
@@ -254,8 +276,12 @@ def assert_case(conn, truth, case, check):
     """Run every expected key of one case through `check(name, ok, detail)`.
     Returns {key: "PASS" | "FAIL" | NOT ASSERTED}."""
     label = f"{case['id']} {case.get('condition') or ''}".strip()
-    if case.get("classification") == "SCOPE" and case.get("matrix_expects"):
-        print(f"        ({case['id']} is a recorded limit; the matrix expects: {case['matrix_expects']})")
+    classification = case.get("classification")
+    if classification == "SCOPE":
+        print(f"        ({case['id']} is a recorded limit; the matrix expects: {case.get('matrix_expects')})")
+    elif classification == "DEFECT":
+        print(f"        ({case['id']} is a KNOWN DEFECT, asserted as it behaves today; the matrix expects: "
+              f"{case.get('matrix_expects')} -- {case.get('notes', '')[:160]})")
     paths = case.get("paths") or []
     rows = [_row(conn, p) for p in paths]
     outcome = {}
@@ -306,6 +332,10 @@ def assert_cases(conn, truth, check, project_dir=None, truth_path=None, home=Non
                                        NOT_ASSERTED if NOT_ASSERTED in keys.values() else "PASS"),
                             "keys": keys}
                       for cid, keys in results.items()},
+            "defects": [{"id": c["id"], "condition": c.get("condition"), "matrix_expects": c.get("matrix_expects"),
+                         "notes": c.get("notes")} for c in cases if c.get("classification") == "DEFECT"],
+            "scope": [{"id": c["id"], "condition": c.get("condition"), "matrix_expects": c.get("matrix_expects")}
+                      for c in cases if c.get("classification") == "SCOPE"],
             "not_constructed": [d["id"] for d in declined],
         }
         out = Path(truth_path).with_name("CASE_RESULTS.json" if home in (None, "Corpus") else f"CASE_RESULTS_{home.upper()}.json")

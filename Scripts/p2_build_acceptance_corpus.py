@@ -329,6 +329,27 @@ MARKERS.update({
     "01_Naming/invoice.pdf.exe": ("ptarmigan invoice disguise", False),
 })
 
+#: 05_Corruption (matrix section E, Y-012..Y-017). A key that is not a file
+#: path (`archive!member`) is a phrase expected NOT to be found: the FTS
+#: checks assert an empty result for those, so a cap that stops holding
+#: says so.
+MARKERS.update({
+    "05_Corruption/truncated_at_60pct.xlsx": ("halberd ledger truncated", False),
+    "05_Corruption/crc_member.zip": ("wimple crc intact", True),           # member 1, readable
+    "05_Corruption/crc_member.zip!bad_member": ("gorget crc broken", False),  # member 2, bad CRC
+    "05_Corruption/nested/level1.zip": ("nesting two marker", True),       # the level-2 note, one archive down: read
+    "05_Corruption/nested/level1.zip!level3": ("nesting three marker", False),  # depth 2: beyond MAX_ARCHIVE_DEPTH
+    "05_Corruption/nested/level1.zip!level4": ("nesting four marker", False),
+    "05_Corruption/nested/level1.zip!level5": ("nesting five marker", False),
+    "05_Corruption/expansion/big_member.zip": ("ferrule beside giant", True),   # the small note beside the 100 MB member
+    "05_Corruption/traversal/zip_slip.zip": ("escapee dotdot marker", True),  # read in memory; nothing written outside
+    "05_Corruption/traversal/zip_slip.7z": ("escapee sevenzip marker", False),   # py7zr refuses the name; nothing is read
+    "05_Corruption/protected/zipcrypto.zip!note": ("cipher zip secret", False),   # encrypted; never read
+    "05_Corruption/protected/sevenzip_password.7z!note": ("cipher seven secret", False),
+    "05_Corruption/protected/sevenzip_headers.7z!note": ("cipher headers secret", False),
+    "05_Corruption/misnamed/document.txt": ("pdf under txt marker", True),    # PDF bytes named .txt: read as PDF
+})
+
 #: Files OCR is expected to flag for a person to look at.
 OCR_REVIEW_EXPECTED = ["Scans/scan_faded.png", "Scans/scan_bad.pdf"]
 #: Files OCR is expected to read cleanly (no review flag).
@@ -345,8 +366,12 @@ def marker(relpath: str) -> str:
 # Minimal generators for real, parseable document formats
 # --------------------------------------------------------------------------
 
-def make_pdf(text: str) -> bytes:
-    """A minimal single-page PDF with an extractable text stream."""
+def make_pdf(text: str, padding: int = 0) -> bytes:
+    """A minimal single-page PDF with an extractable text stream. `padding`
+    adds an unreferenced stream object of that many zero bytes: the file is
+    that big on disk (and inside an archive, that big uncompressed) while
+    every reader still finds one line of text -- the shape the archive
+    expansion cases need."""
     content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("latin-1")
     objs = [
         b"<</Type/Catalog/Pages 2 0 R>>",
@@ -356,6 +381,8 @@ def make_pdf(text: str) -> bytes:
         b"<</Length " + str(len(content)).encode() + b">>\nstream\n" + content + b"\nendstream",
         b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
     ]
+    if padding:
+        objs.append(b"<</Length " + str(padding).encode() + b">>\nstream\n" + bytes(padding) + b"\nendstream")
     out = bytearray(b"%PDF-1.4\n")
     offsets = []
     for i, body in enumerate(objs, start=1):
@@ -591,14 +618,83 @@ def make_word_variant(paragraphs: list[str], ext: str) -> bytes:
     return normalize_ooxml(buf.getvalue())
 
 
-def make_zip(entries: list[tuple[str, bytes]]) -> bytes:
+def make_zip(entries: list[tuple[str, bytes]], level: int | None = None) -> bytes:
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=level) as zf:
         for name, data in entries:
             info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
-            zf.writestr(info, data)
+            zf.writestr(info, data, compresslevel=level)
     return buf.getvalue()
+
+
+def make_zip_raw(entries: list[tuple[str, bytes]], password: str | None = None) -> bytes:
+    """A zip written by hand: stored members, optionally under traditional
+    PKWARE ("ZipCrypto") encryption, which Python's zipfile reads but will
+    not write. Member names are written exactly as given -- `..\\` and drive
+    letters included -- because the archive-safety cases need the archive a
+    hostile source would ship, and ZipFile.writestr would not refuse them
+    either. Verified after writing by reading every member back."""
+    import struct
+    import zlib
+
+    def _crc_step(key, byte):
+        # The table-driven step of PKWARE's stream cipher, one byte at a time.
+        return (_CRC_TABLE[(key ^ byte) & 0xFF] ^ (key >> 8)) & 0xFFFFFFFF
+
+    def encrypt(plain: bytes, crc: int, salt: bytes) -> bytes:
+        keys = [0x12345678, 0x23456789, 0x34567890]
+
+        def update(byte):
+            keys[0] = _crc_step(keys[0], byte)
+            keys[1] = ((keys[1] + (keys[0] & 0xFF)) * 134775813 + 1) & 0xFFFFFFFF
+            keys[2] = _crc_step(keys[2], keys[1] >> 24)
+
+        def stream_byte():
+            temp = (keys[2] | 2) & 0xFFFF
+            return ((temp * (temp ^ 1)) >> 8) & 0xFF
+
+        for byte in password.encode("latin-1"):
+            update(byte)
+        header = salt[:11] + bytes([(crc >> 24) & 0xFF])
+        out = bytearray()
+        for byte in header + plain:
+            out.append(byte ^ stream_byte())
+            update(byte)
+        return bytes(out)
+
+    rng = random.Random(SEED + 11)
+    body = bytearray()
+    central = bytearray()
+    dos_time, dos_date = 0, (2020 - 1980) << 9 | 1 << 5 | 1        # 2020-01-01 00:00
+    flags = 0x1 if password else 0
+    for name, data in entries:
+        crc = zlib.crc32(data) & 0xFFFFFFFF
+        payload = encrypt(data, crc, bytes(rng.getrandbits(8) for _ in range(11))) if password else data
+        raw_name = name.encode("utf-8")
+        offset = len(body)
+        body += struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, flags | 0x800, 0, dos_time, dos_date, crc,
+                            len(payload), len(data), len(raw_name), 0) + raw_name + payload
+        central += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, flags | 0x800, 0, dos_time, dos_date, crc,
+                               len(payload), len(data), len(raw_name), 0, 0, 0, 0, 0, offset) + raw_name
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, len(entries), len(entries), len(central), len(body), 0)
+    archive = bytes(body + central + end)
+    # Verify: every member reads back, with the password when there is one.
+    # zipfile turns a backslash into a slash when it reads a name, so a
+    # member shipped as `..\\..\\escape.txt` is listed as `../../escape.txt`;
+    # the bytes on disk keep the backslashes.
+    with zipfile.ZipFile(io.BytesIO(archive)) as check:
+        for name, data in entries:
+            assert check.read(name.replace("\\", "/"), pwd=password.encode("latin-1") if password else None) == data, name
+    return archive
+
+
+_CRC_TABLE = [0] * 256
+for _i in range(256):
+    _c = _i
+    for _ in range(8):
+        _c = (0xEDB88320 ^ (_c >> 1)) if _c & 1 else (_c >> 1)
+    _CRC_TABLE[_i] = _c
 
 
 def make_7z(entries: list[tuple[str, bytes]], password: str | None = None,
@@ -748,6 +844,14 @@ def make_lnk(absolute_target: str, relative_target: str, is_dir: bool = False) -
         return struct.pack("<H", len(text)) + text.encode("utf-16-le")
 
     return header + link_info + string_data(relative_target) + string_data(".") + b"\x00\x00\x00\x00"
+
+
+def random_bytes(seed: int, n: int) -> bytes:
+    """n bytes from one seeded generator. (`bytes(random.Random(seed).getrandbits(8)
+    for _ in range(n))` re-seeds on every iteration and yields one byte n
+    times -- three corpus files were built that way until 2026-09-13.)"""
+    rng = random.Random(seed)
+    return bytes(rng.getrandbits(8) for _ in range(n))
 
 
 def make_gzip(payload: bytes) -> bytes:
@@ -916,6 +1020,7 @@ class Corpus:
         self._naming()
         self._duplicates_identity()
         self._links()
+        self._corruption()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -1094,7 +1199,10 @@ class Corpus:
         inner = make_zip([("inner/memo.docx", memo), ("inner/readme.txt", b"inner readme\n")])
         self.add("Archives/bundle.zip", make_zip([("notes.txt", b"outer notes\n"), ("inner.zip", inner),
                                                   ("picture.png", make_png(8, 8, (1, 2, 3)))]),
-                 age_days=120, note="FTS marker: docx inside a zip inside the zip")
+                 age_days=120, note="FTS marker: docx inside a zip inside the zip", case="Y-012")
+        self.case("Y-012", construction="G", expected={"file_state.state": "present", "analyzer.archive.status": "analyzed",
+                                                        "extracted_content.status": "extracted", "marker_indexed": True},
+                  notes="the marker lives in a .docx inside a zip inside this zip: two levels, the cap")
         seven = make_7z([("note.txt", ("A 7z note: %s.\n" % marker("Archives/bundle.7z")).encode("utf-8")),
                          ("memo.docx", make_docx(["Also inside the 7z."]))])
         if seven is not None:
@@ -1120,7 +1228,7 @@ class Corpus:
 
         # Group B: 2 identical binaries -> 1 reclaimable copy (B-001: same
         # bytes, same name, different folder)
-        payload_b = bytes(random.Random(SEED + 1).getrandbits(8) for _ in range(64 * 1024))
+        payload_b = random_bytes(SEED + 1, 64 * 1024)
         for i, rel in enumerate(["Duplicates/archive_blob.bin",
                                  "Duplicates/backup/archive_blob.bin"]):
             self.add(rel, payload_b, age_days=500 + i * 30, note="dup group B", case="B-001")
@@ -1134,8 +1242,7 @@ class Corpus:
                      age_days=90 + i, note="dup group C")
 
         # Near-miss: same size, different bytes. Must NOT group.
-        self.add("Duplicates/decoy_same_size.bin",
-                 bytes(random.Random(SEED + 2).getrandbits(8) for _ in range(64 * 1024)),
+        self.add("Duplicates/decoy_same_size.bin", random_bytes(SEED + 2, 64 * 1024),
                  age_days=505, note="same size as group B, different content")
 
     def _images(self):
@@ -1272,22 +1379,48 @@ class Corpus:
 
     def _malformed(self):
         """Deliberate analyzer failures, so the quality reports have rows."""
+        present = {"file_state.state": "present"}
         self.add("Malformed/truncated.pdf", b"%PDF-1.4\n1 0 obj\n<</Type/Catalog",
-                 age_days=60, note="invalid PDF", expect_analyzer_failure=True)
+                 age_days=60, note="invalid PDF", expect_analyzer_failure=True, case="E-003")
+        self.case("E-003", construction="G", expected=dict(present, **{"analyzer.pdf.status": "error", "extracted_content.status": "error"}))
+        self.case("E-002", construction="G", expected=dict(present, **{"analyzer.status": "error"}),
+                  notes="the truncated PDF and the truncated zip: the analyzer fails, the inventory does not")
+        self.case("E-002")["paths"].append("Malformed\\truncated.pdf")
         self.add("Malformed/not_really.docx", b"This is plain text pretending to be a docx.",
-                 age_days=61, note="invalid DOCX", expect_analyzer_failure=True)
+                 age_days=61, note="invalid DOCX", expect_analyzer_failure=True, case="E-005")
+        self.case("E-005", construction="G", expected=dict(present, **{"analyzer.office.status": "error"}),
+                  notes="the fake .docx is plain text, so extraction reads it as text by its bytes; the truncated genuine .xlsx in 05_Corruption fails both")
         self.add("Malformed/broken.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32,
-                 age_days=62, note="invalid PNG", expect_analyzer_failure=True)
+                 age_days=62, note="invalid PNG", expect_analyzer_failure=True, case="E-004")
+        self.case("E-004", construction="G", expected=dict(present, **{"analyzer.image.status": "error"}))
         self.add("Malformed/corrupt.gz", b"\x1f\x8b\x08\x00" + b"\xff" * 24,
-                 age_days=63, note="invalid GZIP", expect_analyzer_failure=True)
-        self.add("Malformed/truncated.zip", make_zip([("a.txt", b"a" * 4000)])[:600],
-                 age_days=64, note="truncated ZIP", expect_analyzer_failure=True)
+                 age_days=63, note="invalid GZIP; no analyzer names .gz", case="E-006b")
+        self.case("E-006b", construction="G", condition="Corrupt gzip (no analyzer names .gz)",
+                  expected=dict(present, **{"analyzer.status": "none", "extracted_content.status": "none"}),
+                  notes="nothing reads a .gz, so nothing fails; the file is inventoried and left alone")
+        # Random bytes do not deflate, so 600 of ~4,100 bytes is a real
+        # truncation. (4,000 letters deflated to a 130-byte zip that [:600]
+        # did not cut at all -- 'truncated.zip' was a valid archive from
+        # 2026-09-08 to 2026-09-13.)
+        self.add("Malformed/truncated.zip",
+                 make_zip([("a.bin", random_bytes(SEED + 5, 4000))])[:600],
+                 age_days=64, note="truncated ZIP", expect_analyzer_failure=True, case="E-006")
+        self.case("E-006", construction="G", expected=dict(present, **{"analyzer.archive.status": "error"}))
+        self.case("E-002")["paths"].append("Malformed\\truncated.zip")
         self.add("Malformed/not_really.pst", b"!BDN" + bytes(self.rng.getrandbits(8) for _ in range(2000)),
                  age_days=65, note="PST signature over garbage", expect_analyzer_failure=True)
-        self.add("Malformed/empty.msg", b"", age_days=66, note="zero-byte Outlook message")
+        self.add("Malformed/empty.msg", b"", age_days=66, note="zero-byte Outlook message", case="E-001")
+        self.case("E-001", construction="L", expected=dict(present, size_bytes=0),
+                  notes="Edge/empty.txt and Malformed/empty.msg; the report's 'Empty files found' counts them")
+        # X-016: the corrupt Office file among valid ones -- the valid ones'
+        # markers are all found (the FTS section), and this one fails alone.
+        self.case("X-016", construction="G", condition="Corrupt Office file + valid files surrounding it",
+                  expected=dict(present, **{"analyzer.office.status": "error"}),
+                  notes="Malformed\\not_really.docx beside Documents\\; every valid document's marker is found by the FTS checks")
+        self.case("X-016")["paths"].append("Malformed\\not_really.docx")
 
     def _edge_cases(self):
-        self.add("Edge/empty.txt", b"", age_days=10, note="zero bytes")
+        self.add("Edge/empty.txt", b"", age_days=10, note="zero bytes", case="E-001")
         self.add("Edge/no_extension", b"payload without an extension\n", age_days=11, case="A-019")
         self.add("Edge/\u00fcnicode_n\u00e4me_\u65e5\u672c\u8a9e.txt",
                  "Unicode filename content.\n".encode("utf-8"), age_days=12,
@@ -1512,6 +1645,181 @@ class Corpus:
         self.case("H-004", expected=dict(lnk, row_count=3), construction="G", notes="the folder is not empty: three rows")
         self.case("H-005", expected=dict(lnk, row_count=3), construction="G", notes="broken or not, a shortcut is a file; three rows")
 
+    def _corruption(self):
+        """05_Corruption: matrix section E and the container hazards of
+        section 12.3 (Y-012..Y-017). The rule under test is the matrix's
+        section 13: a failed parser is a successful inventory with a failed
+        extraction, never a missing file -- and nothing an archive says about
+        itself reaches the disk under its own name."""
+        base = "05_Corruption"
+        present = {"file_state.state": "present"}
+        temp = os.environ.get("TEMP", os.environ.get("TMP", ""))
+        canaries = [r"C:\escape.txt", r"C:\FOTest\escape.txt", plain_path(ext_path(self.root.parent)) + r"\escape.txt",
+                    temp + r"\escape.txt", os.path.dirname(temp) + r"\escape.txt"]
+
+        # E-005 (genuine) -- a real workbook cut off at 60 %.
+        whole = make_xlsx([["Line", "Amount"], [marker(base + "/truncated_at_60pct.xlsx"), 1]])
+        self.add(base + "/truncated_at_60pct.xlsx", whole[: len(whole) * 6 // 10], age_days=43,
+                 expect_analyzer_failure=True, case="E-005")
+        self.case("E-005")["expected"].update({"analyzer.office.status": "error"})
+        self.case("Y-024", construction="G", condition="Malformed document parser input",
+                  expected=dict(present, **{"analyzer.office.status": "error", "extracted_content.status": "error", "marker_indexed": False}),
+                  notes="the truncated genuine workbook: both readers fail, the file stays in the inventory, the rest of the corpus is untouched (X-016)")
+        self.case("Y-024")["paths"].append((base + "/truncated_at_60pct.xlsx").replace("/", "\\"))
+
+        # E-007 -- a zip whose second member has a bad CRC (stored, one byte flipped).
+        good = ("Member one is fine: %s.\n" % marker(base + "/crc_member.zip")).encode("utf-8")
+        bad = ("Member two is damaged: %s.\n" % marker(base + "/crc_member.zip!bad_member")).encode("utf-8")
+        archive = bytearray(make_zip_raw([("good.txt", good), ("bad.txt", bad)]))
+        at = archive.find(bad)
+        archive[at + 4] ^= 0x20                                   # one byte of member two, CRC now wrong
+        self.add(base + "/crc_member.zip", bytes(archive), age_days=44, case="E-007")
+        self.case("E-007", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                                                        "extracted_content.status": "extracted", "marker_indexed": True,
+                                                                        "archive_members_include": ["good.txt", "bad.txt"]}),
+                  notes="member one's marker is found, member two's is not: the outer archive is analysed and read, the bad member is reported and skipped")
+
+        # E-008 -- invalid internal metadata: a docx whose core.xml dates are
+        # not dates; a PDF whose /Info dates are garbage.
+        docx = make_docx(["Dates in this document's properties are not dates.", "Body text is fine."])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(docx)) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
+            for info in src.infolist():
+                data = src.read(info)
+                if info.filename == "docProps/core.xml":
+                    import re
+                    data = re.sub(rb"(<dcterms:(?:created|modified)[^>]*>)[^<]*", rb"\1not-a-date", data)
+                dst.writestr(info, data)
+        self.add(base + "/bad_dates.docx", normalize_ooxml(buf.getvalue()), age_days=45, case="E-008")
+        pdf = make_pdf("Info dictionary with garbage dates").replace(
+            b"trailer\n<</Size", b"trailer\n<</Info<</CreationDate(garbage)/ModDate(D:99999999999999)>>/Size")
+        self.add(base + "/bad_info.pdf", pdf, age_days=46, expect_analyzer_failure=True, case="E-008b")
+        self.case("E-008", construction="G", expected=dict(present, **{"extracted_content.status": "extracted", "analyzer.office.status": "analyzed"}),
+                  notes="python-docx shrugs at the dates: analysed, text read")
+        self.case("E-008b", construction="G", condition="Invalid internal metadata (PDF /Info dates)", classification="DEFECT",
+                  expected=dict(present, **{"extracted_content.status": "extracted", "analyzer.pdf.status": "error"}),
+                  matrix_expects="Graceful parser failure",
+                  notes="observed 2026-09-13: pypdf's date conversion raises on '/CreationDate (garbage)' and the whole PDF analysis is an error, "
+                        "though the page is fine and extraction reads it; a garbage date should empty one field, not fail the file. Minor; for the user's decision")
+
+        # E-009 -- a partial download, under its download name and under the real one.
+        partial = make_xlsx([["Line", "Amount"], ["Rent", 1200]])[:900]
+        self.add(base + "/partial/report.xlsx.crdownload", partial, age_days=47, case="E-009")
+        self.add(base + "/partial/report_partial.xlsx", partial, age_days=47, expect_analyzer_failure=True, case="E-009")
+        self.case("E-009", construction="G", expected=present,
+                  notes=".crdownload: no analyzer names it (no rows); .xlsx: the Office analyzer and extraction fail")
+        self.case("E-009b", construction="G", condition="Partially downloaded file under its real name",
+                  expected={"analyzer.office.status": "error", "extracted_content.status": "error"})
+        self.case("E-009b")["paths"].append((base + "/partial/report_partial.xlsx").replace("/", "\\"))
+        self.case("E-009c", construction="G", condition="Partially downloaded file under its download name",
+                  expected={"analyzer.status": "none", "extracted_content.status": "none", "extension_key": ".crdownload"})
+        self.case("E-009c")["paths"].append((base + "/partial/report.xlsx.crdownload").replace("/", "\\"))
+
+        # E-010 -- the extension says one thing, the bytes another.
+        self.add(base + "/misnamed/picture.jpg", make_png(24, 24, (10, 200, 10)), age_days=48, case="E-010")
+        self.add(base + "/misnamed/document.txt", make_pdf(marker(base + "/misnamed/document.txt")), age_days=48, case="E-010")
+        self.add(base + "/misnamed/archive.zip", bytes(self.rng.getrandbits(8) for _ in range(3000)), age_days=48,
+                 expect_analyzer_failure=True, case="E-010")
+        self.case("E-010", construction="G", expected=present,
+                  notes="PNG bytes as .jpg: the image analyzer reads by content; PDF bytes as .txt: extraction routes by bytes and finds the marker; "
+                        "random bytes as .zip: the archive analyzer fails")
+        self.case("E-010b", construction="G", condition="PDF bytes named .txt", expected={"extracted_content.status": "extracted", "marker_indexed": True})
+        self.case("E-010b")["paths"].append((base + "/misnamed/document.txt").replace("/", "\\"))
+        self.case("E-010c", construction="G", condition="Random bytes named .zip", expected={"analyzer.archive.status": "error"})
+        self.case("E-010c")["paths"].append((base + "/misnamed/archive.zip").replace("/", "\\"))
+
+        # Y-013 -- five nested zips; the readers stop at depth two.
+        nested = None
+        for level in (5, 4, 3, 2, 1):
+            key = base + "/nested/level1.zip" + ("" if level == 2 else "!level%d" % level)
+            note = ("Level %d: %s.\n" % (level, marker(key) if level > 1 else "no marker at the top")).encode("utf-8")
+            members = [("note_%d.txt" % level, note)]
+            if nested is not None:
+                members.append(("level%d.zip" % (level + 1), nested))
+            nested = make_zip(members)
+        self.add(base + "/nested/level1.zip", nested, age_days=49, case="Y-013")
+        self.case("Y-013", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                                                        "extracted_content.status": "extracted", "marker_indexed": True}),
+                  notes="the level-2 marker is found; 3, 4 and 5 are not (MAX_ARCHIVE_DEPTH = 2)")
+
+        # Y-014 -- expansion: ten 60 MB members (600 MB, the 512 MB cap); one
+        # 100 MB member (the 64 MB cap) beside a small readable note.
+        sixty = make_pdf("Sixty megabytes of padding follow this line.", padding=60 * 1024 * 1024)
+        self.add(base + "/expansion/ten_by_60mb.zip", make_zip([("block_%02d.pdf" % i, sixty) for i in range(10)], level=1),
+                 age_days=50, case="Y-014")
+        self.case("Y-014", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                                                        "extracted_content.status": "extracted"}),
+                  notes="ten 60 MB PDFs (600 MB) stored in under a megabyte; reading stops past the 512 MB total, one member in memory at a time; each PDF yields one line")
+        self.add(base + "/expansion/big_member.zip",
+                 make_zip([("giant.pdf", make_pdf("A hundred megabytes of padding follow.", padding=100 * 1024 * 1024)),
+                           ("note.txt", ("Beside the giant: %s.\n" % marker(base + "/expansion/big_member.zip")).encode("utf-8"))], level=1),
+                 age_days=51, case="Y-014")
+        self.case("Y-014b", construction="G", condition="Archive member over the 64 MB member cap",
+                  expected={"extracted_content.status": "extracted", "marker_indexed": True},
+                  notes="the 100 MB member is skipped, the note beside it is read")
+        self.case("Y-014b")["paths"].append((base + "/expansion/big_member.zip").replace("/", "\\"))
+
+        # Y-015 -- path-traversal member names, in a zip and in a 7z.
+        slip = [("../../../escape.txt", ("Dot-dot member: %s.\n" % marker(base + "/traversal/zip_slip.zip")).encode("utf-8")),
+                ("..\\..\\escape.txt", b"Backslash dot-dot member.\n"),
+                ("C:\\escape.txt", b"Absolute member.\n")]
+        self.add(base + "/traversal/zip_slip.zip", make_zip_raw(slip), age_days=52, case="Y-015")
+        self.case("Y-015", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                                                        "extracted_content.status": "extracted", "marker_indexed": True,
+                                                                        "archive_members_include": [n.replace("\\", "/") for n, _ in slip], "canary_absent": canaries}),
+                  safety=["zip members are read in memory and written only to a randomly named %TEMP% file; the member's name never reaches the disk"],
+                  notes="the names are recorded as archive members (zipfile reads a backslash as a slash); the text is read; no escape.txt appears anywhere")
+        seven = make_7z([("../../../escape.txt", ("Dot-dot 7z member: %s.\n" % marker(base + "/traversal/zip_slip.7z")).encode("utf-8")),
+                         ("..\\..\\escape.txt", b"Backslash dot-dot 7z member.\n")], unchecked_names=True)
+        if seven is not None:
+            self.add(base + "/traversal/zip_slip.7z", seven, age_days=52, case="Y-015b")
+            self.case("Y-015b", construction="G", condition="Archive containing path-traversal member names (7z)",
+                      expected=dict(present, **{"analyzer.archive.status": "analyzed", "extracted_content.status": "error",
+                                                "marker_indexed": False, "canary_absent": canaries}),
+                      safety=["7z members are extracted by py7zr into a %TEMP% folder; it refuses the name ('Specified path is bad') before writing anything"],
+                      notes="observed 2026-09-13: py7zr raises on the dot-dot member, so the whole archive is an extraction error and nothing is read; the names are listed; no escape.txt appears anywhere")
+        else:
+            self.skipped.append(base + "/traversal/zip_slip.7z: py7zr not installed")
+
+        # Y-016 -- executable content inside an archive: listed, never extracted.
+        self.add(base + "/executable/tools.zip", make_zip([("tool.com", b"\xc3"), ("tool.exe", b"not a program, but named as one\n"),
+                                                           ("readme.txt", b"A zip that carries programs.\n")]), age_days=53, case="Y-016")
+        self.case("Y-016", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                                                        "archive_members_include": ["tool.com", "tool.exe", "readme.txt"],
+                                                                        "extracted_content.status": "extracted"}),
+                  safety=["tool.com is a single RET (0xC3), inert on 64-bit Windows; .com and .exe are not readable suffixes, so neither member is ever written out"],
+                  notes="the members are listed; only readme.txt is read")
+
+        # Y-017 / O-005 / E-011 -- password-protected archives: three shapes.
+        secret = ("The secret note: %s.\n" % marker(base + "/protected/zipcrypto.zip!note")).encode("utf-8")
+        self.add(base + "/protected/zipcrypto.zip", make_zip_raw([("note.txt", secret), ("readme.txt", b"encrypted zip\n")], password="corpus"),
+                 age_days=54, case="Y-017")
+        self.case("Y-017", construction="G", expected=dict(present, **{"analyzer.archive.status": "analyzed",
+                                                                        "archive_members_include": ["note.txt", "readme.txt"],
+                                                                        "extracted_content.status": ["extracted", "empty"]}),
+                  safety=["no password is anywhere in the corpus or the truth; the members are reported '(encrypted; not read)'"],
+                  notes="ZipCrypto: names are listed, contents are not read; also O-005 and E-011")
+        for twin in ("O-005", "E-011"):
+            self.case(twin, construction="G", expected={"analyzer.archive.status": "analyzed"}, notes="the same archives as Y-017")
+            self.case(twin)["paths"].append((base + "/protected/zipcrypto.zip").replace("/", "\\"))
+        seven_pw = make_7z([("note.txt", ("Seven secret: %s.\n" % marker(base + "/protected/sevenzip_password.7z!note")).encode("utf-8"))], password="corpus")
+        seven_hdr = make_7z([("note.txt", ("Headers secret: %s.\n" % marker(base + "/protected/sevenzip_headers.7z!note")).encode("utf-8"))],
+                            password="corpus", encrypt_header=True)
+        if seven_pw is not None and seven_hdr is not None:
+            self.add(base + "/protected/sevenzip_password.7z", seven_pw, age_days=55, case="Y-017b")
+            self.case("Y-017b", construction="G", condition="Password-protected 7z, member names in clear",
+                      expected=dict(present, **{"analyzer.archive.status": "analyzed", "archive_members_include": ["note.txt"],
+                                                "extracted_content.status": "error"}),
+                      notes="listed; the member cannot be read without the password, which nothing supplies -- py7zr raises, so extraction is an error")
+            self.add(base + "/protected/sevenzip_headers.7z", seven_hdr, age_days=56, expect_analyzer_failure=True, case="Y-017c")
+            self.case("Y-017c", construction="G", condition="Password-protected 7z with encrypted headers",
+                      expected=dict(present, **{"analyzer.archive.status": "error", "extracted_content.status": "error"}),
+                      notes="even the names are hidden: the analyzer reports the failure, the file stays in the inventory")
+            self.case("X-017", construction="G", condition="Protected archive + normal archive",
+                      expected={"file_state.state": "present"},
+                      notes="the protected archives beside Archives\\plain.zip and bundle.zip, whose markers are still found")
+            self.case("X-017")["paths"].extend([(base + "/protected/zipcrypto.zip").replace("/", "\\"), "Archives\\plain.zip"])
+
     def _bulk(self):
         """Volume and size/date spread, so ranked reports actually rank."""
         words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
@@ -1675,14 +1983,14 @@ class HostileCorpus(Corpus):
         if enable_case_sensitivity(case_dir):
             self.add("01_Naming/case_sensitive/Report.txt", b"capital R\n", age_days=30, case="A-014")
             self.add("01_Naming/case_sensitive/report.txt", b"small r\n", age_days=31, case="A-014")
-            self.case("A-014", construction="G", classification="DEFECT",
-                      expected={"file_state.state": "present", "row_count": 2, "not_grouped": True},
+            self.case("A-014", construction="G", classification="DEFECT", matrix_expects="two objects: one row each, both present",
+                      expected={"row_count": 1},
                       setup=["icacls <dir> /grant <user>:(F)", "fsutil file setCaseSensitiveInfo <dir> enable"],
                       notes="the engine keeps one row for the pair (name of the first, size of the second); "
                             "the walk counts two. file_path is unique on a lower-cased relative_path_key")
             for twin in ("Y-009", "Y-053"):
-                self.case(twin, construction="G", classification="DEFECT", expected={"row_count": 2},
-                          notes="the same two files as A-014")
+                self.case(twin, construction="G", classification="DEFECT", expected={"row_count": 1},
+                          matrix_expects="two rows", notes="the same two files as A-014")
                 self.case(twin)["paths"].extend(self.case("A-014")["paths"])
         else:
             for case_id in ("A-014", "Y-009", "Y-053"):
