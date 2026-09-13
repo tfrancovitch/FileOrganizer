@@ -71,8 +71,10 @@ def show_hub(app):
         """One line: [button | status word] label value. `link` makes the
         label clickable -- a bucket name opens the Files page on that bucket."""
         if action:
+            # A run needs the project under Projects\; a view ("Show which") does not.
+            enabled = can_run or action[0] == "Show which"
             ttk.Button(grid, text=action[0], width=18, command=action[1],
-                       state="normal" if can_run else "disabled").grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
+                       state="normal" if enabled else "disabled").grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
         else:
             ttk.Label(grid, text=status or "", width=18, foreground="#1f6244",
                       font=("Segoe UI", 9, "bold")).grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
@@ -208,6 +210,11 @@ def show_hub(app):
         text_note = (f"{srch.counts['unsupported']:,} files are in formats this product cannot extract text "
                      "from, so a search will never match inside them.")
     line("Text", text_line, text_action, status=text_status, note=text_note)
+    if ext is not None and ext.counts.get("ocr_review"):
+        # Scans OCR could not trust: the user asked for a flag, and a way to
+        # the list.
+        line("OCR to double-check", f"{ext.counts['ocr_review']:,} files   (poor scans -- the reasons are in the list)",
+             action=("Show which", app.show_files_for_ocr_review))
 
     if not can_run:
         ttk.Label(body, style="Warn.TLabel",

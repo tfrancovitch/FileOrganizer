@@ -94,7 +94,15 @@ def _analyzer_extension_map():
         return {}
     out = {}
     for adapter in getattr(fo_analyzer_engine, "ADAPTERS", ()):
-        exts = getattr(adapter, "declared_extensions", None)
+        # The live set from the analyzer's own module when it imports (the
+        # extraction set is over a hundred entries and lives in one place);
+        # the adapter's declared set when it does not.
+        try:
+            exts = adapter.extensions()
+        except Exception:                                      # noqa: BLE001
+            exts = None
+        if not exts:
+            exts = getattr(adapter, "declared_extensions", None)
         if exts:
             out[adapter.key] = (adapter.label, frozenset(e.lower() for e in exts))
     return out
@@ -379,13 +387,25 @@ def project_capabilities(conn):
              WHERE ec.status='skipped' AND ar.status='skipped_cloud_only'""")
         attempted = extracted + failed + empty + not_documents + cloud_only
         unattempted = max(0, extractable - attempted)
+        ocr_files, ocr_review = 0, 0
+        try:
+            ocr_files, ocr_review = conn.execute("""
+                SELECT COUNT(*), COALESCE(SUM(CASE WHEN json_extract(ar.detail_json,'$.OcrReview')='yes' THEN 1 ELSE 0 END),0)
+                  FROM extracted_content ec
+                  JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id
+                 WHERE ec.status IN ('extracted','empty')
+                   AND json_extract(ar.detail_json,'$.OcrPages') IS NOT NULL""").fetchone()
+        except Exception:                                      # noqa: BLE001
+            pass
         parts = [f"{extracted:,} of {extractable:,} extracted"]
+        if ocr_files:
+            parts.append(f"{ocr_files:,} read by OCR, {ocr_review:,} of them to double-check")
         if failed:
             parts.append(f"{failed:,} could not be read")
         if empty:
             parts.append(f"{empty:,} held no text")
         if not_documents:
-            parts.append(f"{not_documents:,} not documents (no extension, and not text inside)")
+            parts.append(f"{not_documents:,} not documents (photographs, or nothing readable inside)")
         if cloud_only:
             parts.append(f"{cloud_only:,} cloud-only, never opened")
         if unattempted:
@@ -396,7 +416,8 @@ def project_capabilities(conn):
             RUN_EXTRACT if unattempted else None,
             extractable=extractable, extracted=extracted,
             failed=failed, empty=empty, not_documents=not_documents,
-            cloud_only=cloud_only, unattempted=unattempted))
+            cloud_only=cloud_only, unattempted=unattempted,
+            ocr_files=ocr_files, ocr_review=ocr_review))
 
     indexed = _scalar(conn, "SELECT COUNT(*) FROM p2_fts_text_map")
     if extracted == 0:

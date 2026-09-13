@@ -111,6 +111,12 @@ FILE_FIELDS.update({
         "WHERE lar.file_observation_id=fs.current_observation_id "
         "ORDER BY lar.analyzed_utc DESC LIMIT 1)"),
     "analysis.error": _CURRENT_ERROR,
+    # OCR: what extraction recorded when it had to read a page as a picture.
+    "analysis.ocr.pages": _latest_analysis("CAST(json_extract(lar.detail_json,'$.OcrPages') AS INTEGER)"),
+    "analysis.ocr.quality": _latest_analysis("CAST(json_extract(lar.detail_json,'$.OcrQuality') AS INTEGER)"),
+    "analysis.ocr.review": _latest_analysis("json_extract(lar.detail_json,'$.OcrReview')"),
+    "analysis.ocr.reasons": _latest_analysis("json_extract(lar.detail_json,'$.OcrReviewReasons')"),
+    "analysis.source_type": _latest_analysis("json_extract(lar.detail_json,'$.SourceType')"),
     "analysis.analyzed_count": (
         "(SELECT COUNT(DISTINCT la.analyzer_key) FROM analyzer_result lar "
         "JOIN analyzer_run lrr ON lrr.analyzer_run_id=lar.analyzer_run_id "

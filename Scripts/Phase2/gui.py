@@ -77,6 +77,11 @@ FILE_COLUMNS = {
     "analysis.archive.entry_count": ("Archive entries", 100, "int"),
     "analysis.analyzed_count": ("Analyzers run", 90, "int"),
     "analysis.error": ("Analysis error", 300, "text"),
+    "analysis.source_type": ("Read as", 130, "enum"),
+    "analysis.ocr.pages": ("OCR pages", 80, "int"),
+    "analysis.ocr.quality": ("OCR quality", 90, "int"),
+    "analysis.ocr.review": ("OCR review", 90, "enum"),
+    "analysis.ocr.reasons": ("OCR review reasons", 320, "text"),
 }
 
 #: What each column means, for the Columns dialog -- the user asked what Size
@@ -111,6 +116,11 @@ COLUMN_HELP = {
     "analysis.archive.entry_count": "Number of entries inside an archive (listed without extracting).",
     "analysis.analyzed_count": "How many analyzers have a current result for this file.",
     "analysis.error": "The reason the newest analysis attempt on this file failed, if it did.",
+    "analysis.source_type": "What extraction read the file as, judged from its bytes (a .doc holding RTF says RTF; a scanned PDF says PDF (OCR)).",
+    "analysis.ocr.pages": "How many pages had no text layer and were read by OCR.",
+    "analysis.ocr.quality": "OCR's worst page, 0-100: resolution, contrast, focus, skew, and how much of the result reads as words.",
+    "analysis.ocr.review": "yes when a page scored under 70 -- a poor scan worth a person's look.",
+    "analysis.ocr.reasons": "Why the OCR review flag was raised, page by page.",
 }
 DEFAULT_FILE_COLUMNS = ["path.file_name", "folder.parent", "path.extension", "file.size_bytes",
                         "time.modified_utc", "file.in_current_exact_duplicate_group", "hash.authority"]
@@ -483,11 +493,31 @@ class Phase2App(tk.Tk):
         ttk.Button(new,text="Create project and run the Pre-Scan",command=create).pack(anchor="w",pady=(10,0))
 
     def show_options(self):
-        """Options. Nothing to set yet; the place for it exists."""
+        """Options: what Extract text may leave out. Saved to the project's settings.json."""
         if self.active_run is not None: return
-        self.clear(); self.header("Options","Nothing to set yet.")
-        ttk.Label(self.content,text="This is where preferences will live -- a dark mode is the first candidate. "
-                                    "Until there is one, there is nothing here to change.",wraplength=800,justify="left").pack(anchor="w")
+        self.clear(); self.header("Options","What text extraction reads. Each switch is saved to this project; the estimate before a run reflects them.")
+        if self.conn is None or self.project_dir is None:
+            ttk.Label(self.content,text="Open a project to set its options.",wraplength=800,justify="left").pack(anchor="w"); return
+        from Phase2.runner import load_settings
+        import json
+        settings=load_settings(self.project_dir)
+        switches=[("ExtractionOcr","Read pages that have no text layer with OCR (Windows' own engine)",
+                   "Scanned PDFs and photographed pages. About half a second a page. Off, such pages stay unread and the file says so."),
+                  ("ExtractionPictures","Read pictures (JPEG, PNG, TIFF...) for text when they look like documents",
+                   "Every picture is looked at briefly; only the ones that look like a page of paper are read. A folder of photographs costs the look and nothing more."),
+                  ("ExtractionArchives","Read the documents inside ZIP and 7z archives",
+                   "Two levels deep. A zip of scanned PDFs costs what its PDFs cost.")]
+        self._option_vars={}
+        def save():
+            current=load_settings(self.project_dir)
+            for key,var in self._option_vars.items(): current[key]=bool(var.get())
+            try:
+                with open(Path(self.project_dir)/"settings.json","w",encoding="utf-8") as handle: json.dump(current,handle,indent=2)
+            except OSError as exc: messagebox.showerror("Options",f"Could not save settings.json: {exc}")
+        for key,label,detail in switches:
+            var=tk.BooleanVar(value=bool(settings.get(key,True))); self._option_vars[key]=var
+            ttk.Checkbutton(self.content,text=label,variable=var,command=save).pack(anchor="w",pady=(10,0))
+            ttk.Label(self.content,text=detail,wraplength=800,justify="left",foreground="#555").pack(anchor="w",padx=(24,0))
 
     # -- views ---------------------------------------------------------------
 
@@ -551,6 +581,18 @@ class Phase2App(tk.Tk):
         self.filters=[{"condition":{"left":{"kind":"field","id":"path.extension"},"op":"not_in" if exclude else "in","values":values}}]
         self.filter_labels=[f"type: {label}"]
         self.search_text=""; self.find_var.set(""); self.files_sort=("file.size_bytes","desc")
+        self.show_files()
+
+    def show_files_for_ocr_review(self):
+        """The Files page showing every file OCR flagged for a person to look at."""
+        if self.conn is None: return
+        self.filters=[{"condition":{"left":{"kind":"field","id":"analysis.ocr.review"},"op":"eq","value":{"kind":"literal","value":"yes"}}}]
+        self.filter_labels=["OCR: double-check"]
+        self.search_text=""; self.find_var.set(""); self.files_sort=("analysis.ocr.quality","asc")
+        cols=list(self.files_columns)
+        for c in ("analysis.ocr.quality","analysis.ocr.reasons"):
+            if c not in cols: cols.append(c)
+        self.files_columns=cols
         self.show_files()
 
     def show_files_for_failures(self):

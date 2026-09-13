@@ -455,7 +455,7 @@ def spread_sample(rows, count=ANALYZER_SAMPLE_FILES):
     return picks
 
 
-def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
+def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP, extraction_options=None):
     r"""Run the real analyzer over the sample. Returns a measurement dict.
 
     {files_used, bytes_read, elapsed, text_bytes, error} -- error carries a
@@ -468,7 +468,7 @@ def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
     import fo_analyzer_engine
 
     out = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
-           "pages_read": 0, "error": None}
+           "pages_read": 0, "ocr_pages": 0, "error": None}
     adapter = fo_analyzer_engine.ADAPTER_BY_KEY.get(key)
     if adapter is None:
         out["error"] = "unknown analyzer"
@@ -482,7 +482,7 @@ def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
         return out
 
     scratch = None
-    context = {"hash_size": fo_analyzer_engine.DEFAULT_IMAGE_HASH_SIZE}
+    context = {"hash_size": fo_analyzer_engine.DEFAULT_IMAGE_HASH_SIZE, "extraction": extraction_options}
     if key == "content_extraction":
         # The extraction closure writes artifacts. They go to a folder that
         # is deleted below -- an estimate must not leave evidence behind.
@@ -523,6 +523,7 @@ def measure_analyzer(key, sample, byte_cap=ANALYZER_SAMPLE_BYTE_CAP):
             if key == "content_extraction" and isinstance(payload, dict):
                 try:
                     out["text_bytes"] += int(payload.get("CharCount") or 0)
+                    out["ocr_pages"] += int(payload.get("OcrPages") or 0)
                 except (TypeError, ValueError):
                     pass
             if key == "content_extraction" and path.lower().endswith(".pdf"):
@@ -583,29 +584,39 @@ def _pdf_page_count(path):
 
 
 def _pdf_page_totals(conn):
-    r"""(PDF files with a page count recorded by the PDF analyzer, their pages).
+    r"""(PDF files with a page count recorded by the PDF analyzer, their pages,
+    the pages of those the analyzer found no text in at all).
 
     The count is of CURRENT, present, local PDFs whose newest PDF-analysis
-    result carries PageCount -- what the summary would call analysed.
+    result carries PageCount -- what the summary would call analysed. The
+    third number is what OCR will have to read.
     """
     try:
         row = conn.execute("""
-            SELECT COUNT(*), COALESCE(SUM(pages), 0) FROM (
+            SELECT COUNT(*), COALESCE(SUM(pages), 0),
+                   COALESCE(SUM(CASE WHEN has_text = 'False' THEN pages ELSE 0 END), 0) FROM (
                 SELECT (SELECT CAST(json_extract(ar.detail_json, '$.PageCount') AS INTEGER)
                           FROM analyzer_result ar
                           JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id
                           JOIN analyzer a ON a.analyzer_id = rr.analyzer_id
                          WHERE ar.file_observation_id = fs.current_observation_id
                            AND a.analyzer_key = 'pdf' AND ar.status = 'analyzed'
-                         ORDER BY ar.analyzed_utc DESC, ar.analyzer_result_id DESC LIMIT 1) AS pages
+                         ORDER BY ar.analyzed_utc DESC, ar.analyzer_result_id DESC LIMIT 1) AS pages,
+                       (SELECT json_extract(ar.detail_json, '$.HasExtractableText')
+                          FROM analyzer_result ar
+                          JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id
+                          JOIN analyzer a ON a.analyzer_id = rr.analyzer_id
+                         WHERE ar.file_observation_id = fs.current_observation_id
+                           AND a.analyzer_key = 'pdf' AND ar.status = 'analyzed'
+                         ORDER BY ar.analyzed_utc DESC, ar.analyzer_result_id DESC LIMIT 1) AS has_text
                   FROM file_state fs
                   JOIN file_path fp ON fp.file_path_id = fs.file_path_id
                  WHERE fs.state = 'present' AND COALESCE(fs.is_offline_or_cloud, 0) = 0
                    AND LOWER(COALESCE(fp.extension_key, '')) IN ('.pdf', 'pdf'))
              WHERE pages IS NOT NULL""").fetchone()
-        return int(row[0] or 0), int(row[1] or 0)
+        return int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
     except Exception:                                           # noqa: BLE001
-        return 0, 0
+        return 0, 0, 0
 
 
 #: Extraction's non-PDF files, in families whose cost per byte is alike.
@@ -613,16 +624,63 @@ def _pdf_page_totals(conn):
 #: 40 MB of text to decode and count. Sampled together they mislead each
 #: other; sampled apart each family gets its own rate.
 EXTRACTION_FAMILIES = (
-    ("office", "Office documents", frozenset({".docx", ".pptx", ".xlsx", ".doc", ".ppt", ".xls", ".rtf"})),
+    ("office", "Office documents", frozenset({".docx", ".pptx", ".xlsx", ".doc", ".ppt", ".xls", ".rtf",
+                                              ".odt", ".ods", ".odp", ".odg", ".epub", ".wpd", ".one",
+                                              ".docm", ".dotx", ".dotm", ".xlsm", ".xltx", ".xltm",
+                                              ".pptm", ".potx", ".potm", ".ppsx", ".ppsm"})),
     ("email", "email and mailboxes", frozenset({".eml", ".mbox", ".mht", ".mhtml", ".msg", ".pst", ".ost"})),
+    ("pictures", "pictures (OCR when they look like documents)",
+     frozenset({".tif", ".tiff", ".png", ".jpg", ".jpeg", ".jfif", ".bmp", ".gif", ".webp", ".heic", ".heif"})),
+    ("archives", "archives (the documents inside)", frozenset({".zip", ".7z"})),
     ("text", "text-like files", None),           # everything else that is not a PDF
 )
 
+#: Windows OCR through PDFium's renderer, measured on this machine at
+#: 0.4-0.6 s a page; the pessimistic factor is applied on top.
+OCR_SECONDS_PER_PAGE = 0.6
+
 _EMPTY_MEASUREMENT = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
-                      "pages_read": 0, "error": None}
+                      "pages_read": 0, "ocr_pages": 0, "error": None}
 
 
-def _estimate_extraction(conn, rows, safety, sample_files):
+#: Archive members extraction reads (documents, not pictures); mirrors
+#: ContentExtraction._member_extensions without importing it here.
+_ARCHIVE_READABLE = frozenset({
+    ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".rtf", ".odt", ".ods", ".odp", ".odg", ".epub",
+    ".docm", ".dotx", ".dotm", ".xlsm", ".xltx", ".xltm", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm",
+    ".txt", ".md", ".csv", ".json", ".xml", ".log", ".vcf", ".ics", ".srt", ".vtt", ".rst", ".tex",
+    ".html", ".htm", ".eml", ".mbox", ".mht", ".mhtml", ".msg", ".pst", ".ost", ".wpd", ".one", ".zip", ".7z"})
+
+
+def _archive_readable_bytes(conn):
+    r"""full path -> bytes of the members extraction would read, for every
+    archive the archive analyzer has listed. A zip of ten thousand textures
+    weighs nothing here; a zip of three scanned PDFs weighs its PDFs."""
+    out = {}
+    try:
+        rows = conn.execute("""
+            SELECT sr.root_path, fp.relative_path, am.entry_path, am.entry_size_bytes
+              FROM archive_member am
+              JOIN analyzer_result ar ON ar.analyzer_result_id = am.analyzer_result_id
+              JOIN file_state fs ON fs.current_observation_id = ar.file_observation_id
+              JOIN file_path fp ON fp.file_path_id = fs.file_path_id
+              JOIN source_root sr ON sr.source_root_id = fs.source_root_id
+             WHERE fs.state = 'present'""").fetchall()
+    except Exception:                                           # noqa: BLE001
+        return out
+    for root, relative, entry, size in rows:
+        name = (entry or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name[1:] else ""
+        if ext not in _ARCHIVE_READABLE:
+            continue
+        root = (root or "").rstrip("\\")
+        relative = (relative or "").lstrip("\\")
+        full = (root + "\\" + relative) if relative else root
+        out[full] = out.get(full, 0) + int(size or 0)
+    return out
+
+
+def _estimate_extraction(conn, rows, safety, sample_files, options=None):
     r"""Text extraction, in parts: PDFs by PAGE, then each family of the
     other documents by file and by byte, each from its own sample.
 
@@ -643,7 +701,9 @@ def _estimate_extraction(conn, rows, safety, sample_files):
     pdf_rows = [r for r in rows if ext_of(r[0]) == ".pdf"]
     rest = [r for r in rows if ext_of(r[0]) != ".pdf"]
 
-    m_pdf = measure_analyzer("content_extraction", spread_sample(pdf_rows, sample_files)) if pdf_rows else dict(_EMPTY_MEASUREMENT)
+    options = dict(options or {})
+    ocr_on = options.get("ocr", True)
+    m_pdf = measure_analyzer("content_extraction", spread_sample(pdf_rows, sample_files), extraction_options=options) if pdf_rows else dict(_EMPTY_MEASUREMENT)
     if m_pdf["error"]:
         return {"error": m_pdf["error"]}
 
@@ -653,18 +713,30 @@ def _estimate_extraction(conn, rows, safety, sample_files):
     pdf = None
     pdf_seconds = 0.0
     if pdf_count:
-        known_files, known_pages = _pdf_page_totals(conn)
+        known_files, known_pages, ocr_pages = _pdf_page_totals(conn)
+        try:
+            import fo_ocr
+            ocr_available = fo_ocr.available()
+        except Exception:                                       # noqa: BLE001
+            ocr_available = False
+        if not ocr_available or not ocr_on:
+            ocr_pages = 0
         if m_pdf["pages_read"] and m_pdf["elapsed"] > 0 and m_pdf["files_used"]:
-            per_page = m_pdf["elapsed"] / float(m_pdf["pages_read"])
+            # The sample's time includes any OCR it did; take that out so the
+            # per-page rate is for reading text, and OCR is counted once,
+            # from the pages known to need it.
+            text_elapsed = max(0.01, m_pdf["elapsed"] - m_pdf["ocr_pages"] * OCR_SECONDS_PER_PAGE)
+            per_page = text_elapsed / float(m_pdf["pages_read"])
             mean_pages = m_pdf["pages_read"] / float(m_pdf["files_used"])
             unknown = max(0, pdf_count - known_files)
             pages = known_pages + unknown * mean_pages
-            work = pages * per_page
+            work = pages * per_page + ocr_pages * OCR_SECONDS_PER_PAGE
             work = work / safety if safety > 0 else work
             overhead = pdf_count * (PERSIST_SECONDS_PER_FILE + EXPORT_SECONDS_PER_FILE)
             pdf_seconds = work + overhead
             pdf = {"files": pdf_count, "bytes": pdf_bytes, "pages": int(round(pages)),
                    "pages_counted_files": min(known_files, pdf_count), "seconds_per_page": per_page,
+                   "ocr_pages": ocr_pages, "ocr_seconds": (ocr_pages * OCR_SECONDS_PER_PAGE / safety) if safety > 0 else ocr_pages * OCR_SECONDS_PER_PAGE,
                    "sample": m_pdf, "seconds": pdf_seconds, "guessed": False}
         else:
             model = _pessimistic_seconds(pdf_count, pdf_bytes, m_pdf, safety)
@@ -681,20 +753,46 @@ def _estimate_extraction(conn, rows, safety, sample_files):
         else:
             members = [r for r in rest if ext_of(r[0]) in exts]
             taken.update(id(r) for r in members)
+        if key == "pictures" and not (options.get("pictures", True) and ocr_on):
+            continue                                # left out by the project's options
+        if key == "archives" and not options.get("archives", True):
+            continue
         local = [r for r in members if not r[2]]
         if not local:
             continue
-        m = measure_analyzer("content_extraction", spread_sample(members, sample_files))
+        sample = spread_sample(members, sample_files)
+        m = measure_analyzer("content_extraction", sample, extraction_options=options)
         if m["error"]:
             return {"error": m["error"]}
-        model = _pessimistic_seconds(len(local), sum(r[1] for r in local), m, safety)
+        if key == "archives":
+            # An archive's cost is its readable members, not its size. Model
+            # by the member bytes the archive analyzer already listed; when
+            # it has not run, or the sample held nothing readable, fall back
+            # to the usual shape.
+            readable = _archive_readable_bytes(conn)
+            total_readable = sum(readable.get(r[0], 0) for r in local)
+            sample_readable = sum(readable.get(r[0], 0) for r in sample)
+            if readable and sample_readable and m["elapsed"] > 0:
+                rate = sample_readable / m["elapsed"]
+                work = total_readable / rate
+                work = work / safety if safety > 0 else work
+                overhead = len(local) * (PERSIST_SECONDS_PER_FILE + EXPORT_SECONDS_PER_FILE)
+                model = {"per_file_seconds": m["elapsed"] / max(1, m["files_used"]), "bytes_per_sec": rate,
+                         "guessed": False, "by_files_seconds": 0.0, "by_bytes_seconds": work,
+                         "overhead_seconds": overhead, "seconds": work + overhead,
+                         "readable_bytes": total_readable}
+            else:
+                model = _pessimistic_seconds(len(local), sum(r[1] for r in local), m, safety)
+                model["readable_bytes"] = None
+        else:
+            model = _pessimistic_seconds(len(local), sum(r[1] for r in local), m, safety)
         families.append({"key": key, "label": label, "files": len(local),
                          "bytes": sum(r[1] for r in local), "sample": m, **model})
 
     merged = dict(_EMPTY_MEASUREMENT)
     for m in [m_pdf] + [f["sample"] for f in families]:
-        for k in ("files_used", "bytes_read", "text_bytes", "pages_read"):
-            merged[k] += m[k]
+        for k in ("files_used", "bytes_read", "text_bytes", "pages_read", "ocr_pages"):
+            merged[k] += m.get(k, 0)
         merged["elapsed"] += m["elapsed"]
     total = pdf_seconds + sum(f["seconds"] for f in families)
     first = families[0] if families else None
@@ -708,7 +806,7 @@ def _estimate_extraction(conn, rows, safety, sample_files):
             "seconds": total}
 
 
-def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_FILES):
+def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_FILES, extraction_options=None):
     r"""Estimate one analysis run, analyzer by analyzer. Returns a breakdown.
 
     {
@@ -735,7 +833,7 @@ def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_
             out["analyzers"].append(item)
             continue
         if key == "content_extraction":
-            model = _estimate_extraction(conn, rows, safety, sample_files)
+            model = _estimate_extraction(conn, rows, safety, sample_files, extraction_options)
             if model["error"]:
                 item["error"] = model["error"]
                 out["analyzers"].append(item)
@@ -840,13 +938,20 @@ def _describe_extraction(a):
             lines.append("        sampled %d file(s), %s pages in %.2f s: %.1f ms/page"
                          % (s["files_used"], "{:,}".format(s["pages_read"]), s["elapsed"],
                             pdf["seconds_per_page"] * 1000.0))
+            if pdf.get("ocr_pages"):
+                lines.append("        of which %s pages have no text layer and will be read by OCR: %s"
+                             % ("{:,}".format(pdf["ocr_pages"]), format_duration(pdf["ocr_seconds"])))
         else:
             lines.append("    PDFs: %s files   ->  %s (pages could not be counted; estimated by size)"
                          % ("{:,}".format(pdf["files"]), format_duration(pdf["seconds"])))
     for fam in a.get("families") or []:
         s = fam["sample"]
-        lines.append("    %s: %s files, %s   ->  %s"
-                     % (fam["label"], "{:,}".format(fam["files"]), _mb(fam["bytes"]), format_duration(fam["seconds"])))
+        if fam.get("readable_bytes") is not None:
+            lines.append("    %s: %s files, %s of readable documents inside   ->  %s"
+                         % (fam["label"], "{:,}".format(fam["files"]), _mb(fam["readable_bytes"]), format_duration(fam["seconds"])))
+        else:
+            lines.append("    %s: %s files, %s   ->  %s"
+                         % (fam["label"], "{:,}".format(fam["files"]), _mb(fam["bytes"]), format_duration(fam["seconds"])))
         if fam["guessed"]:
             lines.append("        no file could be sampled; this is a flat guess, not a measurement")
         else:

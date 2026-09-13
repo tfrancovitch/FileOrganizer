@@ -557,7 +557,9 @@ def estimate_request(app_root, project_dir, request):
             return int(seconds or 0), text, [f"Estimated time: {text} (measured on this project's own files, "
                                               "made deliberately pessimistic)."]
         if request.kind == ANALYSIS:
-            breakdown = fo_estimates.estimate_analysis(conn, request.analyzer_keys)
+            from RunCoordinator import extraction_options
+            breakdown = fo_estimates.estimate_analysis(conn, request.analyzer_keys,
+                                                       extraction_options=extraction_options(load_settings(project_dir)))
             lines = [l for l in fo_estimates.describe_analysis(breakdown).splitlines() if l.strip()]
             return int(breakdown["total_seconds"]), breakdown["text"], lines
         if request.kind == INDEX_TEXT:

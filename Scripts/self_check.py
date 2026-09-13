@@ -77,13 +77,14 @@ OPTIONAL_PACKAGES = {
     "py7zr": ("py7zr", ".7z archive analysis (ZIP works without it)"),
     "xlrd": ("xlrd", ".xls text extraction only"),
     "pypdfium2": ("pypdfium2", "fast PDF text (pdfplumber is the fallback)"),
+    "winocr": ("winocr", "OCR of scanned pages and pictures (Windows' own engine)"),
     "pillow_heif": ("pillow-heif", "HEIC/HEIF image decoding only"),
 }
 
 RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    "fo_hash_records", "fo_analyzer_engine",
                    "fo_analyzer_records", "fo_exports", "fo_project",
-                   "fo_estimates", "fo_extractors", "fo_email", "fo_pst", "win_meta")
+                   "fo_estimates", "fo_extractors", "fo_email", "fo_pst", "fo_ocr", "win_meta")
 
 
 class Report(object):
