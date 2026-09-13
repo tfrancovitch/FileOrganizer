@@ -83,7 +83,7 @@ OPTIONAL_PACKAGES = {
 RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    "fo_hash_records", "fo_analyzer_engine",
                    "fo_analyzer_records", "fo_exports", "fo_project",
-                   "fo_estimates", "fo_extractors", "win_meta")
+                   "fo_estimates", "fo_extractors", "fo_email", "fo_pst", "win_meta")
 
 
 class Report(object):

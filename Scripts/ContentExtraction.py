@@ -6,8 +6,10 @@ Version: 1.1.1
 
 Extracts the actual TEXT CONTENT of every content-bearing document in
 the database-backed analyzer engine -- PDF, Word (.docx and .doc), PowerPoint
-(.pptx and .ppt), Excel (.xlsx and .xls), RTF, HTML, CSV, JSON, plain text
-(.txt), and Markdown (.md) -- into individual .txt files, indexed by DB_ID.
+(.pptx and .ppt), Excel (.xlsx and .xls), RTF, HTML, CSV, JSON, XML, logs,
+vCards, calendars, plain text (.txt), Markdown (.md), files with no
+extension, and email in every shape (.eml, .mbox, .mht, Outlook .msg and
+.pst/.ost) -- into individual .txt files, indexed by DB_ID.
 
 A file is read as what its bytes say it is, not as what its name says: a
 ".doc" that is really RTF is read as RTF, a ".xls" that is really an HTML
@@ -85,11 +87,24 @@ except ImportError:
     sys.exit(1)
 
 EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md",
-              ".doc", ".ppt", ".xls", ".rtf", ".html", ".htm", ".csv", ".json"}
+              ".doc", ".ppt", ".xls", ".rtf", ".html", ".htm", ".csv", ".json",
+              ".xml", ".log", ".vcf", ".ics", "",
+              ".eml", ".mbox", ".mht", ".mhtml", ".msg", ".pst", ".ost"}
 
 #: What a text-like file is called by its extension. Anything else that
 #: sniffs as text is "PlainText" -- including a .doc that turns out to be one.
-TEXT_SOURCE_TYPES = {".csv": "CSV", ".json": "JSON"}
+TEXT_SOURCE_TYPES = {".csv": "CSV", ".json": "JSON", ".xml": "XML", ".log": "Log",
+                     ".vcf": "vCard", ".ics": "iCalendar"}
+
+#: Email formats are text (or OLE2) underneath, so the sniff cannot tell an
+#: .eml from a .txt or an .mht from an .html; for these the name decides.
+EMAIL_EXTENSIONS = {".eml": "Email (EML)", ".mbox": "Mailbox (MBOX)",
+                    ".mht": "Web archive (MHTML)", ".mhtml": "Web archive (MHTML)"}
+
+#: The engine's vocabulary for "this file was not a document at all": an
+#: extensionless file that is a picture or a program. Recorded as not
+#: processed rather than as an error, because nothing went wrong with it.
+NOT_A_DOCUMENT = "NotProcessed"
 CHECKPOINT_FIELDS = ["Key", "SourceType", "ExtractedTextFile", "TextSha256",
                      "ReusedExisting", "CharCount", "WordCount", "Error"]
 
@@ -221,48 +236,83 @@ def extract_plain_text(path):
     return "PlainText", text
 
 
-def extract_any(path):
-    """(SourceType, text) for a file, chosen by what the bytes are.
+def extract_document(path):
+    """(SourceType, text, fields) for a file, chosen by what the bytes are.
 
-    The extension picks nothing except the name given to plain text; the
+    The extension picks nothing except the name given to plain text -- and
+    which email reader to use, since an .eml is text underneath; the
     signature picks the reader. So a ".doc" holding RTF is read as RTF,
     a ".xls" holding an HTML export is read as HTML, and a file that is
     really plain text is read as text whatever it is called. When the
     bytes are a container of the wrong kind for the name (a ".doc" that
     is a ZIP with word/ inside is a .docx) the container decides.
+
+    `fields` carries what some readers know beyond the text: an email's
+    Title (subject), Author (sender) and Created (date); a mailbox's
+    message count.
     """
+    import fo_email
     ext = Path(path).suffix.lower()
     kind = fo_extractors.sniff(path)
     if kind == "pdf":
-        return extract_pdf_text(path)
+        return extract_pdf_text(path) + ({},)
+    if kind == "pst":
+        text, fields = fo_email.pst_text(path)
+        return "Outlook mailbox (PST)", text, fields
     if kind == "rtf":
-        return "RTF", fo_extractors.rtf_text(path)
+        return "RTF", fo_extractors.rtf_text(path), {}
+    if ext in EMAIL_EXTENSIONS and kind in ("text", "html"):
+        if ext == ".mbox":
+            text, fields = fo_email.mbox_text(path)
+        elif ext == ".eml":
+            text, fields = fo_email.eml_text(path)
+        else:
+            text, fields = fo_email.mht_text(path)
+        return EMAIL_EXTENSIONS[ext], text, fields
+    if ext == ".xml" and kind in ("html", "text"):
+        # XML keeps its element names: for a search they are as telling as
+        # the values, and stripping them as HTML would lose them.
+        _source, text = extract_plain_text(path)
+        return "XML", text, {}
     if kind == "html":
-        return "HTML", fo_extractors.html_text(path)
+        return "HTML", fo_extractors.html_text(path), {}
     if kind == "ole":
         inner = fo_extractors.ole_kind(path)
         if inner == "word":
-            return "Word 97-2003", fo_extractors.doc_text(path)
+            return "Word 97-2003", fo_extractors.doc_text(path), {}
         if inner == "powerpoint":
-            return "PowerPoint 97-2003", fo_extractors.ppt_text(path)
+            return "PowerPoint 97-2003", fo_extractors.ppt_text(path), {}
         if inner == "excel":
-            return "Excel 97-2003", fo_extractors.xls_text(path)
-        raise ValueError("OLE container without a Word, PowerPoint or Excel document inside")
+            return "Excel 97-2003", fo_extractors.xls_text(path), {}
+        if inner == "outlook":
+            text, fields = fo_email.msg_text(path)
+            return "Outlook message (MSG)", text, fields
+        raise ValueError("OLE container without a Word, PowerPoint, Excel or Outlook document inside")
     if kind == "zip":
         inner = fo_extractors.zip_kind(path)
         if inner == "docx":
-            return extract_docx_text(path)
+            return extract_docx_text(path) + ({},)
         if inner == "pptx":
-            return extract_pptx_text(path)
+            return extract_pptx_text(path) + ({},)
         if inner == "xlsx":
-            return extract_xlsx_text(path)
+            return extract_xlsx_text(path) + ({},)
         raise ValueError("ZIP container that is not a Word, PowerPoint or Excel document")
     if kind == "text":
         _source, text = extract_plain_text(path)
-        return TEXT_SOURCE_TYPES.get(ext, "PlainText"), text
+        return TEXT_SOURCE_TYPES.get(ext, "PlainText"), text, {}
     if kind == "empty":
-        return "PlainText", ""
+        return "PlainText", "", {}
+    if ext == "":
+        # A picture, a program, a database with no extension: not a document,
+        # and not a failure either.
+        raise ValueError(NOT_A_DOCUMENT)
     raise ValueError("not a recognised document format (%s)" % kind)
+
+
+def extract_any(path):
+    """(SourceType, text) -- extract_document without the fields."""
+    source_type, text, _fields = extract_document(path)
+    return source_type, text
 
 
 def make_analyze_fn(extract_folder, content_addressed=True):
@@ -270,7 +320,7 @@ def make_analyze_fn(extract_folder, content_addressed=True):
         ext = Path(path).suffix.lower()
         if ext not in EXTENSIONS:
             raise ValueError(f"Unsupported extension: {ext}")
-        source_type, text = extract_any(path)
+        source_type, text, fields = extract_document(path)
 
         # Content addressing: the artifact is named for what is IN it.
         text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -300,7 +350,7 @@ def make_analyze_fn(extract_folder, content_addressed=True):
         # B6: counted, not materialised. len(text.split()) built a list
         # of every token to produce one integer -- B5-E.F009 measured an
         # 8 MB document costing ~110 MB of heap that way.
-        return {
+        out = {
             "SourceType": source_type,
             "ExtractedTextFile": relpath,
             "TextSha256": text_sha,
@@ -308,6 +358,10 @@ def make_analyze_fn(extract_folder, content_addressed=True):
             "CharCount": str(len(text)),
             "WordCount": str(fo_text.count_words(text)),
         }
+        for key, value in (fields or {}).items():
+            if value not in (None, ""):
+                out[key] = str(value)
+        return out
     return analyze_content
 
 

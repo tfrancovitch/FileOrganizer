@@ -506,7 +506,10 @@ ADAPTERS = [
                       "ContentExtraction", None, extensions_attr="EXTENSIONS",
                       declared_extensions={".pdf", ".docx", ".pptx", ".xlsx",
                                            ".txt", ".md", ".doc", ".ppt", ".xls",
-                                           ".rtf", ".html", ".htm", ".csv", ".json"}),
+                                           ".rtf", ".html", ".htm", ".csv", ".json",
+                                           ".xml", ".log", ".vcf", ".ics", "",
+                                           ".eml", ".mbox", ".mht", ".mhtml",
+                                           ".msg", ".pst", ".ost"}),
 ]
 
 ADAPTER_BY_KEY = {a.key: a for a in ADAPTERS}

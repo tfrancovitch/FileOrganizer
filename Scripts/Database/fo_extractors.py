@@ -45,7 +45,7 @@ OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 # ---------------------------------------------------------------------------
 
 def sniff(path):
-    r"""One of: pdf, zip, ole, rtf, html, text, empty, binary.
+    r"""One of: pdf, zip, ole, pst, rtf, html, text, empty, binary.
 
     Reads the first 4 KB only. "text" means the bytes decode as text with
     almost nothing unprintable in them; "binary" means they do not, and no
@@ -61,6 +61,8 @@ def sniff(path):
         return "zip"
     if head.startswith(OLE_MAGIC):
         return "ole"
+    if head.startswith(b"!BDN"):
+        return "pst"
     if head.lstrip().startswith(b"{\\rtf"):
         return "rtf"
     lowered = head.lower()
@@ -93,7 +95,8 @@ def _looks_like_text(raw):
 
 
 def ole_kind(path):
-    r"""For an OLE2 container: word, powerpoint, excel, or None -- by its streams."""
+    r"""For an OLE2 container: word, powerpoint, excel, outlook (a .msg), or
+    None -- by its streams."""
     if olefile is None:
         raise RuntimeError("olefile is not installed")
     ole = olefile.OleFileIO(to_long_path(path))
@@ -105,6 +108,8 @@ def ole_kind(path):
             return "powerpoint"
         if "workbook" in names or "book" in names:
             return "excel"
+        if "__properties_version1.0" in names:
+            return "outlook"
         if "pp40" in names:
             raise RuntimeError("PowerPoint 4.0/95 presentations are not supported")
         return None

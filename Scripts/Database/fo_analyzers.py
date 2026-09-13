@@ -177,9 +177,13 @@ ANALYZER_SPECS = [
     AnalyzerSpec(
         "content_extraction", "Content Extraction", "ContentIndex.csv",
         promoted={"word_count": ("WordCount", _int_or_none),
-                  "char_count": ("CharCount", _int_or_none)},
+                  "char_count": ("CharCount", _int_or_none),
+                  # only email sets these: subject, sender, date
+                  "title": ("Title", _text_or_none),
+                  "author": ("Author", _text_or_none),
+                  "content_created_reported": ("Created", _text_or_none)},
         detail=["SourceType", "ExtractedTextFile", "TextSha256",
-                "ReusedExisting"],
+                "ReusedExisting", "Messages"],
         script_name="ContentExtraction.ps1", engine_name="ContentExtraction.py",
         secondary_artifact="ExtractedText", kind="extraction"),
 ]
