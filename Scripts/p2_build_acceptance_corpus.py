@@ -80,6 +80,8 @@ NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
 MATRIX_CSV = Path("Research") / "ChatGPT Research" / "Personal_Archive_Manager_v1.1_Reconciliation.csv"
 
 FILE_ATTRIBUTE_READONLY = 0x1
+FILE_ATTRIBUTE_HIDDEN = 0x2
+FILE_ATTRIBUTE_SYSTEM = 0x4
 FILE_ATTRIBUTE_DIRECTORY = 0x10
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
@@ -401,12 +403,14 @@ def normalize_ooxml(data: bytes) -> bytes:
     return out.getvalue()
 
 
-def make_docx(paragraphs: list[str]) -> bytes:
+def make_docx(paragraphs: list[str], author: str | None = None) -> bytes:
     from docx import Document
     doc = Document()
     for p in paragraphs:
         doc.add_paragraph(p)
     stamp = NOW.replace(tzinfo=None)
+    if author is not None:
+        doc.core_properties.author = author
     doc.core_properties.created = stamp
     doc.core_properties.modified = stamp
     doc.core_properties.last_modified_by = "p2_build_acceptance_corpus"
@@ -878,6 +882,7 @@ class Corpus:
         self._samples()
         # The Master Matrix's categories, one method each (2026-09-13 on).
         self._naming()
+        self._duplicates_identity()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -1068,20 +1073,26 @@ class Corpus:
 
     def _known_duplicates(self):
         """Exact duplicates with a precomputed reclaimable-byte total."""
-        # Group A: 3 identical text files -> 2 reclaimable copies
+        # Group A: 3 identical text files -> 2 reclaimable copies (B-002: same
+        # bytes under different names)
         payload_a = (b"The same paragraph repeated verbatim.\n" * 40)
         for i, rel in enumerate([
             "Duplicates/original_notes.txt",
             "Duplicates/copies/original_notes (copy).txt",
             "Duplicates/copies/original_notes - Copy (2).txt",
         ]):
-            self.add(rel, payload_a, age_days=30 + i * 10, note="dup group A")
+            self.add(rel, payload_a, age_days=30 + i * 10, note="dup group A", case="B-002")
+        self.case("B-002", construction="G", expected={"file_state.state": "present", "duplicate_group_members": 3,
+                                                        "reclaimable_bytes": len(payload_a) * 2})
 
-        # Group B: 2 identical binaries -> 1 reclaimable copy
+        # Group B: 2 identical binaries -> 1 reclaimable copy (B-001: same
+        # bytes, same name, different folder)
         payload_b = bytes(random.Random(SEED + 1).getrandbits(8) for _ in range(64 * 1024))
         for i, rel in enumerate(["Duplicates/archive_blob.bin",
                                  "Duplicates/backup/archive_blob.bin"]):
-            self.add(rel, payload_b, age_days=500 + i * 30, note="dup group B")
+            self.add(rel, payload_b, age_days=500 + i * 30, note="dup group B", case="B-001")
+        self.case("B-001", construction="G", expected={"file_state.state": "present", "duplicate_group_members": 2,
+                                                        "reclaimable_bytes": len(payload_b)})
 
         # Group C: 4 identical small config files -> 3 reclaimable copies
         payload_c = json.dumps({"setting": "value", "enabled": True}, indent=2).encode()
@@ -1342,6 +1353,73 @@ class Corpus:
             matrix_expects="Preserve complete filename; don't assume final extension is type",
             notes="the name is preserved and nothing executes; extraction selects by extension and .exe is not selected -- the bytes decide only how a selected file is read",
             safety=["never executed; a PDF under an executable's name is inert to every reader"])
+
+    def _duplicates_identity(self):
+        """02_Duplicates: matrix section B, plus Y-051. Byte identity is the
+        only identity Phase 2 claims; everything else (near-duplicates,
+        versions, authority) is later and only the data is laid out here.
+        Hard links are identity questions and live in Hostile\\."""
+        present = {"file_state.state": "present"}
+
+        # B-003 -- the same bytes under three extensions: one group of three,
+        # and by_extension counts each extension once.
+        same = b"Identical bytes, three extensions: the extension is a label, not the content.\n" * 6
+        for ext in (".txt", ".log", ".dat"):
+            self.add("02_Duplicates/same_bytes" + ext, same, age_days=34, case="B-003")
+        self.case("B-003", construction="G", expected=dict(present, row_count=3, duplicate_group_members=3,
+                                                           reclaimable_bytes=len(same) * 2))
+
+        # B-004 -- the same bytes, modified ten years apart: grouped all the same.
+        stale = b"Timestamps are not identity. These bytes were written twice, a decade apart.\n" * 4
+        self.add("02_Duplicates/dated/recent.txt", stale, age_days=5, case="B-004")
+        self.add("02_Duplicates/dated/decade_old.txt", stale, age_days=5 + 10 * 365, case="B-004")
+        self.case("B-004", construction="G", expected=dict(present, duplicate_group_members=2),
+                  notes="the age report counts one recent and one old file; the duplicate report one group")
+
+        # B-005 -- a folder tree and its copy: five groups of two.
+        for i in range(5):
+            body = ("Tree file %d.\n" % i).encode("utf-8") * (i + 3)
+            self.add("02_Duplicates/Tree/sub/file_%d.txt" % i, body, age_days=60, case="B-005")
+            self.add("02_Duplicates/Tree - Copy/sub/file_%d.txt" % i, body, age_days=61, case="B-005")
+        self.case("B-005", construction="G", expected=dict(present, row_count=10, duplicate_group_members=2),
+                  notes="the folder-scope filter on either tree shows five files")
+
+        # B-006 -- the same name, different bytes, two folders: not grouped.
+        self.add("02_Duplicates/finance/Budget.xlsx", make_xlsx([["Line", "Amount"], ["Rent", 1200]]), age_days=70, case="B-006")
+        self.add("02_Duplicates/finance_old/Budget.xlsx", make_xlsx([["Line", "Amount"], ["Rent", 1150]]), age_days=400, case="B-006")
+        self.case("B-006", construction="G", expected=dict(present, row_count=2, not_grouped=True))
+
+        # B-009 -- identical text, different document author: different bytes,
+        # so not grouped; the Office analyzer reads two authors.
+        text = ["Metadata-only variation.", "The words are the same in both files."]
+        self.add("02_Duplicates/metadata/memo_by_ann.docx", make_docx(text, author="Ann Example"), age_days=80, case="B-009")
+        self.add("02_Duplicates/metadata/memo_by_bob.docx", make_docx(text, author="Bob Example"), age_days=81, case="B-009")
+        self.case("B-009", construction="G", expected=dict(present, row_count=2, not_grouped=True, **{"analyzer.office.status": "analyzed"}),
+                  notes="Phase 2 identity is byte identity; the same words under two authors are two files")
+
+        # B-010 / B-011 -- the version chain and the FINAL naming chaos. Laid
+        # out for the later phases; here only names are preserved and the
+        # three byte-identical members group, nothing is chosen.
+        chain = ["Budget", "Budget_v2", "Budget_v3", "Budget_FINAL", "Budget_FINAL2", "Budget_FINAL_REVISED",
+                 "Budget_FINAL_USE_THIS", "Budget_FINAL_USE_THIS_ONE"]
+        final = make_xlsx([["Line", "Amount"], ["Rent", 1200], ["Power", 310]])
+        for i, stem in enumerate(chain):
+            data = final if stem in ("Budget_FINAL", "Budget_FINAL2", "Budget_FINAL_USE_THIS_ONE") \
+                else make_xlsx([["Line", "Amount"], ["Rent", 1200 + i], ["Power", 300 + i]])
+            self.add("02_Duplicates/versions/%s.xlsx" % stem, data, age_days=200 - i * 7, case="B-011")
+        self.case("B-011", construction="G", expected=dict(present, row_count=8),
+                  notes="B-010 too: eight names, three of them byte-identical (FINAL, FINAL2, FINAL_USE_THIS_ONE); no authority is chosen")
+        self.case("B-010", construction="G", expected={"duplicate_group_members": 3, "reclaimable_bytes": len(final) * 2},
+                  notes="the three identical members of the version chain")
+        self.case("B-010")["paths"].append("02_Duplicates\\versions\\Budget_FINAL.xlsx")
+
+        # Y-051 -- the same bytes, one copy hidden and read-only: grouped.
+        twin = b"Attributes are not identity either.\n" * 8
+        self.add("02_Duplicates/attributes/plain_copy.txt", twin, age_days=90)
+        self.add("02_Duplicates/attributes/hidden_readonly_copy.txt", twin, age_days=91, case="Y-051",
+                 attributes=FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_READONLY)
+        self.case("Y-051", construction="G", expected=dict(present, duplicate_group_members=2,
+                                                           attributes_has=["Hidden", "ReadOnly"]))
 
     def _bulk(self):
         """Volume and size/date spread, so ranked reports actually rank."""
