@@ -67,15 +67,22 @@ def show_hub(app):
     grid.columnconfigure(2, weight=1)
     row = [0]
 
-    def line(label, value, action=None, status=None, note=None, bold=False):
-        """One line: [button | status word] label value."""
+    def line(label, value, action=None, status=None, note=None, bold=False, link=None):
+        """One line: [button | status word] label value. `link` makes the
+        label clickable -- a bucket name opens the Files page on that bucket."""
         if action:
             ttk.Button(grid, text=action[0], width=18, command=action[1],
                        state="normal" if can_run else "disabled").grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
         else:
             ttk.Label(grid, text=status or "", width=18, foreground="#1f6244",
                       font=("Segoe UI", 9, "bold")).grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
-        ttk.Label(grid, text=label, width=22, foreground="#444").grid(row=row[0], column=1, sticky="w", pady=2)
+        if link:
+            lbl = ttk.Label(grid, text=label, width=22, foreground="#1a4d8f", cursor="hand2",
+                            font=("Segoe UI", 9, "underline"))
+            lbl.bind("<Button-1>", lambda e, cmd=link: cmd())
+            lbl.grid(row=row[0], column=1, sticky="w", pady=2)
+        else:
+            ttk.Label(grid, text=label, width=22, foreground="#444").grid(row=row[0], column=1, sticky="w", pady=2)
         ttk.Label(grid, text=value, font=("Segoe UI", 10, "bold") if bold else ("Segoe UI", 10),
                   wraplength=700, justify="left").grid(row=row[0], column=2, sticky="w", pady=2)
         if note:
@@ -152,11 +159,21 @@ def show_hub(app):
         value = f"{b['files']:,} files   ({_human_bytes(b['bytes'])})"
         if 0 < done < b["files"]:
             value += f"   {done:,} analysed"
+        if b.get("failed"):
+            value += f"   {b['failed']:,} could not be analyzed"
         action = (b["action"], lambda k=b["key"], lbl=b["label"]: app.start_run(
             RunRequest(ANALYSIS, f"Analyze: {lbl}", analyzer_keys=[k]))) if b["action"] else None
-        line(b["label"], value, action, status="ANALYZED" if not b["action"] else "")
+        line(b["label"], value, action, status="ANALYZED" if not b["action"] else "",
+             link=lambda exts=b["extensions"], lbl=b["label"]: app.show_files_for_extensions(exts, lbl))
     if summary["other"]:
-        line("Other", f"{summary['other']:,} files   ({_human_bytes(summary['other_bytes'])})   no analyzer handles these types")
+        line("Other", f"{summary['other']:,} files   ({_human_bytes(summary['other_bytes'])})   no analyzer handles these types",
+             link=lambda: app.show_files_for_extensions(summary["all_bucket_extensions"], "Other", exclude=True))
+    if summary.get("failed_files"):
+        # The user's question: "16 analyzer failures -- what failures?" Files,
+        # with the reason each one carries, one click away.
+        per = ", ".join(f"{b['failed']:,} {b['label'].lower()}" for b in summary["buckets"] if b.get("failed"))
+        line("Could not be analyzed", f"{summary['failed_files']:,} files   ({per})",
+             action=("Show which", app.show_files_for_failures))
     if not shown and not summary["other"]:
         line("Files by type", "nothing inventoried yet")
 
@@ -190,11 +207,16 @@ def show_hub(app):
                   text="This project is not under the application's Projects folder, so runs cannot be "
                        "started from here. Everything already collected can still be queried.").pack(fill="x", pady=(12, 0))
 
-    # -- what next -----------------------------------------------------------
+    # -- what next: explore, or collect more --------------------------------
     doors = ttk.Frame(body)
     doors.pack(fill="x", pady=(18, 0))
-    ttk.Button(doors, text="Collect more evidence...", command=lambda: show_doors(app),
-               state="normal" if can_run else "disabled").pack(side="left")
+    ttk.Button(doors, text="Explore the files", command=app.show_files).pack(side="left")
+    ttk.Button(doors, text="Reports", command=app.show_reports).pack(side="left", padx=(6, 0))
+    if ident is None or ident.state != cap.AVAILABLE:
+        # The doors offer fingerprinting; once every file is fingerprinted
+        # there is nothing behind them, so the button goes away.
+        ttk.Button(doors, text="Collect more evidence...", command=lambda: show_doors(app),
+                   state="normal" if can_run else "disabled").pack(side="left", padx=(6, 0))
     ttk.Button(doors, text="Open project folder",
                command=lambda: _open_folder(app.project_dir)).pack(side="left", padx=(6, 0))
     ttk.Label(doors, text="Logs, run records and reports live in the project folder.",

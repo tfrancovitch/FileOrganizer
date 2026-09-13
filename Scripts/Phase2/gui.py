@@ -60,7 +60,57 @@ FILE_COLUMNS = {
     "path.depth": ("Depth", 60, "int"),
     "file.hard_link_count": ("Hard links", 80, "int"),
     "file.is_offline_or_cloud": ("Cloud/offline", 90, "bool"),
-    "file.allocated_size_bytes": ("Allocated", 100, "bytes"),
+    "file.allocated_size_bytes": ("Size on disk", 100, "bytes"),
+    # From analysis -- the newest current result for the file. NULL until the
+    # relevant bucket has been analysed.
+    "analysis.title": ("Title", 220, "text"),
+    "analysis.author": ("Author", 140, "text"),
+    "analysis.content_created_reported": ("Created (per file)", 170, "text"),
+    "analysis.width_px": ("Width", 70, "int"),
+    "analysis.height_px": ("Height", 70, "int"),
+    "analysis.duration_seconds": ("Duration", 90, "duration"),
+    "analysis.pdf.page_count": ("Pages", 60, "int"),
+    "analysis.word_count": ("Words", 80, "int"),
+    "analysis.char_count": ("Characters", 90, "int"),
+    "analysis.camera.make": ("Camera make", 110, "text"),
+    "analysis.camera.model": ("Camera model", 130, "text"),
+    "analysis.archive.entry_count": ("Archive entries", 100, "int"),
+    "analysis.analyzed_count": ("Analyzers run", 90, "int"),
+    "analysis.error": ("Analysis error", 300, "text"),
+}
+
+#: What each column means, for the Columns dialog -- the user asked what Size
+#: versus Allocated was, and what a hard link is. Plain answers, kept here.
+COLUMN_HELP = {
+    "path.file_name": "The file's name.",
+    "folder.parent": "The folder the file sits in, relative to the source root.",
+    "path.relative": "The full path relative to the source root.",
+    "path.extension": "The extension, lower-cased.",
+    "file.size_bytes": "How many bytes the file holds (its length).",
+    "time.modified_utc": "When the file's contents were last changed, per the file system (UTC).",
+    "time.created_utc": "When the file was created here, per the file system (UTC).",
+    "time.accessed_utc": "When the file was last opened, per the file system (UTC). Windows often stops updating this.",
+    "file.in_current_exact_duplicate_group": "Yes when another current file has byte-identical contents.",
+    "hash.status": "The fingerprint verdict: unique_by_hash, confirmed_duplicate, size_unique (proven unique without being opened), not_attempted, unresolved, error.",
+    "hash.authority": "Whether the fingerprint describes the file as it is now (Current), an older version (Stale), or there is none.",
+    "path.depth": "How many folders deep the file is.",
+    "file.hard_link_count": "How many names on the disk point at this same file. 1 is normal; 2 or more means the same bytes appear under other names without using extra space.",
+    "file.is_offline_or_cloud": "Yes when the file is a cloud placeholder not present on the local disk. Never opened by the product.",
+    "file.allocated_size_bytes": "The space the disk actually reserves for the file. Equals Size on an ordinary volume; smaller for compressed or sparse files, and the walk only measures it separately for unusual files.",
+    "analysis.title": "The title recorded inside the file (PDF, Office, audio).",
+    "analysis.author": "The author recorded inside the file (PDF, Office).",
+    "analysis.content_created_reported": "The creation date the file itself claims (PDF/Office properties, photo EXIF). Not the file system's date.",
+    "analysis.width_px": "Image or video width in pixels.",
+    "analysis.height_px": "Image or video height in pixels.",
+    "analysis.duration_seconds": "Audio or video length.",
+    "analysis.pdf.page_count": "PDF page count.",
+    "analysis.word_count": "Words counted by the text analyzer or extraction.",
+    "analysis.char_count": "Characters counted by the text analyzer or extraction.",
+    "analysis.camera.make": "Camera make from a RAW image's EXIF.",
+    "analysis.camera.model": "Camera model from a RAW image's EXIF.",
+    "analysis.archive.entry_count": "Number of entries inside an archive (listed without extracting).",
+    "analysis.analyzed_count": "How many analyzers have a current result for this file.",
+    "analysis.error": "The reason the newest analysis attempt on this file failed, if it did.",
 }
 DEFAULT_FILE_COLUMNS = ["path.file_name", "folder.parent", "path.extension", "file.size_bytes",
                         "time.modified_utc", "file.in_current_exact_duplicate_group", "hash.authority"]
@@ -81,6 +131,13 @@ def render_cell(field, value):
     if value is None: return "" if kind in ("text", "enum") else "Unavailable" if kind == "datetime" else ""
     if kind == "bytes": return human_bytes(value)
     if kind == "bool": return "Yes" if value else "No"
+    if kind == "duration":
+        try:
+            total = int(round(float(value))); return f"{total // 60}:{total % 60:02d}"
+        except (TypeError, ValueError): return str(value)
+    if kind == "int":
+        try: return f"{int(value):,}"
+        except (TypeError, ValueError): return str(value)
     if field == "hash.authority": return {"current": "Current", "absent": "None", "stale": "Stale hash"}.get(value, str(value))
     return str(value)
 
@@ -114,6 +171,7 @@ class Phase2App(tk.Tk):
         self.files_sort=None                       # (field, "asc"|"desc") or None
         self.files_cursors=[None]                  # cursor that opens page i
         self.files_page=0
+        self.filter_labels=[]                      # a name per filter, when one is known
         #: (stop_event, worker thread) while a run owns the window; else None.
         self.active_run=None
 
@@ -221,7 +279,7 @@ class Phase2App(tk.Tk):
             self.show_open_panel(); return
         self.project_dir=project_dir
         self.reopen_connection()
-        self.scope={"kind":"project"}; self.filters=[]; self.search_text=""; self.find_var.set("")
+        self.scope={"kind":"project"}; self.filters=[]; self.filter_labels=[]; self.search_text=""; self.find_var.set("")
         self.files_sort=None; self.files_cursors=[None]; self.files_page=0
         self.scope_var.set("Scope: All Sources")
         self._set_project_controls(True)
@@ -439,6 +497,13 @@ class Phase2App(tk.Tk):
         hub_view.show_hub(self)
 
     def clear(self):
+        # A scrolling list binds the mouse wheel for the whole window while
+        # the pointer is over it; if the list is destroyed under the pointer
+        # the unbind never fires and the next wheel turn reaches a widget
+        # that no longer exists ("invalid command name ... !canvas"). Drop it
+        # here, every time, before the screen goes.
+        try: self.unbind_all("<MouseWheel>")
+        except tk.TclError: pass
         for w in self.content.winfo_children(): w.destroy()
         self.content.columnconfigure(0,weight=0); self.content.rowconfigure(0,weight=0)
         # The screen just torn down is collected NOW, on the main thread. Its
@@ -459,14 +524,44 @@ class Phase2App(tk.Tk):
 
     def refresh_evidence_strip(self):
         h=evidence_health(self.conn)
+        self.evidence_label.unbind("<Button-1>"); self.evidence_label.configure(cursor="")
         if h["coverage"]=="complete" and not h["warnings"]:
             self.evidence_label.configure(style="Good.TLabel"); self.evidence_var.set("Coverage complete · Current project evidence")
         else:
             self.evidence_label.configure(style="Warn.TLabel")
             parts=["Coverage "+h["coverage"]]
             if h["stale_hashes"]: parts.append(f"{h['stale_hashes']:,} stale hashes")
-            if h["current_analyzer_failures"]: parts.append(f"{h['current_analyzer_failures']:,} analyzer failures")
+            failed=h.get("files_with_analyzer_failures",0)
+            if failed:
+                # Files, not analyzers: "16 analyzer failures" read as sixteen
+                # broken analyzers. Click to see which files and why.
+                parts.append(f"{failed:,} file{'s' if failed!=1 else ''} could not be analyzed -- click to see which")
+                self.evidence_label.configure(cursor="hand2")
+                self.evidence_label.bind("<Button-1>",lambda e:self.show_files_for_failures())
             self.evidence_var.set(" · ".join(parts))
+
+    # -- Files, pre-filtered ---------------------------------------------------
+
+    def show_files_for_extensions(self, extensions, label, exclude=False):
+        """The Files page showing one bucket: files whose extension is in the
+        set (or, for "Other", not in any bucket's set). Largest first, because
+        that is the question a person clicking a 31 GB line is asking."""
+        if self.conn is None: return
+        values=[{"kind":"literal","value":e} for e in sorted(extensions)]
+        self.filters=[{"condition":{"left":{"kind":"field","id":"path.extension"},"op":"not_in" if exclude else "in","values":values}}]
+        self.filter_labels=[f"type: {label}"]
+        self.search_text=""; self.find_var.set(""); self.files_sort=("file.size_bytes","desc")
+        self.show_files()
+
+    def show_files_for_failures(self):
+        """The Files page showing every file whose newest analysis attempt failed, with the reason."""
+        if self.conn is None: return
+        self.filters=[{"relation":{"relation":"current_analysis","quantifier":"any",
+                                   "where":{"condition":{"left":{"kind":"field","id":"analysis.status"},"op":"eq","value":{"kind":"literal","value":"error"}}}}}]
+        self.filter_labels=["could not be analyzed"]
+        self.search_text=""; self.find_var.set(""); self.files_sort=None
+        if "analysis.error" not in self.files_columns: self.files_columns=list(self.files_columns)+["analysis.error"]
+        self.show_files()
 
     def _scope_label(self):
         if self.scope["kind"]=="project": return "All Sources"
@@ -482,7 +577,9 @@ class Phase2App(tk.Tk):
         self.clear(); self.header("Files","Every current file in the scope. Click a heading to sort; right-click one to filter or choose columns.",back=True)
         tools=ttk.Frame(self.content); tools.pack(fill="x",pady=(0,8))
         ttk.Label(tools,textvariable=self.scope_var,font=("Segoe UI",9,"bold")).pack(side="left")
-        if self.filters: ttk.Label(tools,text=f" · {len(self.filters)} active filter(s)",foreground="#445").pack(side="left")
+        if self.filters:
+            labels=getattr(self,"filter_labels",None) or []
+            ttk.Label(tools,text=" · filtered: "+", ".join(labels) if labels and len(labels)==len(self.filters) else f" · {len(self.filters)} active filter(s)",foreground="#445").pack(side="left")
         if self.search_text: ttk.Label(tools,text=f" · find: {self.search_text!r}",foreground="#445").pack(side="left")
         ttk.Button(tools,text="Clear filters and sort",command=self.clear_query).pack(side="right")
         ttk.Button(tools,text="Export CSV...",command=self.export_files_csv).pack(side="right",padx=6)
@@ -500,23 +597,59 @@ class Phase2App(tk.Tk):
         ttk.Label(right,text="Details & Evidence",font=("Segoe UI",10,"bold")).pack(anchor="w")
         ttk.Label(right,text="Select a file.",foreground="#666").pack(anchor="w",pady=8)
 
+    def _subfolders(self, root_id, prefix):
+        """The folders directly under `prefix` (a relative path, '' for the root) that hold files."""
+        if prefix:
+            key=prefix.replace("/","\\").strip("\\").lower()
+            rows=self.conn.execute(
+                "SELECT DISTINCT substr(fp.relative_path, ?, instr(substr(fp.relative_path, ?), '\\')-1) AS child "
+                "FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+                "WHERE fs.state='present' AND fs.source_root_id=? AND fp.relative_path_key>=? AND fp.relative_path_key<? "
+                "AND instr(substr(fp.relative_path, ?), '\\')>0 ORDER BY lower(child) LIMIT 2000",
+                (len(key)+2,len(key)+2,root_id,key+"\\",key+"]",len(key)+2)).fetchall()
+        else:
+            rows=self.conn.execute(
+                "SELECT DISTINCT fo_top_level(fp.relative_path) AS child FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+                "WHERE fs.state='present' AND fs.source_root_id=? AND fo_top_level(fp.relative_path)<>'' ORDER BY lower(child) LIMIT 2000",
+                (root_id,)).fetchall()
+        return [r["child"] for r in rows if r["child"]]
+
     def _populate_scope_tree(self,parent):
+        """Source roots and their folders, expandable to any depth.
+
+        Folders load when their node is opened, so a 41,000-file tree costs
+        one small query per click rather than a walk of the whole inventory.
+        Selecting a folder scopes the page to that subtree.
+        """
         ttk.Label(parent,text="Folders / Source Roots",font=("Segoe UI",9,"bold")).pack(anchor="w",pady=(0,5))
         tree=ttk.Treeview(parent,show="tree",height=25); tree.pack(fill="both",expand=True)
         allid=tree.insert("","end",text="All Sources",values=("project",))
         roots=self.conn.execute("SELECT source_root_id,root_path FROM source_root WHERE project_id=1 AND is_active=1 ORDER BY root_ordinal,root_path").fetchall()
+        def add_folder(parent_id,root_id,relative,display):
+            node=tree.insert(parent_id,"end",text=display,values=(f"folder:{root_id}:{relative}",))
+            tree.insert(node,"end",text="...",values=("placeholder",))     # opens lazily
+            return node
         for root in roots:
             rid=tree.insert(allid,"end",text=root["root_path"],values=(f"root:{root['source_root_id']}",))
-            tops=self.conn.execute(
-                "SELECT DISTINCT fo_top_level(fp.relative_path) top FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id WHERE fs.state='present' AND fs.source_root_id=? AND fo_top_level(fp.relative_path)<>'' ORDER BY lower(top) LIMIT 500",
-                (root["source_root_id"],)).fetchall()
-            for t in tops: tree.insert(rid,"end",text=t["top"],values=(f"folder:{root['source_root_id']}:{t['top']}",))
+            for child in self._subfolders(root["source_root_id"],""):
+                add_folder(rid,root["source_root_id"],child,child)
         tree.item(allid,open=True)
+        def opened(_=None):
+            node=tree.focus()
+            if not node: return
+            kids=tree.get_children(node)
+            if len(kids)==1 and tree.item(kids[0],"values") and tree.item(kids[0],"values")[0]=="placeholder":
+                tree.delete(kids[0])
+                token=tree.item(node,"values")[0]
+                _,root_id,relative=token.split(":",2)
+                for child in self._subfolders(int(root_id),relative):
+                    add_folder(node,int(root_id),relative+"\\"+child,child)
+        tree.bind("<<TreeviewOpen>>",opened)
         def selected(_=None):
             sel=tree.selection()
             if not sel:return
             val=tree.item(sel[0],"values")
-            if not val:return
+            if not val or val[0]=="placeholder":return
             token=val[0]
             if token=="project": self.scope={"kind":"project"}
             elif token.startswith("root:"): self.scope={"kind":"source_roots","source_root_ids":[int(token.split(':')[1])]}
@@ -600,15 +733,28 @@ class Phase2App(tk.Tk):
         finally: menu.grab_release()
 
     def filter_column(self,field):
-        """A filter on one column, asked for in the column's own terms."""
+        """A filter on one column, asked for in the column's own terms.
+
+        Columns with a small set of values (extension, hash status, evidence,
+        yes/no) offer the values that actually occur, with counts -- the way a
+        spreadsheet's filter dropdown does -- rather than a blank box.
+        """
         heading,_w,kind=FILE_COLUMNS[field]
         cond=None
+        if kind in ("enum","bool"):
+            chosen=self._pick_values(field,heading)
+            if chosen is None: return
+            if kind=="bool":
+                cond={"left":{"kind":"field","id":field},"op":"is_true" if chosen==[1] else "is_false"} if len(chosen)==1 else None
+            elif len(chosen)==1:
+                cond={"left":{"kind":"field","id":field},"op":"eq","value":{"kind":"literal","value":chosen[0]}}
+            else:
+                cond={"left":{"kind":"field","id":field},"op":"in","values":[{"kind":"literal","value":v} for v in chosen]}
+            if cond is None: return
+            self.filters.append({"condition":cond}); self.show_files(); return
         if kind=="text":
             val=simpledialog.askstring(heading,f"{heading} contains:",parent=self)
             if val: cond={"left":{"kind":"field","id":field},"op":"contains","value":{"kind":"literal","value":val}}
-        elif kind=="enum":
-            val=simpledialog.askstring(heading,f"{heading} equals (for example .pdf, current, size_unique):",parent=self)
-            if val: cond={"left":{"kind":"field","id":field},"op":"eq","value":{"kind":"literal","value":val.strip().lower()}}
         elif kind=="bytes":
             val=simpledialog.askfloat(heading,f"{heading} at least (MB):",parent=self,minvalue=0)
             if val is not None: cond={"left":{"kind":"field","id":field},"op":"gte","value":{"kind":"literal","value":int(val*1024*1024)}}
@@ -628,14 +774,63 @@ class Phase2App(tk.Tk):
         if cond is None: return
         self.filters.append({"condition":cond}); self.show_files()
 
+    def _pick_values(self,field,heading):
+        """A checklist of the values a column takes in the current question, with counts.
+
+        Returns the chosen values (raw, as stored), or None if cancelled. For a
+        yes/no column the values are 1 and 0.
+        """
+        try:
+            # Values are drawn from the page's question minus any filter already
+            # on this column, so a second pick can widen as well as narrow.
+            others=[f for f in self.filters if not (f.get("condition") and f["condition"].get("left",{}).get("id")==field)]
+            values=self.engine.field_values(field,scope=self.scope,search=self.search_text,filters=others)
+        except Exception as exc:
+            messagebox.showerror(heading,str(exc),parent=self); return None
+        if not values:
+            messagebox.showinfo(heading,"No values in the current scope.",parent=self); return None
+        win=tk.Toplevel(self); win.title(f"Filter by {heading}"); win.transient(self); win.grab_set()
+        ttk.Label(win,text=f"Show files whose {heading} is:",font=("Segoe UI",10,"bold")).pack(anchor="w",padx=12,pady=(12,6))
+        host=scrollable_frame(win)
+        ticks=[]
+        def show(v):
+            if v is None: return "(none)"
+            return render_cell(field,v) if FILE_COLUMNS[field][2]=="bool" else str(v)
+        for value,count in values:
+            var=tk.BooleanVar(value=False); ticks.append((value,var))
+            ttk.Checkbutton(host,text=f"{show(value)}   ({count:,})",variable=var).pack(anchor="w",padx=6)
+        result={"chosen":None}
+        def apply():
+            chosen=[v for v,var in ticks if var.get() and v is not None]
+            if not chosen: messagebox.showinfo(heading,"Tick at least one value.",parent=win); return
+            result["chosen"]=chosen; win.destroy()
+        def select_all(state):
+            for _v,var in ticks: var.set(state)
+        row=ttk.Frame(win); row.pack(fill="x",padx=12,pady=12)
+        ttk.Button(row,text="Apply",command=apply).pack(side="left")
+        ttk.Button(row,text="All",command=lambda:select_all(True)).pack(side="left",padx=(6,0))
+        ttk.Button(row,text="None",command=lambda:select_all(False)).pack(side="left",padx=(6,0))
+        ttk.Button(row,text="Cancel",command=win.destroy).pack(side="left",padx=6)
+        win.geometry("420x520"); self.wait_window(win)
+        try: self.unbind_all("<MouseWheel>")
+        except tk.TclError: pass
+        return result["chosen"]
+
     def choose_columns(self):
-        """Tick the columns the Files table shows."""
+        """Tick the columns the Files table shows, with a line on what each one means."""
         win=tk.Toplevel(self); win.title("Columns"); win.transient(self); win.grab_set()
         ttk.Label(win,text="Show these columns:",font=("Segoe UI",10,"bold")).pack(anchor="w",padx=12,pady=(12,6))
+        host=scrollable_frame(win)
         vars_={}
+        section_done=set()
         for field,(heading,_w,_k) in FILE_COLUMNS.items():
+            section="From analysis (empty until the bucket is analysed)" if field.startswith("analysis.") else "From the file system and fingerprints"
+            if section not in section_done:
+                section_done.add(section)
+                ttk.Label(host,text=section,font=("Segoe UI",9,"bold"),foreground="#444").pack(anchor="w",padx=6,pady=(8,2))
             v=tk.BooleanVar(value=field in self.files_columns); vars_[field]=v
-            ttk.Checkbutton(win,text=heading,variable=v).pack(anchor="w",padx=18)
+            ttk.Checkbutton(host,text=heading,variable=v).pack(anchor="w",padx=12)
+            ttk.Label(host,text=COLUMN_HELP.get(field,""),foreground="#666",wraplength=520,justify="left").pack(anchor="w",padx=36)
         def apply():
             chosen=[f for f in FILE_COLUMNS if vars_[f].get()]
             if not chosen: messagebox.showinfo("Columns","Keep at least one column.",parent=win); return
@@ -643,6 +838,9 @@ class Phase2App(tk.Tk):
         row=ttk.Frame(win); row.pack(fill="x",padx=12,pady=12)
         ttk.Button(row,text="Apply",command=apply).pack(side="left")
         ttk.Button(row,text="Cancel",command=win.destroy).pack(side="left",padx=6)
+        win.geometry("620x700"); self.wait_window(win)
+        try: self.unbind_all("<MouseWheel>")
+        except tk.TclError: pass
 
     def export_files_csv(self):
         """Every file the current question covers -- not just this page -- to a CSV the person chooses."""
@@ -669,25 +867,42 @@ class Phase2App(tk.Tk):
             ttk.Label(f,text=k+":",width=14,foreground="#666").pack(side="left",anchor="n")
             ttk.Label(f,text=str(v),wraplength=200,justify="left").pack(side="left",fill="x")
         ttk.Separator(self.detail_host).pack(fill="x",pady=8)
-        ttk.Button(self.detail_host,text="Metadata Explorer",command=lambda:self.show_metadata(row.get("path.id"))).pack(anchor="w")
+        ttk.Button(self.detail_host,text="Metadata Explorer",command=lambda:self.show_metadata(row.get("path.id"),row.get("path.file_name") or "")).pack(anchor="w")
         ttk.Label(self.detail_host,text="Shown from stored project evidence.\nThe source file is not reopened.",foreground="#666",justify="left").pack(anchor="w",pady=10)
 
-    def show_metadata(self,file_path_id):
-        win=tk.Toplevel(self); win.title("Metadata Explorer"); win.geometry("760x500")
-        cols=("analyzer","status","title","author","analyzed")
-        tv=ttk.Treeview(win,columns=cols,show="headings")
-        for c in cols: tv.heading(c,text=c.title()); tv.column(c,width=130)
-        tv.pack(fill="both",expand=True,padx=8,pady=8)
-        q={"query_schema":QUERY_SCHEMA,"semantic_contract":SEMANTIC_CONTRACT,"subject":{"entity":"analysis_result","temporal":{"mode":"current"}},"scope":{"kind":"project"},
-           "where":{"condition":{"left":{"kind":"field","id":"path.id"},"op":"eq","value":{"kind":"literal","value":file_path_id}}},
-           "sort":[{"ref":{"kind":"field","id":"analysis.analyzer_key"},"direction":"asc"}]}
-        try: rows=self.engine.execute(q)["rows"]
+    def show_metadata(self,file_path_id,file_name=""):
+        """Everything the analyzers recorded about this file, as it is now.
+
+        The first version showed five columns per analyzer and the user asked
+        where all the data was. This shows every field every analyzer stored:
+        the promoted values, every detail field, the error if the attempt
+        failed, the extracted-text reference, and an archive's summary and
+        members. From stored evidence; the file is not reopened.
+        """
+        win=tk.Toplevel(self); win.title(f"Metadata Explorer -- {file_name}" if file_name else "Metadata Explorer"); win.geometry("820x640")
+        text=tk.Text(win,wrap="word",font=("Consolas",9)); sy=ttk.Scrollbar(win,orient="vertical",command=text.yview); text.configure(yscrollcommand=sy.set)
+        text.pack(side="left",fill="both",expand=True,padx=(8,0),pady=8); sy.pack(side="right",fill="y",pady=8)
+        text.tag_configure("h",font=("Segoe UI",11,"bold")); text.tag_configure("k",foreground="#555"); text.tag_configure("err",foreground="#8a1c1c"); text.tag_configure("dim",foreground="#888")
+        try: entries=self.engine.file_analysis(file_path_id)
         except Exception as exc: messagebox.showerror("Metadata",str(exc),parent=win); return
-        for row in rows:
-            author=row.get("analysis.author")
-            if author is None:
-                status=row.get("analysis.status"); author="No value" if status=="analyzed" else "Unknown"
-            tv.insert("","end",values=(row.get("analysis.analyzer_key"),row.get("analysis.status"),row.get("analysis.title") or "",author,row.get("analysis.analyzed_utc")))
+        if not entries:
+            text.insert("end","No analyzer has a result for this file yet.\n\nAnalysis is per bucket: run Analyze on the file's type from the project page.",("dim",))
+        for e in entries:
+            text.insert("end",f"{e['label']}\n",("h",))
+            text.insert("end",f"  status: {e['status']}    analysed: {e['analyzed_utc'] or ''}    run: {e['run_folder'] or ''}\n",("dim",))
+            if e["error"]: text.insert("end",f"  {e['error']}\n",("err",))
+            for k,v in e["fields"]:
+                text.insert("end",f"  {k}: ",("k",)); text.insert("end",f"{v}\n")
+            if e["text"]:
+                t=e["text"]; text.insert("end",f"  extracted text: {t['status']}, {t.get('word_count') or 0:,} words, {t.get('char_count') or 0:,} characters, artifact {'present' if t.get('artifact_exists') else 'missing'}\n",("k",))
+            if e["archive"]:
+                a=e["archive"]; text.insert("end",f"  archive: {a['entry_total_count']:,} entries ({a['analysis_mode']}), {human_bytes(a['total_uncompressed_bytes'])} uncompressed, {human_bytes(a['total_compressed_bytes'])} compressed\n",("k",))
+                for m in e["members"]:
+                    text.insert("end",f"    {m['entry_path']}  {human_bytes(m['entry_size_bytes'])}\n")
+                if a["entry_total_count"] and a["entry_total_count"]>len(e["members"]):
+                    text.insert("end",f"    ... {a['entry_total_count']-len(e['members']):,} more (all are in the database; export the archive report for the full list)\n",("dim",))
+            text.insert("end","\n")
+        text.configure(state="disabled")
 
     def apply_find(self):
         if self.conn is None: return
@@ -717,7 +932,7 @@ class Phase2App(tk.Tk):
         self.show_files()
 
     def clear_query(self):
-        self.filters=[]; self.search_text=""; self.find_var.set(""); self.files_sort=None
+        self.filters=[]; self.filter_labels=[]; self.search_text=""; self.find_var.set(""); self.files_sort=None
         self.scope={"kind":"project"}; self.scope_var.set("Scope: All Sources"); self.show_files()
 
     def save_current_query(self):
@@ -933,7 +1148,15 @@ def scrollable_frame(parent):
     canvas.configure(yscrollcommand=bar.set)
     canvas.pack(side="left",fill="both",expand=True); bar.pack(side="right",fill="y")
     def wheel(event):
-        canvas.yview_scroll(int(-event.delta/120),"units")
+        # The list may already be gone when a late wheel turn arrives (the
+        # <Leave> that would have unbound it never fires for a destroyed
+        # widget). Unbind and stop rather than raise.
+        try:
+            if not canvas.winfo_exists(): raise tk.TclError
+            canvas.yview_scroll(int(-event.delta/120),"units")
+        except tk.TclError:
+            try: canvas.unbind_all("<MouseWheel>")
+            except tk.TclError: pass
     canvas.bind("<Enter>",lambda e:canvas.bind_all("<MouseWheel>",wheel))
     canvas.bind("<Leave>",lambda e:canvas.unbind_all("<MouseWheel>"))
     return inner
