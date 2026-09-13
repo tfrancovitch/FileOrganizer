@@ -198,7 +198,11 @@ def show_hub(app):
         text_status = "EXTRACTED"
     text_action = act(ext) if (ext is not None and ext.action) else act(srch)
     text_note = None
-    if ext is not None and ext.state != cap.AVAILABLE and ext.action and ext.counts.get("extracted"):
+    if ext is not None and ext.counts.get("extracted") and (
+            ext.state != cap.AVAILABLE or ext.counts.get("failed")
+            or ext.counts.get("not_documents") or ext.counts.get("cloud_only")):
+        # The breakdown -- what could not be read, what was not a document --
+        # is worth a line whenever there is one, complete or not.
         text_note = ext.detail
     elif srch is not None and srch.counts.get("unsupported") and summary["extractable"]:
         text_note = (f"{srch.counts['unsupported']:,} files are in formats this product cannot extract text "

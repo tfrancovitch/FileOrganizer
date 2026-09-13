@@ -361,19 +361,33 @@ def project_capabilities(conn):
             f"{extractable:,} files could have their text extracted; none have been.",
             RUN_EXTRACT, extractable=extractable, extracted=0))
     else:
-        # Three outcomes, not two. A file that failed to parse will fail again, so
+        # Five outcomes, not two. A file that failed to parse will fail again, so
         # offering "Extract text" for it would be a button that cannot help --
-        # only genuinely unattempted files justify the action.
-        failed = _scalar(conn, "SELECT COUNT(*) FROM extracted_content "
-                               "WHERE status NOT IN ('extracted','empty')")
+        # only genuinely unattempted files justify the action. A file with no
+        # extension that turned out to be a picture or a program is "not a
+        # document" -- nothing went wrong with it, so it is not counted as
+        # unreadable; a cloud-only file was never opened, by rule.
+        failed = _scalar(conn, "SELECT COUNT(*) FROM extracted_content WHERE status='error'")
         empty = _scalar(conn, "SELECT COUNT(*) FROM extracted_content WHERE status='empty'")
-        attempted = extracted + failed + empty
+        not_documents = _scalar(conn, """
+            SELECT COUNT(*) FROM extracted_content ec
+              JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id
+             WHERE ec.status='skipped' AND ar.status='not_processed'""")
+        cloud_only = _scalar(conn, """
+            SELECT COUNT(*) FROM extracted_content ec
+              JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id
+             WHERE ec.status='skipped' AND ar.status='skipped_cloud_only'""")
+        attempted = extracted + failed + empty + not_documents + cloud_only
         unattempted = max(0, extractable - attempted)
         parts = [f"{extracted:,} of {extractable:,} extracted"]
         if failed:
             parts.append(f"{failed:,} could not be read")
         if empty:
             parts.append(f"{empty:,} held no text")
+        if not_documents:
+            parts.append(f"{not_documents:,} not documents (no extension, and not text inside)")
+        if cloud_only:
+            parts.append(f"{cloud_only:,} cloud-only, never opened")
         if unattempted:
             parts.append(f"{unattempted:,} not attempted")
         state = AVAILABLE if unattempted == 0 else PARTIAL
@@ -381,7 +395,8 @@ def project_capabilities(conn):
             "extraction", "Text extracted", state, ", ".join(parts) + ".",
             RUN_EXTRACT if unattempted else None,
             extractable=extractable, extracted=extracted,
-            failed=failed, empty=empty, unattempted=unattempted))
+            failed=failed, empty=empty, not_documents=not_documents,
+            cloud_only=cloud_only, unattempted=unattempted))
 
     indexed = _scalar(conn, "SELECT COUNT(*) FROM p2_fts_text_map")
     if extracted == 0:
