@@ -505,7 +505,8 @@ ADAPTERS = [
     ExtractionAdapter("content_extraction", "Content Extraction",
                       "ContentExtraction", None, extensions_attr="EXTENSIONS",
                       declared_extensions={".pdf", ".docx", ".pptx", ".xlsx",
-                                           ".txt", ".md"}),
+                                           ".txt", ".md", ".doc", ".ppt", ".xls",
+                                           ".rtf", ".html", ".htm", ".csv", ".json"}),
 ]
 
 ADAPTER_BY_KEY = {a.key: a for a in ADAPTERS}

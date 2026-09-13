@@ -5,12 +5,19 @@ Part of: The File Organizer
 Version: 1.1.1
 
 Extracts the actual TEXT CONTENT of every content-bearing document in
-the database-backed analyzer engine -- PDF, Word (.docx), PowerPoint (.pptx), Excel
-(.xlsx), plain text (.txt), and Markdown (.md) -- into individual .txt
-files, indexed by DB_ID. This is the last Phase 1 (data-gathering) gap:
-earlier scripts captured metadata ABOUT documents (author, page count);
-this captures what they actually SAY, which is what a future content-based
-organization/search/comparison pass (Phase 2) will need to work with.
+the database-backed analyzer engine -- PDF, Word (.docx and .doc), PowerPoint
+(.pptx and .ppt), Excel (.xlsx and .xls), RTF, HTML, CSV, JSON, plain text
+(.txt), and Markdown (.md) -- into individual .txt files, indexed by DB_ID.
+
+A file is read as what its bytes say it is, not as what its name says: a
+".doc" that is really RTF is read as RTF, a ".xls" that is really an HTML
+export is read as HTML, and a document that is plain text under a document
+extension is read as text. The recorded SourceType says which reader ran.
+
+This is the last Phase 1 (data-gathering) gap: earlier scripts captured
+metadata ABOUT documents (author, page count); this captures what they
+actually SAY, which is what a future content-based organization/search/
+comparison pass (Phase 2) will need to work with.
 
 Output:
     ExtractedText/<hash>.txt  -- one file per document, full extracted text
@@ -24,6 +31,10 @@ Output:
 
 Requires:
     pip install pdfplumber python-docx openpyxl python-pptx chardet
+Optional:
+    pypdfium2 (installed with pdfplumber) -- reads PDF text 25-30x faster;
+              pdfplumber is the fallback for any file it refuses
+    xlrd      -- .xls text; without it an .xls records an error naming it
 
 """
 
@@ -36,12 +47,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "Database"))
 from file_organizer_common import to_long_path
 import fo_text
+import fo_extractors
 
 try:
     import pdfplumber
 except ImportError:
     print("ERROR: pdfplumber is not installed. Run: pip install pdfplumber", file=sys.stderr)
     sys.exit(1)
+
+try:
+    import pypdfium2 as pdfium
+except ImportError:                                            # pragma: no cover
+    pdfium = None
 
 try:
     import docx
@@ -67,7 +84,12 @@ except ImportError:
     print("ERROR: chardet is not installed. Run: pip install chardet", file=sys.stderr)
     sys.exit(1)
 
-EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"}
+EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md",
+              ".doc", ".ppt", ".xls", ".rtf", ".html", ".htm", ".csv", ".json"}
+
+#: What a text-like file is called by its extension. Anything else that
+#: sniffs as text is "PlainText" -- including a .doc that turns out to be one.
+TEXT_SOURCE_TYPES = {".csv": "CSV", ".json": "JSON"}
 CHECKPOINT_FIELDS = ["Key", "SourceType", "ExtractedTextFile", "TextSha256",
                      "ReusedExisting", "CharCount", "WordCount", "Error"]
 
@@ -120,9 +142,36 @@ def path_to_filename(path):
     return f"{h}.txt"
 
 
+def _pdf_text_pdfium(long_path):
+    """Every page's text through PDFium. Measured on the real corpus at 4-13
+    ms per page against pdfplumber's 125-190: the same words, 25-30x sooner."""
+    doc = pdfium.PdfDocument(long_path)
+    try:
+        parts = []
+        for index in range(len(doc)):
+            page = doc[index]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    parts.append(textpage.get_text_bounded() or "")
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+    finally:
+        doc.close()
+    return "\n\n".join(part.replace("\r\n", "\n").replace("\r", "\n") for part in parts)
+
+
 def extract_pdf_text(path):
+    long_path = to_long_path(path)
+    if pdfium is not None:
+        try:
+            return "PDF", _pdf_text_pdfium(long_path)
+        except Exception:                                      # noqa: BLE001
+            pass            # pdfplumber gets the file; if it fails too, that is the error
     parts = []
-    with pdfplumber.open(to_long_path(path)) as pdf:
+    with pdfplumber.open(long_path) as pdf:
         for page in pdf.pages:
             parts.append(page.extract_text() or "")
     return "PDF", "\n\n".join(parts)
@@ -151,12 +200,17 @@ def extract_pptx_text(path):
 def extract_xlsx_text(path):
     wb = openpyxl.load_workbook(to_long_path(path), read_only=True, data_only=True)
     parts = []
-    for sheet in wb.worksheets:
-        parts.append(f"--- Sheet: {sheet.title} ---")
-        for row in sheet.iter_rows(values_only=True):
-            line = "\t".join("" if v is None else str(v) for v in row)
-            if line.strip():
-                parts.append(line)
+    try:
+        for sheet in wb.worksheets:
+            parts.append(f"--- Sheet: {sheet.title} ---")
+            for row in sheet.iter_rows(values_only=True):
+                line = "\t".join("" if v is None else str(v) for v in row)
+                if line.strip():
+                    parts.append(line)
+    finally:
+        # A read-only workbook keeps the file open until told otherwise; a
+        # handle left on someone's file blocks its rename or sync.
+        wb.close()
     return "Excel", "\n".join(parts)
 
 
@@ -167,21 +221,56 @@ def extract_plain_text(path):
     return "PlainText", text
 
 
+def extract_any(path):
+    """(SourceType, text) for a file, chosen by what the bytes are.
+
+    The extension picks nothing except the name given to plain text; the
+    signature picks the reader. So a ".doc" holding RTF is read as RTF,
+    a ".xls" holding an HTML export is read as HTML, and a file that is
+    really plain text is read as text whatever it is called. When the
+    bytes are a container of the wrong kind for the name (a ".doc" that
+    is a ZIP with word/ inside is a .docx) the container decides.
+    """
+    ext = Path(path).suffix.lower()
+    kind = fo_extractors.sniff(path)
+    if kind == "pdf":
+        return extract_pdf_text(path)
+    if kind == "rtf":
+        return "RTF", fo_extractors.rtf_text(path)
+    if kind == "html":
+        return "HTML", fo_extractors.html_text(path)
+    if kind == "ole":
+        inner = fo_extractors.ole_kind(path)
+        if inner == "word":
+            return "Word 97-2003", fo_extractors.doc_text(path)
+        if inner == "powerpoint":
+            return "PowerPoint 97-2003", fo_extractors.ppt_text(path)
+        if inner == "excel":
+            return "Excel 97-2003", fo_extractors.xls_text(path)
+        raise ValueError("OLE container without a Word, PowerPoint or Excel document inside")
+    if kind == "zip":
+        inner = fo_extractors.zip_kind(path)
+        if inner == "docx":
+            return extract_docx_text(path)
+        if inner == "pptx":
+            return extract_pptx_text(path)
+        if inner == "xlsx":
+            return extract_xlsx_text(path)
+        raise ValueError("ZIP container that is not a Word, PowerPoint or Excel document")
+    if kind == "text":
+        _source, text = extract_plain_text(path)
+        return TEXT_SOURCE_TYPES.get(ext, "PlainText"), text
+    if kind == "empty":
+        return "PlainText", ""
+    raise ValueError("not a recognised document format (%s)" % kind)
+
+
 def make_analyze_fn(extract_folder, content_addressed=True):
     def analyze_content(path):
         ext = Path(path).suffix.lower()
-        if ext == ".pdf":
-            source_type, text = extract_pdf_text(path)
-        elif ext == ".docx":
-            source_type, text = extract_docx_text(path)
-        elif ext == ".pptx":
-            source_type, text = extract_pptx_text(path)
-        elif ext == ".xlsx":
-            source_type, text = extract_xlsx_text(path)
-        elif ext in (".txt", ".md"):
-            source_type, text = extract_plain_text(path)
-        else:
+        if ext not in EXTENSIONS:
             raise ValueError(f"Unsupported extension: {ext}")
+        source_type, text = extract_any(path)
 
         # Content addressing: the artifact is named for what is IN it.
         text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()

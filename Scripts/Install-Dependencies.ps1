@@ -102,6 +102,8 @@ $Packages = @(
     [PSCustomObject]@{ PipName = "mutagen";     ImportName = "mutagen";      Optional = $false; UsedBy = "AudioAnalysis.py" }
     [PSCustomObject]@{ PipName = "chardet";     ImportName = "chardet";      Optional = $false; UsedBy = "TextFileAnalysis.py, ContentExtraction.py" }
     [PSCustomObject]@{ PipName = "py7zr";       ImportName = "py7zr";        Optional = $true;  UsedBy = "ArchiveAnalysis.py (.7z only)" }
+    [PSCustomObject]@{ PipName = "xlrd";        ImportName = "xlrd";         Optional = $true;  UsedBy = "ContentExtraction.py (.xls text only)" }
+    [PSCustomObject]@{ PipName = "pypdfium2";   ImportName = "pypdfium2";    Optional = $true;  UsedBy = "PDFAnalysis.py, ContentExtraction.py (fast PDF text; pdfplumber is the fallback)" }
     [PSCustomObject]@{ PipName = "pillow-heif"; ImportName = "pillow_heif";  Optional = $true;  UsedBy = "ImageHash.py (HEIC/HEIF only)" }
 )
 

@@ -56,9 +56,10 @@ for path in (DATABASE, HERE):
 #: ever validated on 3.11+. Deliberately NOT raised to whatever
 #: the development machine happens to run.
 MINIMUM_PYTHON = (3, 11)
-#: B6.1 requires schema 7; migration 007 completes the current-state
-#: projection and A-F reconciliation fields.
-REQUIRED_SCHEMA_VERSION = 7
+#: The current build requires schema 8 (Phase 2's projections and FTS map
+#: on top of migration 007's current-state projection). Kept equal to
+#: fo_db.APP_SCHEMA_VERSION; the check failed on every machine while it said 7.
+REQUIRED_SCHEMA_VERSION = 8
 
 #: import name -> (pip name, what stops working without it)
 OPTIONAL_PACKAGES = {
@@ -74,13 +75,15 @@ OPTIONAL_PACKAGES = {
     "mutagen": ("mutagen", "audio analysis"),
     "olefile": ("olefile", "legacy .doc/.xls/.ppt detection"),
     "py7zr": ("py7zr", ".7z archive analysis (ZIP works without it)"),
+    "xlrd": ("xlrd", ".xls text extraction only"),
+    "pypdfium2": ("pypdfium2", "fast PDF text (pdfplumber is the fallback)"),
     "pillow_heif": ("pillow-heif", "HEIC/HEIF image decoding only"),
 }
 
 RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    "fo_hash_records", "fo_analyzer_engine",
                    "fo_analyzer_records", "fo_exports", "fo_project",
-                   "fo_estimates", "win_meta")
+                   "fo_estimates", "fo_extractors", "win_meta")
 
 
 class Report(object):

@@ -33,6 +33,11 @@ except ImportError:
     print("ERROR: pdfplumber is not installed. Run: pip install pdfplumber", file=sys.stderr)
     sys.exit(1)
 
+try:
+    import pypdfium2 as pdfium
+except ImportError:                                            # pragma: no cover
+    pdfium = None
+
 EXTENSIONS = {".pdf"}
 CHECKPOINT_FIELDS = ["Key", "PageCount", "IsEncrypted", "HasExtractableText",
                       "Title", "Author", "Producer", "CreationDate", "Error"]
@@ -55,15 +60,43 @@ def analyze_pdf(path):
         result["Producer"] = meta.producer or ""
         result["CreationDate"] = str(meta.creation_date) if meta.creation_date else ""
 
+    # "Has extractable text" means SOME page has text, not the first page.
+    # Judged by page one alone, a book whose cover is a picture was called
+    # "no text" while holding 780,000 characters (found on the real corpus).
+    # PDFium reads a page's text in milliseconds, so every page can be asked
+    # until one answers; the pdfplumber fallback keeps the old first-page
+    # judgement when PDFium is not installed.
     try:
-        with pdfplumber.open(long_path) as pdf:
-            if len(pdf.pages) > 0:
-                text = pdf.pages[0].extract_text() or ""
-                result["HasExtractableText"] = str(bool(text.strip()))
+        if pdfium is not None:
+            result["HasExtractableText"] = _any_page_has_text(long_path)
+        else:
+            with pdfplumber.open(long_path) as pdf:
+                if len(pdf.pages) > 0:
+                    text = pdf.pages[0].extract_text() or ""
+                    result["HasExtractableText"] = str(bool(text.strip()))
     except Exception:
         pass  # leave as "Unknown" -- encrypted/corrupt PDFs can fail here
 
     return result
+
+
+def _any_page_has_text(long_path):
+    doc = pdfium.PdfDocument(long_path)
+    try:
+        for index in range(len(doc)):
+            page = doc[index]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    if (textpage.get_text_bounded() or "").strip():
+                        return "True"
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+        return "False"
+    finally:
+        doc.close()
 
 
 def report_extra(results):
