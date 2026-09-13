@@ -37,6 +37,7 @@ sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "Database"))
 
 RESULTS: list[tuple[str, bool, str]] = []
+TRUTH_PATH: Path | None = None       # set by main(); CASE_RESULTS.json is written beside it
 
 
 def check(name, ok, detail=""):
@@ -229,6 +230,14 @@ def run(project_dir: Path, truth: dict) -> int:
     except Exception as exc:
         check("keyset pagination runs", False, f"{type(exc).__name__}: {exc}")
 
+    # -- the Master Matrix's cases ----------------------------------------
+    if truth.get("cases") or truth.get("scan_expectations"):
+        section("9. Master Matrix cases (each key of each case is one check)")
+        import p2_cases
+        p2_cases.assert_scan_expectations(project_dir, truth, check)
+        p2_cases.assert_cases(conn, truth, check, project_dir=project_dir,
+                              truth_path=TRUTH_PATH, home="Corpus")
+
     conn.close()
 
     passed = sum(1 for _, ok, _ in RESULTS if ok)
@@ -249,7 +258,9 @@ def main():
     ap.add_argument("--project", required=True, help="project directory to test")
     ap.add_argument("--truth", required=True, help="GROUND_TRUTH.json for its corpus")
     args = ap.parse_args()
-    truth = json.loads(Path(args.truth).read_text(encoding="utf-8"))
+    global TRUTH_PATH
+    TRUTH_PATH = Path(args.truth).resolve()
+    truth = json.loads(TRUTH_PATH.read_text(encoding="utf-8"))
     return run(Path(args.project).resolve(), truth)
 
 

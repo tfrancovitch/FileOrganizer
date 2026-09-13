@@ -116,6 +116,45 @@ def plain_path(path) -> str:
     return text
 
 
+def set_attributes(target: str, attributes: int) -> None:
+    """OR the given FILE_ATTRIBUTE_* bits onto a file (hidden, system, read-only)."""
+    if os.name != "nt":
+        return
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    current = kernel32.GetFileAttributesW(target)
+    if current == 0xFFFFFFFF:
+        raise OSError("GetFileAttributesW failed for %s" % plain_path(target))
+    if not kernel32.SetFileAttributesW(target, current | attributes):
+        raise OSError("SetFileAttributesW failed for %s" % plain_path(target))
+
+
+def set_creation_time(target: str, when: datetime) -> None:
+    """Pin an NTFS creation time (os.utime only reaches modified and accessed)."""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                     wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    kernel32.SetFileTime.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    FILE_WRITE_ATTRIBUTES, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS = 0x100, 3, 0x02000000
+    handle = kernel32.CreateFileW(target, FILE_WRITE_ATTRIBUTES, 7, None, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, None)
+    if handle in (None, 0xFFFFFFFFFFFFFFFF, -1):
+        raise OSError("CreateFileW failed for %s" % plain_path(target))
+    try:
+        # FILETIME: 100-ns intervals since 1601-01-01 UTC.
+        ticks = int((when - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 10_000_000)
+        filetime = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+        if not kernel32.SetFileTime(handle, ctypes.byref(filetime), None, None):
+            raise OSError("SetFileTime failed for %s" % plain_path(target))
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _is_reparse(entry) -> bool:
     try:
         attributes = entry.stat(follow_symlinks=False).st_file_attributes
@@ -135,6 +174,23 @@ def reset_acl(path) -> None:
         return
     subprocess.run(["icacls", plain_path(path), "/reset", "/Q"],
                    capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def enable_case_sensitivity(directory) -> bool:
+    """Make one (empty) directory case-sensitive, as WSL and some developer
+    setups do. Works unelevated on Windows 10 1903+ -- but only with Full
+    Control on the directory (Modify, which C:\\ hands down, is not enough),
+    so the owner grants it to themselves first. fsutil exits 0 when it
+    fails, so the flag is queried back rather than trusted."""
+    if os.name != "nt":
+        return False
+    target = plain_path(ext_path(directory))
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.run(["icacls", target, "/grant", "%s:(F)" % os.environ.get("USERNAME", ""), "/Q"],
+                   capture_output=True, creationflags=flags)
+    subprocess.run(["fsutil", "file", "setCaseSensitiveInfo", target, "enable"], capture_output=True, creationflags=flags)
+    query = subprocess.run(["fsutil", "file", "queryCaseSensitiveInfo", target], capture_output=True, text=True, creationflags=flags)
+    return "is enabled" in (query.stdout or "")
 
 
 def remove_tree(path) -> None:
@@ -255,6 +311,21 @@ MARKERS = {
     "Scans/scanned_only.pdf": ("scanned tessera brief", True),
     "Scans/scan_pages.pdf": ("second page tessera", True),          # page two of a mixed PDF
 }
+
+#: 01_Naming (matrix section A). The names are computed once so the marker
+#: table, the builder and the truth agree on every character.
+A001_NAME = ("A001_the_longest_name_ntfs_allows_" * 8)[:251] + ".txt"      # 255 characters
+A002_FOLDER = ("A002_the_longest_folder_name_ntfs_allows_" * 7)[:255]      # 255 characters
+A003_TREE = "01_Naming/deep/" + "/".join("level%02d" % i for i in range(1, 41))   # 40 levels (A-004)
+A003_LEAF = ("A003_long_leaf_" * 14)[:196] + ".txt"                        # 200 characters
+MARKERS.update({
+    "01_Naming/" + A001_NAME: ("bracken ledger longname", True),
+    A003_TREE + "/" + A003_LEAF: ("gossamer quorum longpath", True),
+    A003_TREE + "/deep.txt": ("fortieth level marker", True),
+    # A-020: PDF bytes named .exe. Extraction is chosen by extension, so the
+    # marker is expected NOT to be found; if coverage ever widens, this says so.
+    "01_Naming/invoice.pdf.exe": ("ptarmigan invoice disguise", False),
+})
 
 #: Files OCR is expected to flag for a person to look at.
 OCR_REVIEW_EXPECTED = ["Scans/scan_faded.png", "Scans/scan_bad.pdf"]
@@ -670,9 +741,18 @@ class Corpus:
         self.skipped: list[str] = []          # what could not be made here, and why
         self.cases: dict[str, dict] = {}      # matrix ID -> the case record (see case())
         self.not_constructed: list[dict] = []  # matrix IDs this machine cannot build, and why
+        self.empty_folders: list[str] = []    # folders made with nothing in them (add_folder)
+        self.link_folders: list[str] = []     # junctions / directory symlinks the walk must skip
 
     def add(self, relpath: str, data: bytes, *, age_days: int, note: str = "",
-            expect_analyzer_failure: bool = False, case: str | None = None):
+            expect_analyzer_failure: bool = False, case: str | None = None,
+            attributes: int = 0, created: datetime | None = None):
+        """Write one file and record its truth.
+
+        `attributes` are FILE_ATTRIBUTE_* bits to set after writing (hidden,
+        system, read-only). `created` pins the creation time -- NTFS keeps
+        it separately from the modified time, which `age_days` sets.
+        """
         path = self.root / relpath
         target = ext_path(path)
         os.makedirs(ext_path(path.parent), exist_ok=True)
@@ -681,6 +761,10 @@ class Corpus:
         stamp = NOW - timedelta(days=age_days)
         ts = stamp.timestamp()
         os.utime(target, (ts, ts))
+        if created is not None:
+            set_creation_time(target, created)
+        if attributes:
+            set_attributes(target, attributes)
         relative = relpath.replace("/", "\\")
         self.files.append({
             "relative_path": relative,
@@ -692,13 +776,28 @@ class Corpus:
             "note": note,
             "expect_analyzer_failure": expect_analyzer_failure,
         })
+        if attributes:
+            self.files[-1]["attributes"] = attributes
+        if created is not None:
+            self.files[-1]["created_utc"] = created.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if case:
+            self.case(case)["paths"].append(relative)
+
+    def add_folder(self, relpath: str, *, case: str | None = None, note: str = ""):
+        """An empty folder. Folders are not rows in this program; the walk
+        counts them (`Empty folders found` in the preliminary report), which
+        is what the truth's scan_expectations carry."""
+        os.makedirs(ext_path(self.root / relpath), exist_ok=True)
+        relative = relpath.replace("/", "\\")
+        self.empty_folders.append(relative)
         if case:
             self.case(case)["paths"].append(relative)
 
     # -- the matrix's cases ---------------------------------------------------
 
     def case(self, case_id: str, *, expected: dict | None = None, construction: str | None = None,
-             setup=(), teardown=(), safety=(), notes: str = "", matrix_expects: str | None = None) -> dict:
+             setup=(), teardown=(), safety=(), notes: str = "", matrix_expects: str | None = None,
+             classification: str | None = None) -> dict:
         """Register (or update) the matrix condition this corpus embodies.
 
         `expected` is written in this program's vocabulary -- column names and
@@ -736,6 +835,12 @@ class Corpus:
             record["construction"] = construction
         if matrix_expects:
             record["matrix_expects"] = matrix_expects
+        if classification:
+            # DEFECT: the engine is wrong and the expectation is the matrix's
+            # (the check stays red until it is fixed). SCOPE: a recorded
+            # limit; the expectation is the documented current behaviour and
+            # matrix_expects keeps the gap in view.
+            record["classification"] = classification
         record["setup"].extend(setup)
         record["teardown"].extend(teardown)
         record["safety"].extend(s for s in safety if s not in record["safety"])
@@ -771,6 +876,8 @@ class Corpus:
         self._edge_cases()
         self._bulk()
         self._samples()
+        # The Master Matrix's categories, one method each (2026-09-13 on).
+        self._naming()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -855,7 +962,11 @@ class Corpus:
             age_days=7, note="FTS marker: iCalendar")
         self.add("Documents/README", (
             f"Read me first. {marker('Documents/README')}.\n").encode("utf-8"),
-            age_days=20, note="FTS marker: no extension")
+            age_days=20, note="FTS marker: no extension", case="A-019")
+        self.case("A-019", construction="L", expected={
+            "file_state.state": "present", "extension_key": "",
+            "extracted_content.status": "extracted"},
+            notes="both files: the README is read as text by its bytes; Edge/no_extension likewise")
         self.add("Documents/thumbnail", make_png(16, 16, (200, 30, 30)),
                  age_days=21, note="a picture with no extension, not a document: recorded as not processed")
 
@@ -1133,16 +1244,104 @@ class Corpus:
 
     def _edge_cases(self):
         self.add("Edge/empty.txt", b"", age_days=10, note="zero bytes")
-        self.add("Edge/no_extension", b"payload without an extension\n", age_days=11)
+        self.add("Edge/no_extension", b"payload without an extension\n", age_days=11, case="A-019")
         self.add("Edge/\u00fcnicode_n\u00e4me_\u65e5\u672c\u8a9e.txt",
                  "Unicode filename content.\n".encode("utf-8"), age_days=12,
-                 note="non-ASCII filename")
-        self.add("Edge/spaces and (parens) [brackets].txt", b"awkward name\n", age_days=13)
+                 note="non-ASCII filename", case="A-008")
+        self.case("A-008", construction="L", expected={"file_state.state": "present",
+                                                        "file_name": "\u00fcnicode_n\u00e4me_\u65e5\u672c\u8a9e.txt"})
+        self.add("Edge/spaces and (parens) [brackets].txt", b"awkward name\n", age_days=13, case="A-005")
+        self.case("A-005", construction="L", expected={"file_state.state": "present",
+                                                        "file_name": "spaces and (parens) [brackets].txt"})
         self.add("Edge/" + "/".join(f"level{i}" for i in range(1, 9)) + "/deep.txt",
                  b"eight levels down\n", age_days=14, note="deep nesting")
         self.add("Edge/trailing.dot.multiple.suffixes.tar.gz",
                  make_gzip(b"compressed payload\n"), age_days=300)
         self.add("Edge/UPPERCASE.TXT", b"uppercase extension\n", age_days=16)
+
+    # -- the matrix's categories -------------------------------------------
+
+    def _naming(self):
+        """01_Naming: matrix section A, the rows that are static and tool-safe.
+        Reserved device names and trailing dots or spaces go to Hostile\\;
+        reserved characters need the POSIX namespace and are declined."""
+        present = {"file_state.state": "present"}
+
+        # A-001 / A-002 / A-003 / A-004 -- long names, a long path, a deep tree.
+        self.add("01_Naming/" + A001_NAME,
+                 ("The %s sits under a 255-character name.\n" % marker("01_Naming/" + A001_NAME)).encode("utf-8"),
+                 age_days=17, note="A-001: 255-character file name", case="A-001")
+        self.case("A-001", construction="G", expected=dict(present, file_name_length=255, hash_status=["size_unique", "unique_by_hash"],
+                                                           **{"extracted_content.status": "extracted", "marker_indexed": True}))
+        self.add("01_Naming/" + A002_FOLDER + "/inside.txt", b"Inside a 255-character folder name.\n",
+                 age_days=18, note="A-002: 255-character folder name", case="A-002")
+        self.case("A-002", construction="G", expected=dict(present, depth=2, **{"extracted_content.status": "extracted"}))
+        self.add(A003_TREE + "/" + A003_LEAF,
+                 ("At the bottom of forty levels: %s.\n" % marker(A003_TREE + "/" + A003_LEAF)).encode("utf-8"),
+                 age_days=19, note="A-003: complete path far beyond 260 characters", case="A-003")
+        self.case("A-003", construction="G", expected=dict(present, path_length_gt=260, depth=42,
+                                                           **{"extracted_content.status": "extracted", "marker_indexed": True}))
+        self.add(A003_TREE + "/deep.txt",
+                 ("The %s is here.\n" % marker(A003_TREE + "/deep.txt")).encode("utf-8"),
+                 age_days=14, note="A-004: forty levels of nesting", case="A-004")
+        self.case("A-004", construction="G", expected=dict(present, depth=42, **{"extracted_content.status": "extracted", "marker_indexed": True}),
+                  notes="the walk keeps an explicit stack, so depth cannot overflow anything; the assertion is that every stage reaches the leaf")
+
+        # A-006 -- leading and consecutive spaces, preserved exactly.
+        self.add("01_Naming/ leading space.txt", b"a name that begins with a space\n", age_days=20, case="A-006")
+        self.add("01_Naming/three   spaces.txt", b"three spaces inside the name\n", age_days=21, case="A-006")
+        self.case("A-006", construction="L", expected=present,
+                  notes="file_name is compared byte for byte by the totals-by-extension and file-count checks; the names are ' leading space.txt' and 'three   spaces.txt'")
+
+        # A-009 / A-010 / A-011 -- accented, non-Latin, emoji.
+        self.add("01_Naming/Résumé Ångström.txt", "accented, composed (NFC)\n".encode("utf-8"), age_days=22, case="A-009")
+        self.case("A-009", construction="L", expected=dict(present, file_name="Résumé Ångström.txt"))
+        for name, body in (("отчёт.txt", "Cyrillic"), ("تقرير.txt", "Arabic, right to left"),
+                           ("रिपोर्ट.txt", "Devanagari, with combining vowel signs"), ("รายงาน.txt", "Thai")):
+            self.add("01_Naming/scripts/" + name, ("%s script in the name\n" % body).encode("utf-8"), age_days=23, case="A-010")
+        self.case("A-010", construction="L", expected=dict(present, row_count=4, **{"extracted_content.status": "extracted"}))
+        self.add("01_Naming/emoji 🧪 test.txt", "one emoji, a surrogate pair in UTF-16\n".encode("utf-8"), age_days=24, case="A-011")
+        self.add("01_Naming/family 👨‍👩‍👧.txt", "a ZWJ sequence: three emoji joined\n".encode("utf-8"), age_days=25, case="A-011")
+        self.case("A-011", construction="L", expected=dict(present, row_count=2),
+                  notes="path_length counts UTF-16 units, so the surrogate pairs count two each; the truth's long-path total is computed the same way")
+
+        # A-012 / Y-008 -- the same visible name in two Unicode forms: two files.
+        nfc, nfd = "caf\u00e9.txt", "cafe\u0301.txt"          # U+00E9; e + U+0301
+        assert nfc != nfd and len(nfc) == 8 and len(nfd) == 9
+        self.add("01_Naming/normalisation/" + nfc, b"NFC: e-acute is one code point\n", age_days=26, case="A-012")
+        self.add("01_Naming/normalisation/" + nfd, b"NFD: e plus combining acute\n", age_days=27, case="A-012")
+        self.case("A-012", construction="G", expected=dict(present, row_count=2, not_grouped=True),
+                  notes="NTFS does not normalise, so both entries exist; nothing may fold them into one row (also Y-008)")
+        self.case("Y-008", construction="G", expected={"row_count": 2}, notes="the same two files as A-012")
+        self.case("Y-008")["paths"].extend(self.case("A-012")["paths"])
+
+        # A-013 -- visually identical, different scripts.
+        self.add("01_Naming/lookalike/payroll.txt", b"Latin a throughout\n", age_days=28, case="A-013")
+        self.add("01_Naming/lookalike/p\u0430yroll.txt", b"Cyrillic a in the second position\n", age_days=29, case="A-013")
+        self.case("A-013", construction="G", expected=dict(present, row_count=2, not_grouped=True))
+
+        # A-014 / Y-009 / Y-053 (case-only names in a case-sensitive directory)
+        # live in Hostile\: the engine folds the pair into one row, which
+        # changes the project's totals -- see HostileCorpus._h_naming.
+
+        # A-015 -- punctuation-only differences, and (B-002) the same bytes four times.
+        same = b"The same bytes under four names that differ only in punctuation.\n"
+        for name in ("a.b.txt", "a-b.txt", "a_b.txt", "a b.txt"):
+            self.add("01_Naming/punctuation/" + name, same, age_days=32, case="A-015")
+        self.case("A-015", construction="L", expected=dict(present, row_count=4, duplicate_group_members=4))
+
+        # A-017 -- reserved characters need the POSIX namespace (WSL); not here.
+        self.decline("A-017", "characters like * ? \" < > | cannot be created through Win32, even with \\\\?\\; "
+                              "the POSIX namespace (WSL) would be needed")
+
+        # A-020 -- a PDF named .exe. The name is kept whole; extraction is
+        # chosen by extension, so the marker is expected NOT to be indexed.
+        self.add("01_Naming/invoice.pdf.exe", make_pdf(marker("01_Naming/invoice.pdf.exe")), age_days=33, case="A-020")
+        self.case("A-020", construction="G", classification="SCOPE", expected=dict(present, extension_key=".exe", **{
+            "analyzer.status": "none", "extracted_content.status": "none", "marker_indexed": False}),
+            matrix_expects="Preserve complete filename; don't assume final extension is type",
+            notes="the name is preserved and nothing executes; extraction selects by extension and .exe is not selected -- the bytes decide only how a selected file is read",
+            safety=["never executed; a PDF under an executable's name is inert to every reader"])
 
     def _bulk(self):
         """Volume and size/date spread, so ranked reports actually rank."""
@@ -1230,7 +1429,35 @@ class Corpus:
                 f["relative_path"] for f in self.files if f["size_bytes"] == 0),
             "cases": self._case_records(),
             "not_constructed": sorted(self.not_constructed, key=lambda c: c["id"]),
+            "scan_expectations": self._scan_expectations(),
             "files": sorted(self.files, key=lambda f: f["relative_path"]),
+        }
+
+    def _scan_expectations(self) -> dict:
+        """The totals the preliminary report states, computed from what was
+        built: the checks compare them with the latest PreliminaryReport.txt.
+        Path lengths depend on where the tree is, so they are computed
+        against this build's root -- the truth belongs to that tree."""
+        root = plain_path(ext_path(self.root))
+        hidden = system = long_paths = 0
+        max_depth = 0
+        for f in self.files:
+            attributes = f.get("attributes", 0)
+            hidden += bool(attributes & 0x2)
+            system += bool(attributes & 0x4)
+            full = root + "\\" + f["relative_path"]
+            if len(full.encode("utf-16-le")) // 2 > 260:      # UTF-16 units, as win_meta.utf16_length counts
+                long_paths += 1
+            max_depth = max(max_depth, f["relative_path"].count("\\"))
+        return {
+            "hidden_files": hidden,
+            "system_files": system,
+            "empty_files": sum(1 for f in self.files if f["size_bytes"] == 0),
+            "empty_folders": len(self.empty_folders),
+            "long_paths": long_paths,
+            "links_skipped": len(self.link_folders),
+            "max_depth": max_depth,
+            "access_errors": 0,
         }
 
     def _case_records(self) -> list[dict]:
@@ -1263,7 +1490,34 @@ class HostileCorpus(Corpus):
     home = "Hostile"
 
     def build(self):
-        pass
+        self._h_naming()
+
+    def _h_naming(self):
+        """01_Naming, the hostile half: what changes a project's totals."""
+        # A-014 / Y-009 / Y-053 -- case-only names in a case-sensitive directory.
+        # Found 2026-09-13: the walk yields both files (its count and byte
+        # total say so) but the ingest keys a path by its lower-cased name,
+        # so the second folds into the first -- and the surviving row is a
+        # chimera: the first file's name with the second file's size. The
+        # summary then disagrees with the walk's own count. Recorded as a
+        # DEFECT for the user's decision; the expectation stays the matrix's.
+        case_dir = self.root / "01_Naming" / "case_sensitive"
+        os.makedirs(ext_path(case_dir), exist_ok=True)
+        if enable_case_sensitivity(case_dir):
+            self.add("01_Naming/case_sensitive/Report.txt", b"capital R\n", age_days=30, case="A-014")
+            self.add("01_Naming/case_sensitive/report.txt", b"small r\n", age_days=31, case="A-014")
+            self.case("A-014", construction="G", classification="DEFECT",
+                      expected={"file_state.state": "present", "row_count": 2, "not_grouped": True},
+                      setup=["icacls <dir> /grant <user>:(F)", "fsutil file setCaseSensitiveInfo <dir> enable"],
+                      notes="the engine keeps one row for the pair (name of the first, size of the second); "
+                            "the walk counts two. file_path is unique on a lower-cased relative_path_key")
+            for twin in ("Y-009", "Y-053"):
+                self.case(twin, construction="G", classification="DEFECT", expected={"row_count": 2},
+                          notes="the same two files as A-014")
+                self.case(twin)["paths"].extend(self.case("A-014")["paths"])
+        else:
+            for case_id in ("A-014", "Y-009", "Y-053"):
+                self.decline(case_id, "the case-sensitivity flag could not be set on this volume")
 
     def ground_truth(self) -> dict:
         truth = super().ground_truth()
