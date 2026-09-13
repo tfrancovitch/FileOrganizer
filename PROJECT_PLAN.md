@@ -4,11 +4,12 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-12, afternoon — the analyzers run on the real corpus
-**Current position:** Phase 2 (Understand) — built; used twice by a person on a
-real 41,056-file corpus; every note acted on; the crash fixed; all seven analyzers
-run on the real corpus with source immutability confirmed; extraction awaits the
-user's decision; closeout drafted
+**Last updated:** 2026-09-12, evening — text extraction widened to fourteen formats
+**Current position:** Phase 2 (Understand) — built; used three times by a person,
+twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
+analyzers run on the real corpus with source immutability confirmed; extraction
+covers 7,900 of its files at a ~17-minute estimate and awaits the user's decision;
+closeout drafted
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -93,7 +94,7 @@ query engine being tested.
 
 | Check | Result |
 |---|---|
-| Acceptance suite | **30 / 30** |
+| Acceptance suite | **37 / 37** — twelve marker phrases, one per extractable format, each found only in its own file |
 | Standard reports, headless, no parameters | **31 / 31** |
 | Exact duplicates | 4 groups, 68,889 reclaimable bytes, 11 members — **exact** |
 | Same-size-different-bytes decoy | Correctly **not** grouped |
@@ -101,7 +102,7 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **149 / 149** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, and every view of the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **157 / 157** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in twelve formats found through the index, and every view of the real window |
 | **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.4 GB reclaimable. **All seven analyzers run on the real project: 30 min against a ~51 min estimate; 31,254 files analysed, 16 per-file errors recorded with reasons; 30,112 archive members listed** (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md`) |
 | **Source immutability, real folder** | **41,056 / 41,056 unchanged** in size and modification time after the Pre-Scan, Full Fingerprinting, all seven analyzers and the archive re-run |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
@@ -130,6 +131,10 @@ query engine being tested.
 | 18 | `needs_caution` bound its threshold at definition time; found by the check that tried to lower it | Read when called |
 | 19 | **Archive members were never persisted by a Dashboard run.** The streaming persistence path passed `results=` to a writer that never accepted it and never called the summary writer; every run with a `.zip` raised, was caught as a warning, reported "succeeded", and stored zero member rows with the ingest status stuck at *running*. No fixture had an archive; the real corpus had 462 | Both writers take the batch; summaries written; a persistence failure marks its analyzer run *failed* with the reason. 30,112 members persisted on re-run; the suite now carries zips through the window |
 | 20 | **"Unexpected Error" on a mouse-wheel turn after leaving the Reports page.** The scrolling list bound the wheel application-wide (`bind_all`) to its own canvas; the next page destroyed the canvas but the binding stayed, so the first wheel turn anywhere raised `invalid command name` | `clear()` drops the wheel binding with the page; the handler checks its canvas still exists. The suite turns the wheel after leaving Reports and expects silence |
+| 21 | **The PDF analyzer judged "has extractable text" by page one.** A 162-page book whose cover is a picture was recorded as having no text; it holds 782,000 characters. 348 of the real corpus's PDFs carry that flag and some of them are wrong | Every page is asked until one has text (PDFium, milliseconds a page); pdfplumber's first-page judgement remains the fallback. Re-running the PDF analyzer corrects the stored flags |
+| 22 | **The extraction estimate said ~40 hours for a ~20-minute job.** It sampled six small PDFs, measured 0.06 MB/s, and extrapolated by bytes across 5.5 GB — but PDF extraction costs per page, and most of those bytes are pictures the reader never decodes | PDFs are estimated by page (seconds per page from a PDF-only sample × pages the PDF analyzer already counted); other documents by file and byte as before. Same corpus: ~17 min |
+| 23 | `self_check.py` required schema 7 while every database is schema 8 — the health check failed on every machine | Requires 8, kept equal to `fo_db.APP_SCHEMA_VERSION` |
+| 24 | An openpyxl read-only workbook was never closed after extraction, holding the source file open | Closed in a `finally` |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -137,11 +142,11 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 
 ### Known limits
 
-- **Text extraction covers six formats** — `.pdf .docx .pptx .xlsx .txt .md`. Text in a `.csv`, `.json`, `.log` or extensionless file is never extracted and never searchable, **and the search says nothing about it.** Blocking for any legal claim.
+- **Text extraction covers fourteen formats** — `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .txt .md`, each read by what its bytes are rather than what its name says. Not covered: text inside a `.log`, `.xml`, `.vcf`, `.ics` or extensionless file (one-line additions), email (`.msg`, `.pst`, `.eml`), OpenDocument, and **image-only PDFs, which need OCR**. Text the product cannot extract is never searchable, **and the search says nothing about it.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
-- **Text extraction can be very slow on real PDFs.** The real corpus's 4,060 extractable documents estimated at ~40 hours (the sample hit 6 s/file). The estimate is pessimistic by design; the true figure is unknown until it runs. Extraction was deliberately not started unattended.
+- **Text extraction has not yet run on the real corpus.** It was estimated at ~40 hours on 2026-09-12 (defect 22); with PDF text through PDFium and the estimate counting pages, the same corpus now estimates at **~17 minutes for 7,900 files**. The true figure is unknown until it runs; it is the user's decision.
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
@@ -208,8 +213,20 @@ Every note acted on the same day:
 | Metadata Explorer not useful — where is the collected data? | It now shows everything recorded about the file: every field of every analyzer, the archive's members, the error |
 | Reports page: scroll wheel → "Unexpected Error" | Defect 20 |
 
-The user's decision on text extraction (~40 h estimated) is still open, and the
-`phase2` branch is still unpushed.
+The user then asked about extraction — whether it covers every extractable
+file or only the easy ones, whether 40 hours could be sped up, whether it includes
+indexing, whether the computer stays usable, what happens to a file added
+mid-run — and, on the answers, asked for everything: a faster PDF reader, an
+honest estimate, and the missing formats. Same day:
+
+| Asked for | Done |
+|---|---|
+| PDF text faster | PDF text through PDFium (already installed as a pdfplumber dependency): 4–13 ms a page against 125–190, the same text out; pdfplumber stays as the fallback |
+| An estimate that does not say 40 hours for a short job | PDFs estimated by page count (defect 22); same corpus ~17 min |
+| `.rtf .csv .json .html .doc .ppt .xls` | All read, by their bytes: 947 of the corpus's 1,263 `.doc` files turned out to be RTF inside and 10 of its 13 `.xls` are HTML exports — every one now reads as what it is. Word/PowerPoint 97-2003 are read directly from the OLE2 container; Excel 97-2003 through `xlrd` (optional) |
+
+The corpus's extractable set went from 4,060 files to 7,900. The `phase2` branch
+is still unpushed.
 
 ### What remains before Phase 2 closes
 
@@ -221,7 +238,7 @@ The living plan's own completion criteria:
 | Shareable evidence reviewed | Partial |
 | **Real user questions recorded** | **Partial → mostly met** — three sessions' notes recorded and acted on; the third session's include the first questions of the corpus itself (the empty files, the files that could not be analyzed, where the collected data is). The space and duplicate questions are still to be asked |
 | Analytical gaps classified | Partial |
-| High-value deficiencies corrected or deferred | **Done** — 20 defects, all fixed |
+| High-value deficiencies corrected or deferred | **Done** — 24 defects, all fixed |
 | Real source immutability confirmed | **Done — on the real folder**: 41,056 / 41,056 unchanged after every run |
 | **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not evidenced** — the session did not reach a verdict |
 
@@ -333,20 +350,25 @@ rather than time-boxed, and it does not exist for network shares.
     reasons, value lists on filters, analysis columns, the explorer showing
     everything, the folder tree, Explore the files; defect 20 found and fixed ✔
 
+**Done 2026-09-12, evening — extraction widened at the user's request**
+11. PDF text through PDFium; the estimate counts pages; `.doc .ppt .xls .rtf
+    .html .csv .json` read by their bytes; defects 21–24 ✔
+
 **To close Phase 2** — the user's decision
-11. Extract and index the 4,060 documents, or not (~40 h estimated; it will ask)
-12. Ask the corpus things — what is taking the space, which duplicate groups are
+12. Extract and index the 7,900 documents, or not (~17 min estimated; it will
+    not even ask, being under the caution threshold)
+13. Ask the corpus things — what is taking the space, which duplicate groups are
     worth acting on, what is in the archives — and record what was asked and
     whether it answered
-13. Sign the closeout; Phase 3 handoff follows from it
+14. Sign the closeout; Phase 3 handoff follows from it
 
 **Decisions still open**
 - Does a re-run constitute a new project?
 - Is consumer mode a preference or a separate edition?
 - Does the journal need to be tamper-evident, or merely out of the way?
-- Should text extraction cover more formats? Email (`.msg`, `.pst`, `.eml`) is the largest gap for legal use.
+- Should text extraction cover more formats? Fourteen are covered now; email (`.msg`, `.pst`, `.eml`) is the largest remaining gap for legal use, and image-only PDFs need OCR.
 
-**Unpushed:** the `phase2` branch is **47 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **53 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.

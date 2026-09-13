@@ -155,7 +155,7 @@ applies to, and reports `no_applicable_files` as a distinct, successful state.
 | `VideoAnalysis.ps1` | Video | needs ffprobe | Technical metadata |
 | `TextFileAnalysis.ps1` | Text / Markdown | `.txt .md` | Word counts, tags, links |
 | `ArchiveAnalysis.ps1` | Archives | `.zip .7z` | **Lists members without extracting** |
-| `ContentExtraction.ps1` | Text extraction | `.pdf .docx .pptx .xlsx .txt .md` | Extracted-text artifacts |
+| `ContentExtraction.ps1` | Text extraction | `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .txt .md` — each read by its bytes, not its name | Extracted-text artifacts |
 
 Writes `analyzer_run`, `analyzer_result`, plus `archive_member` /
 `archive_summary` and `extracted_content`.
@@ -177,8 +177,11 @@ file.
 **The estimate before it starts** (`fo_estimates.estimate_analysis`) counts the
 applicable files exactly from the inventory, runs the real analyzer over up to 6
 files spread across the size range (24 MB cap), models files and bytes, and
-applies the pessimistic factor. Extraction's sample writes to a temporary folder
-that is deleted — never into `Runs\`.
+applies the pessimistic factor. Extraction is estimated in two halves — PDFs by
+**page** (seconds per page from a PDF-only sample × the pages the PDF analyzer
+already counted), everything else by file and byte — because a PDF's cost follows
+its pages, not its size. Extraction's sample writes to a temporary folder that is
+deleted — never into `Runs\`.
 
 **A re-scan no longer detaches results.** Results are attached to the current
 observation the engine loaded the file under, not re-found by path in the newest
@@ -208,10 +211,12 @@ build leaves no half index.
 
 You may do 1 without 2, and 2 without 3.
 
-> **Coverage limit worth knowing:** extraction handles six formats. Text inside a
-> `.csv`, `.json`, `.log`, or an extensionless text file is never extracted and
-> therefore never searchable — and today the search returns zero results without
-> saying so.
+> **Coverage limit worth knowing:** extraction handles fourteen formats, and a
+> file is read as what its bytes are (a `.doc` holding RTF is read as RTF; a
+> `.xls` holding an HTML export as HTML). Text inside a `.log`, `.xml`, an
+> extensionless file, an email file, or an image-only PDF (OCR) is never
+> extracted and therefore never searchable — and today the search returns zero
+> results without saying so.
 
 ---
 
