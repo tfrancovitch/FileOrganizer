@@ -608,29 +608,44 @@ def _pdf_page_totals(conn):
         return 0, 0
 
 
+#: Extraction's non-PDF files, in families whose cost per byte is alike.
+#: A 40 MB PowerPoint is mostly pictures the reader skips; a 40 MB JSON is
+#: 40 MB of text to decode and count. Sampled together they mislead each
+#: other; sampled apart each family gets its own rate.
+EXTRACTION_FAMILIES = (
+    ("office", "Office documents", frozenset({".docx", ".pptx", ".xlsx", ".doc", ".ppt", ".xls", ".rtf"})),
+    ("email", "email and mailboxes", frozenset({".eml", ".mbox", ".mht", ".mhtml", ".msg", ".pst", ".ost"})),
+    ("text", "text-like files", None),           # everything else that is not a PDF
+)
+
+_EMPTY_MEASUREMENT = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
+                      "pages_read": 0, "error": None}
+
+
 def _estimate_extraction(conn, rows, safety, sample_files):
-    r"""Text extraction, in two parts: PDFs by PAGE, everything else by file
-    and by byte.
+    r"""Text extraction, in parts: PDFs by PAGE, then each family of the
+    other documents by file and by byte, each from its own sample.
 
     A PDF's extraction time follows its page count, not its size: a 150 MB
     art book and a 1 MB brief with the same number of pages take about the
     same time, because the reader never decodes the pictures. Extrapolating
-    the first real corpus by bytes put a ~2 h run at ~40 h. So the PDF half
-    samples PDFs, measures seconds per page, and multiplies by the pages the
-    PDF analyzer has already counted (a PDF it has not seen is given the
-    sample's mean). The other half is the usual max(files x per-file,
-    bytes / rate) over the non-PDF documents.
+    the first real corpus by bytes put a ~20 min run at ~40 h. So the PDF
+    part samples PDFs, measures seconds per page, and multiplies by the
+    pages the PDF analyzer has already counted (a PDF it has not seen is
+    given the sample's mean). The other families take the usual
+    max(files x per-file, bytes / rate), each over its own sample, because
+    their bytes-per-second differ by an order of magnitude.
     """
-    pdf_rows = [r for r in rows if r[0].lower().endswith(".pdf")]
-    other_rows = [r for r in rows if not r[0].lower().endswith(".pdf")]
-    empty = {"files_used": 0, "bytes_read": 0, "elapsed": 0.0, "text_bytes": 0,
-             "pages_read": 0, "error": None}
-    m_pdf = measure_analyzer("content_extraction", spread_sample(pdf_rows, sample_files)) if pdf_rows else dict(empty)
+    def ext_of(path):
+        name = path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name[1:] else ""
+
+    pdf_rows = [r for r in rows if ext_of(r[0]) == ".pdf"]
+    rest = [r for r in rows if ext_of(r[0]) != ".pdf"]
+
+    m_pdf = measure_analyzer("content_extraction", spread_sample(pdf_rows, sample_files)) if pdf_rows else dict(_EMPTY_MEASUREMENT)
     if m_pdf["error"]:
         return {"error": m_pdf["error"]}
-    m_other = measure_analyzer("content_extraction", spread_sample(other_rows, sample_files)) if other_rows else dict(empty)
-    if m_other["error"]:
-        return {"error": m_other["error"]}
 
     pdf_local = [r for r in pdf_rows if not r[2]]
     pdf_count = len(pdf_local)
@@ -658,26 +673,39 @@ def _estimate_extraction(conn, rows, safety, sample_files):
                    "seconds_per_page": None, "sample": m_pdf, "seconds": pdf_seconds,
                    "guessed": model["guessed"]}
 
-    other_local = [r for r in other_rows if not r[2]]
-    other_model = _pessimistic_seconds(len(other_local), sum(r[1] for r in other_local), m_other, safety) \
-        if other_local else {"per_file_seconds": None, "bytes_per_sec": None, "guessed": False,
-                             "by_files_seconds": 0.0, "by_bytes_seconds": 0.0, "overhead_seconds": 0.0, "seconds": 0.0}
+    families = []
+    taken = set()
+    for key, label, exts in EXTRACTION_FAMILIES:
+        if exts is None:
+            members = [r for r in rest if id(r) not in taken]
+        else:
+            members = [r for r in rest if ext_of(r[0]) in exts]
+            taken.update(id(r) for r in members)
+        local = [r for r in members if not r[2]]
+        if not local:
+            continue
+        m = measure_analyzer("content_extraction", spread_sample(members, sample_files))
+        if m["error"]:
+            return {"error": m["error"]}
+        model = _pessimistic_seconds(len(local), sum(r[1] for r in local), m, safety)
+        families.append({"key": key, "label": label, "files": len(local),
+                         "bytes": sum(r[1] for r in local), "sample": m, **model})
 
-    merged = dict(empty)
-    for m in (m_pdf, m_other):
+    merged = dict(_EMPTY_MEASUREMENT)
+    for m in [m_pdf] + [f["sample"] for f in families]:
         for k in ("files_used", "bytes_read", "text_bytes", "pages_read"):
             merged[k] += m[k]
         merged["elapsed"] += m["elapsed"]
-    return {"error": None, "sample": merged, "pdf": pdf,
-            "other": {"files": len(other_local), "bytes": sum(r[1] for r in other_local),
-                      "sample": m_other, **other_model},
-            "per_file_seconds": other_model["per_file_seconds"],
-            "bytes_per_sec": other_model["bytes_per_sec"],
-            "guessed": bool(other_model["guessed"] and (pdf is None or pdf["guessed"])),
-            "by_files_seconds": other_model["by_files_seconds"],
-            "by_bytes_seconds": other_model["by_bytes_seconds"],
-            "overhead_seconds": other_model["overhead_seconds"],
-            "seconds": pdf_seconds + other_model["seconds"]}
+    total = pdf_seconds + sum(f["seconds"] for f in families)
+    first = families[0] if families else None
+    return {"error": None, "sample": merged, "pdf": pdf, "families": families,
+            "per_file_seconds": first["per_file_seconds"] if first else None,
+            "bytes_per_sec": first["bytes_per_sec"] if first else None,
+            "guessed": bool(all(f["guessed"] for f in families) and (pdf is None or pdf["guessed"])) if (families or pdf) else True,
+            "by_files_seconds": sum(f["by_files_seconds"] for f in families),
+            "by_bytes_seconds": sum(f["by_bytes_seconds"] for f in families),
+            "overhead_seconds": sum(f["overhead_seconds"] for f in families),
+            "seconds": total}
 
 
 def estimate_analysis(conn, keys, drive_type=None, sample_files=ANALYZER_SAMPLE_FILES):
@@ -772,7 +800,7 @@ def describe_analysis(breakdown):
             continue
         lines.append(head + "   ->  %s" % format_duration(a["seconds"]))
         sample = a["sample"] or {}
-        if a.get("pdf") is not None or a.get("other") is not None:
+        if a.get("pdf") is not None or a.get("families") is not None:
             lines.extend(_describe_extraction(a))
         elif a["guessed"]:
             lines.append("    no file could be sampled; this is a flat guess, not a measurement")
@@ -797,7 +825,7 @@ def describe_analysis(breakdown):
 
 
 def _describe_extraction(a):
-    """Extraction's two halves: PDFs by page, other documents by file."""
+    """Extraction's parts: PDFs by page, then each family of documents by file."""
     lines = []
     pdf = a.get("pdf")
     if pdf:
@@ -815,18 +843,17 @@ def _describe_extraction(a):
         else:
             lines.append("    PDFs: %s files   ->  %s (pages could not be counted; estimated by size)"
                          % ("{:,}".format(pdf["files"]), format_duration(pdf["seconds"])))
-    other = a.get("other")
-    if other and other["files"]:
-        s = other["sample"]
-        lines.append("    other documents: %s files, %s   ->  %s"
-                     % ("{:,}".format(other["files"]), _mb(other["bytes"]), format_duration(other["seconds"])))
-        if other["guessed"]:
+    for fam in a.get("families") or []:
+        s = fam["sample"]
+        lines.append("    %s: %s files, %s   ->  %s"
+                     % (fam["label"], "{:,}".format(fam["files"]), _mb(fam["bytes"]), format_duration(fam["seconds"])))
+        if fam["guessed"]:
             lines.append("        no file could be sampled; this is a flat guess, not a measurement")
         else:
             lines.append("        sampled %d file(s), %s in %.2f s: %.1f ms/file, %s/s"
                          % (s["files_used"], _mb(s["bytes_read"]), s["elapsed"],
-                            other["per_file_seconds"] * 1000.0,
-                            _mb(other["bytes_per_sec"]) if other["bytes_per_sec"] else "n/a"))
+                            fam["per_file_seconds"] * 1000.0,
+                            _mb(fam["bytes_per_sec"]) if fam["bytes_per_sec"] else "n/a"))
     return lines
 
 
