@@ -355,8 +355,8 @@ rather than time-boxed, and it does not exist for network shares.
     .html .csv .json` read by their bytes; defects 21–24 ✔
 
 **To close Phase 2** — the user's decision
-12. Extract and index the 7,900 documents, or not (~17 min estimated; it will
-    not even ask, being under the caution threshold)
+12. Extract and index the 7,900 documents, or not (~17 min estimated; just over
+    the 15-minute caution, so it will ask "Begin now?" once)
 13. Ask the corpus things — what is taking the space, which duplicate groups are
     worth acting on, what is in the archives — and record what was asked and
     whether it answered
@@ -368,7 +368,7 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? Fourteen are covered now; email (`.msg`, `.pst`, `.eml`) is the largest remaining gap for legal use, and image-only PDFs need OCR.
 
-**Unpushed:** the `phase2` branch is **53 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **54 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.
