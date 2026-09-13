@@ -4,12 +4,13 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-13 — text extraction widened to twenty-six formats, email included
+**Last updated:** 2026-09-13, later — OCR with a quality judgement; 113 extraction formats; the full test corpus at `C:\FOTest`
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
-analyzers run on the real corpus with source immutability confirmed; extraction
-covers 8,240 of its files at a 20–30-minute estimate and awaits the user's decision;
-closeout drafted
+analyzers run on the real corpus with source immutability confirmed; extraction now
+reads 113 formats including scans by OCR, and awaits the user's decision (the
+estimate is honest about what OCR of a 30 GB picture library and 32 GB of zips
+would cost, and the Options page can leave those out); closeout drafted
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -94,7 +95,7 @@ query engine being tested.
 
 | Check | Result |
 |---|---|
-| Acceptance suite | **47 / 47** — twenty-two marker phrases, one per extractable format, each found only in its own file |
+| Acceptance suite | **72 / 72** — 46 marker phrases, one per extractable format, each found only in its own file; the scans' only through OCR |
 | Standard reports, headless, no parameters | **31 / 31** |
 | Exact duplicates | 4 groups, 68,889 reclaimable bytes, 11 members — **exact** |
 | Same-size-different-bytes decoy | Correctly **not** grouped |
@@ -102,7 +103,7 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **160 / 160** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in twenty-two formats found through the index (the email ones only inside attachments), and every view of the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **168 / 168** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in 46 formats found through the index (the email ones only inside attachments, the scans' only by OCR), the clean scans unflagged and the poor scans flagged with reasons, the Options page's switches, and every view of the real window |
 | **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.4 GB reclaimable. **All seven analyzers run on the real project: 30 min against a ~51 min estimate; 31,254 files analysed, 16 per-file errors recorded with reasons; 30,112 archive members listed** (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md`) |
 | **Source immutability, real folder** | **41,056 / 41,056 unchanged** in size and modification time after the Pre-Scan, Full Fingerprinting, all seven analyzers and the archive re-run |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
@@ -142,11 +143,11 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 
 ### Known limits
 
-- **Text extraction covers twenty-six formats** — `.pdf .docx .doc .pptx .ppt .xlsx .xls .rtf .html .htm .csv .json .xml .log .vcf .ics .txt .md`, files with no extension, and email as `.eml .mbox .mht .mhtml .msg .pst .ost` — each read by what its bytes are rather than what its name says, attachments included. Not covered: OpenDocument, EPUB, source code and configuration files, and **image-only PDFs and scanned images, which need OCR**. The `.pst` reader is written to the specification but has not yet met a real file. Text the product cannot extract is never searchable, **and the search says nothing about it.**
+- **Text extraction covers 113 formats** — every document, email, OpenDocument, EPUB and Office variant, source and configuration, the documents inside zips, WordPerfect and OneNote (by scanning, unverified), files with no extension, and **pages with no text layer and pictures that look like documents, by OCR** (Windows' engine; every page judged, poor scans flagged for a person). Not covered: non-TIFF camera RAW and anything the OCR gate calls a photograph. Text the product cannot extract is never searchable, **and the search says nothing about it.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
-- **Text extraction has not yet run on the real corpus.** It was estimated at ~40 hours on 2026-09-12 (defect 22); with PDF text through PDFium, the estimate counting pages and sampling each family of document apart, the same corpus now estimates at **20–30 minutes for 8,240 files** (the spread is the sample: six files per family, timed cold or warm). The true figure is unknown until it runs; it is the user's decision.
+- **Text extraction has not yet run on the real corpus.** With OCR, pictures and archives all on, the estimate for it is **~15 hours** — 3 h for the PDFs (2 h 45 of that OCR of 9,868 pages with no text layer), 1 h 10 looking at 25,269 pictures, and 10 h reading the documents inside 462 zips (4.5 GB of scanned legal batches, OCR again). With those switched off on the Options page it is 20–30 minutes. Cancel keeps what was done. The user decides.
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
@@ -244,6 +245,22 @@ because they are the same readers:
 
 The extractable set is now 8,240 of the corpus's 41,056 files. An email's subject,
 sender and date are its Title, Author and Created columns.
+
+**2026-09-13, later.** The user asked for the remaining formats — OpenDocument, EPUB,
+macro-enabled Office, source and configuration, the documents inside zips, WordPerfect,
+OneNote — for OCR with Windows' engine and a flag for poor scans, and for `C:\FOTest`
+to become a full test corpus with one file of every type. All built the same day:
+
+| Asked for | Done |
+|---|---|
+| The formats | 113 in all. OpenDocument from `content.xml`; EPUB in spine order; every Office Open XML variant read raw from the package (also the fallback when a library refuses a `.docx`); fifty-odd source and configuration extensions; zips and 7z two levels deep with caps; WordPerfect (function codes stepped over) and OneNote (its UTF-16 strings) — those two by scanning, and **unverified**, a sample in `C:\FOTest\Samples` goes into the corpus on rebuild |
+| OCR | Windows.Media.Ocr through `winocr` — free, offline, ~0.5 s a page — on PDFium renders of pages with no text layer, and on pictures that pass a document gate. **The quality judgement**: resolution, contrast, focus, speckle, the skew the engine measured, how much of the result reads as words, and ink-with-no-words; a score per page, reasons in plain words, `OcrReview = yes` under 70. Calibrated on a real 103-dpi scan and degraded copies. Columns on the Files page, a summary line with Show which, the Options page's three switches |
+| The PST reader | Verified on Apache Tika's two test mailboxes (downloaded with the user's approval); one defect — embedded messages were not followed — fixed |
+| `C:\FOTest` | `Corpus\` (344 files, 107 extensions: every image, RAW, audio, video, archive and document format the program names, scans clean and poor, a photograph, malformed files), `GROUND_TRUTH.json`, `Samples\` for real third-party files, `README.md`; the user's adversarial Master Matrix in `Research\` is the target its folders map onto |
+
+Word 2016 automation hung on every variant save (Excel and PowerPoint did not), so
+the Word variants are derived; the rest of the Office fixtures are genuine and live
+in `Resources\Fixtures`.
 
 ### What remains before Phase 2 closes
 
@@ -373,12 +390,15 @@ rather than time-boxed, and it does not exist for network shares.
 
 **Done 2026-09-13 — the rest of the formats**
 11a. `.log .xml .vcf .ics`, files with no extension, and email in every shape
-     (`.eml .mbox .mht .msg .pst`); the estimate samples by family ✔ — the
-     `.pst` reader awaits its first real file
+     (`.eml .mbox .mht .msg .pst`); the estimate samples by family ✔
+11b. OpenDocument, EPUB, Office variants, code and config, inside zips,
+     WordPerfect and OneNote (unverified); OCR with a per-page judgement and
+     the review flag; the PST reader verified on real files; the full test
+     corpus at `C:\FOTest` ✔
 
 **To close Phase 2** — the user's decision
-12. Extract and index the 8,240 documents, or not (20–30 min estimated; over
-    the 15-minute caution, so it will ask "Begin now?" once)
+12. Extract and index, or not — 20–30 min for the documents alone, ~15 h with
+    OCR of the pictures and the zips' scanned batches; the Options page chooses
 13. Ask the corpus things — what is taking the space, which duplicate groups are
     worth acting on, what is in the archives — and record what was asked and
     whether it answered
@@ -388,9 +408,9 @@ rather than time-boxed, and it does not exist for network shares.
 - Does a re-run constitute a new project?
 - Is consumer mode a preference or a separate edition?
 - Does the journal need to be tamper-evident, or merely out of the way?
-- Should text extraction cover more formats? Twenty-six are covered now, email included. What remains is OCR for image-only PDFs and scanned images (the engine is the user's choice — see the 2026-09-13 note in the handoff), and the long tail: OpenDocument, EPUB, source code and configuration files.
+- Should text extraction cover more formats? 113 now, OCR included. What remains is samples for WordPerfect, OneNote and the non-TIFF camera RAW formats, and the adversarial corpus of the Master Matrix in `C:\FOTest\Research`.
 
-**Unpushed:** the `phase2` branch is **60 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch is **66 commits** and exists only on this machine.
 
 **Handoff:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the build queue,
 the decisions already settled, and the traps, for a session picking this up cold.
@@ -415,5 +435,6 @@ C:\FileOrganizerTesting\
   _Archive\           superseded builds and documents, with an index
 ```
 
-Test corpora live under `C:\FOTest\`; `P2Accept` and `P2Scale` carry
-`GROUND_TRUTH.json` and are the acceptance fixtures.
+The test corpus is `C:\FOTest\Corpus` with `GROUND_TRUTH.json` beside it
+(`C:\FOTest\README.md` says what is in it and how to rebuild it); the earlier
+fixtures are under `C:\FOTest ARCHIVE\`.

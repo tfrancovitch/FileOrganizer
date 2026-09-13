@@ -95,7 +95,7 @@ failed and everything else continues.
 | Images | `Pillow`, `imagehash`; `pillow-heif` for HEIC/HEIF |
 | PDF | `pypdf`, `pdfplumber`; `pypdfium2` (installed with pdfplumber) reads text 25-30x faster |
 | Office | `python-docx`, `openpyxl`, `python-pptx`, `olefile` |
-| Text extraction | the PDF and Office packages, `chardet`; `xlrd` for `.xls` text. Word and PowerPoint 97-2003, RTF, HTML, CSV, JSON, XML, logs, vCards, calendars, and email (`.eml .mbox .mht .msg .pst`) need nothing extra |
+| Text extraction | the PDF and Office packages, `chardet`; `xlrd` for `.xls` text; `winocr` for OCR of scans (Windows' own engine); `py7zr` for the documents inside `.7z`. Everything else — legacy Office, RTF, HTML, OpenDocument, EPUB, email, code, zips, WordPerfect, OneNote — needs nothing extra |
 | RAW photos | `exifread` |
 | Audio | `mutagen` + **ffprobe** on PATH |
 | Video | **ffprobe** on PATH |
