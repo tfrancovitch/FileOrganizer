@@ -720,6 +720,36 @@ def ffmpeg_bytes(args: list[str], ext: str) -> bytes | None:
             pass
 
 
+def make_lnk(absolute_target: str, relative_target: str, is_dir: bool = False) -> bytes:
+    """A Windows shortcut in the MS-SHLLINK format: a header, a LinkInfo
+    block with the target's local base path, the relative path and a working
+    directory. No ItemIDList -- the shell's CreateShortcut writes one, but
+    it carries the target's creation and access times and so differs on
+    every build; the corpus has to hash the same twice. WScript's
+    TargetPath reads empty without the ItemIDList; a link parser reading
+    LinkInfo or RELATIVE_PATH gets the target. The scanner treats any .lnk
+    as an ordinary file, which is what these cases establish.
+    """
+    import struct
+    flags = 0x02 | 0x08 | 0x10 | 0x80               # HasLinkInfo | HasRelativePath | HasWorkingDir | IsUnicode
+    attributes = FILE_ATTRIBUTE_DIRECTORY if is_dir else 0x20
+    header = struct.pack("<I16sIIQQQIIIHHII", 0x4C, bytes.fromhex("0114020000000000C000000000000046"),
+                         flags, attributes, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0)
+    base = absolute_target.encode("mbcs", "replace") + b"\x00"
+    volume = struct.pack("<IIII", 17, 3, 0, 16) + b"\x00"        # fixed drive, serial 0, empty label
+    header_size = 28
+    volume_offset = header_size
+    base_offset = volume_offset + len(volume)
+    suffix_offset = base_offset + len(base)
+    link_info = (struct.pack("<IIIIIII", suffix_offset + 1, header_size, 0x1, volume_offset, base_offset, 0, suffix_offset)
+                 + volume + base + b"\x00")
+
+    def string_data(text):
+        return struct.pack("<H", len(text)) + text.encode("utf-16-le")
+
+    return header + link_info + string_data(relative_target) + string_data(".") + b"\x00\x00\x00\x00"
+
+
 def make_gzip(payload: bytes) -> bytes:
     import gzip
     buf = io.BytesIO()
@@ -801,7 +831,7 @@ class Corpus:
 
     def case(self, case_id: str, *, expected: dict | None = None, construction: str | None = None,
              setup=(), teardown=(), safety=(), notes: str = "", matrix_expects: str | None = None,
-             classification: str | None = None) -> dict:
+             classification: str | None = None, condition: str | None = None) -> dict:
         """Register (or update) the matrix condition this corpus embodies.
 
         `expected` is written in this program's vocabulary -- column names and
@@ -839,6 +869,8 @@ class Corpus:
             record["construction"] = construction
         if matrix_expects:
             record["matrix_expects"] = matrix_expects
+        if condition and not record["condition"]:
+            record["condition"] = condition        # compound scenarios are not in the CSV
         if classification:
             # DEFECT: the engine is wrong and the expectation is the matrix's
             # (the check stays red until it is fixed). SCOPE: a recorded
@@ -883,6 +915,7 @@ class Corpus:
         # The Master Matrix's categories, one method each (2026-09-13 on).
         self._naming()
         self._duplicates_identity()
+        self._links()
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -1420,6 +1453,64 @@ class Corpus:
                  attributes=FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_READONLY)
         self.case("Y-051", construction="G", expected=dict(present, duplicate_group_members=2,
                                                            attributes_has=["Hidden", "ReadOnly"]))
+
+    def _links(self):
+        """03_Links, the tool-safe half: Windows shortcuts. A .lnk is an
+        ordinary file to this scanner -- nothing resolves it, so chains and
+        cycles cannot hang anything, and the target is not recorded (the
+        relationship layer is Phase 3). Junctions and symbolic links, which
+        the walk must recognise and refuse, live in Hostile\\."""
+        base = "03_Links"
+        root = plain_path(ext_path(self.root))
+        lnk = {"file_state.state": "present", "extension_key": ".lnk", "analyzer.status": "none",
+               "extracted_content.status": "none"}
+        scope = dict(classification="SCOPE", construction="G",
+                     notes="the .lnk is inventoried as a file; its target is not recorded -- the relationship layer is Phase 3")
+
+        def shortcut(relpath, target_rel, is_dir=False):
+            absolute = root + "\\" + target_rel.replace("/", "\\")
+            relative = ".\\" + os.path.relpath(target_rel, os.path.dirname(relpath)).replace("/", "\\")
+            return make_lnk(absolute, relative, is_dir)
+
+        self.add(base + "/targets/document.txt", b"The document a shortcut points at.\n", age_days=35)
+        self.add(base + "/targets/folder/inside.txt", b"Inside the folder a shortcut points at.\n", age_days=35)
+
+        # C-001 / C-002 / C-004 -- to a file, to a folder, to nothing.
+        self.add(base + "/to_document.lnk", shortcut(base + "/to_document.lnk", base + "/targets/document.txt"), age_days=36, case="C-001")
+        self.case("C-001", expected=lnk, **scope)
+        self.add(base + "/to_folder.lnk", shortcut(base + "/to_folder.lnk", base + "/targets/folder", is_dir=True), age_days=36, case="C-002")
+        self.case("C-002", expected=lnk, **scope)
+        self.add(base + "/to_missing.lnk", shortcut(base + "/to_missing.lnk", base + "/targets/deleted_long_ago.txt"), age_days=36, case="C-004")
+        self.case("C-004", expected=lnk, **scope)
+
+        # C-003 / C-008 / C-009 / C-010 / X-003 -- a chain, a self-reference, a
+        # long chain, a cycle. The assertion is that the run completes: no
+        # reader opens a shortcut, so none can follow one.
+        for i in (1, 2, 3):
+            target = base + ("/chain/hop_%d.lnk" % (i + 1) if i < 3 else "/targets/document.txt")
+            self.add(base + "/chain/hop_%d.lnk" % i, shortcut(base + "/chain/hop_%d.lnk" % i, target), age_days=37, case="C-003")
+        self.case("C-003", expected=dict(lnk, row_count=3), construction="G",
+                  notes="hop_1 -> hop_2 -> hop_3 -> document.txt")
+        self.add(base + "/self.lnk", shortcut(base + "/self.lnk", base + "/self.lnk"), age_days=38, case="C-008")
+        self.case("C-008", expected=lnk, construction="G", notes="points at itself; nothing here follows a shortcut, so nothing can loop")
+        for i in range(1, 51):
+            target = base + ("/long_chain/hop_%02d.lnk" % (i + 1) if i < 50 else "/targets/document.txt")
+            self.add(base + "/long_chain/hop_%02d.lnk" % i, shortcut(base + "/long_chain/hop_%02d.lnk" % i, target), age_days=39, case="C-009")
+        self.case("C-009", expected=dict(lnk, row_count=50), construction="G", notes="fifty hops to document.txt")
+        for a, b in (("a", "b"), ("b", "c"), ("c", "a")):
+            self.add(base + "/cycle/cycle_%s.lnk" % a, shortcut(base + "/cycle/cycle_%s.lnk" % a, base + "/cycle/cycle_%s.lnk" % b), age_days=40, case="C-010")
+        self.case("C-010", expected=dict(lnk, row_count=3), construction="G", notes="a -> b -> c -> a")
+        self.case("X-003", expected=dict(lnk, row_count=57), construction="G", condition="Shortcut -> shortcut -> circular link",
+                  notes="the chain, the self-reference, the long chain and the cycle together; the run completes")
+        for cid in ("C-003", "C-008", "C-009", "C-010"):
+            self.case("X-003")["paths"].extend(self.case(cid)["paths"])
+
+        # H-004 / H-005 -- a folder holding only shortcuts; only broken ones.
+        for i in range(3):
+            self.add(base + "/only_shortcuts/s%d.lnk" % i, shortcut(base + "/only_shortcuts/s%d.lnk" % i, base + "/targets/document.txt"), age_days=41, case="H-004")
+            self.add(base + "/only_broken/b%d.lnk" % i, shortcut(base + "/only_broken/b%d.lnk" % i, base + "/targets/gone_%d.txt" % i), age_days=42, case="H-005")
+        self.case("H-004", expected=dict(lnk, row_count=3), construction="G", notes="the folder is not empty: three rows")
+        self.case("H-005", expected=dict(lnk, row_count=3), construction="G", notes="broken or not, a shortcut is a file; three rows")
 
     def _bulk(self):
         """Volume and size/date spread, so ranked reports actually rank."""

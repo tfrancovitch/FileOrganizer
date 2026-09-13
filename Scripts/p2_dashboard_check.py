@@ -805,9 +805,15 @@ def test_gui_views(project_dir: Path):
         app.next_files_page(); app.update()
         texts = _texts(app.content)
         nxt = _button(app.content, "Next 200 \u25b6"); prv = _button(app.content, "\u25c0 Previous 200")
-        check(f"the second page shows 201-{n_files} with Next disabled and Previous enabled",
-              any(t.startswith("Files 201") and f"{n_files} of {n_files}" in t for t in texts)
-              and str(nxt.cget("state")) == "disabled" and str(prv.cget("state")) == "normal", str([t for t in texts if t.startswith("Files")]))
+        # The corpus grows with every matrix category; the page arithmetic is
+        # derived from the count rather than assuming it fits in two pages.
+        last_on_second = min(400, n_files)
+        second_is_last = n_files <= 400
+        check(f"the second page shows 201-{last_on_second} of {n_files} with Previous enabled"
+              + (" and Next disabled" if second_is_last else " and Next enabled"),
+              any(t.startswith("Files 201") and f"{last_on_second} of {n_files}" in t for t in texts)
+              and str(nxt.cget("state")) == ("disabled" if second_is_last else "normal")
+              and str(prv.cget("state")) == "normal", str([t for t in texts if t.startswith("Files")]))
         app.previous_files_page(); app.update()
         check("Previous returns to page one", any(t.startswith("Files 1") for t in _texts(app.content)))
         app.sort_files_by("file.size_bytes"); app.update()
