@@ -10,9 +10,12 @@ The corpus deliberately contains:
 
   * many extensions, including files with no extension
   * exact duplicates with a precomputed reclaimable-byte total
-  * extractable text (DOCX, XLSX, PDF, TXT, CSV, RTF, HTML, JSON, and the
-    Word / Excel / PowerPoint 97-2003 binaries) carrying known marker phrases
-    so FTS can be verified against a specific expected hit
+  * extractable text (DOCX, XLSX, PDF, TXT, CSV, RTF, HTML, JSON, XML, LOG,
+    vCard, iCalendar, a file with no extension, the Word / Excel / PowerPoint
+    97-2003 binaries, and email as .eml, .mbox, .mht and Outlook .msg)
+    carrying known marker phrases so FTS can be verified against a specific
+    expected hit -- for the email files, a phrase that lives only in an
+    attachment, so attachment extraction is what is verified
   * a wide modified-date spread so the Age reports separate
   * deliberately malformed files so analyzer-failure reports are exercised
   * edge cases: zero-byte, unicode names, deep nesting, long paths
@@ -61,6 +64,16 @@ MARKERS = {
     "Documents/saved_page.html": ("kestrel varnish ledgerline", True),
     "Documents/export.json": ("mizzen tabulated cormorant", True),
     "Documents/misnamed_rtf.doc": ("pellucid gantry sonnet", True),
+    "Documents/server.log": ("sienna quorum ledger", True),
+    "Documents/settings.xml": ("basalt fathom marker", True),
+    "Documents/contact.vcf": ("umber lattice firm", True),
+    "Documents/hearing.ics": ("ochre gantry hearing", True),
+    "Documents/README": ("cobalt hinge readme", True),
+    "Mail/agenda.eml": ("harrow cadence enclosure", True),        # inside its .txt attachment
+    "Mail/forwarded.eml": ("bittern relay nested", True),         # inside a forwarded message
+    "Mail/archive.mbox": ("ferrule tally mailbox", True),         # the second message
+    "Mail/saved_page.mht": ("tessellate archived page", True),
+    "Mail/discovery_schedule.msg": ("barnacle ledger cadence", True),  # inside its attachment
 }
 
 
@@ -194,6 +207,52 @@ def make_html(title: str, paragraphs: list[str]) -> bytes:
     ).encode("utf-8")
 
 
+def make_eml(subject: str, sender: str, to: str, date: str, body: str,
+             attachments: list[tuple[str, bytes]] = (), forwarded=None) -> bytes:
+    """A real RFC 822 message through the standard library, with attachments
+    and optionally a forwarded message (message/rfc822) inside."""
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to
+    msg["Date"] = date
+    msg.set_content(body)
+    for name, data in attachments:
+        msg.add_attachment(data, maintype="text", subtype="plain", filename=name)
+    if forwarded is not None:
+        msg.add_attachment(forwarded, filename="forwarded.eml")
+    return msg.as_bytes()
+
+
+def make_message(subject: str, sender: str, to: str, date: str, body: str):
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to
+    msg["Date"] = date
+    msg.set_content(body)
+    return msg
+
+
+def make_mbox(messages) -> bytes:
+    out = []
+    for sender, stamp, msg in messages:
+        out.append(f"From {sender} {stamp}\n".encode("ascii"))
+        out.append(msg.as_bytes().replace(b"\r\n", b"\n"))
+        out.append(b"\n")
+    return b"".join(out)
+
+
+def make_mht(title: str, paragraphs: list[str]) -> bytes:
+    html = make_html(title, paragraphs).decode("utf-8")
+    return ("From: <Saved by the browser>\r\nSubject: " + title + "\r\nMIME-Version: 1.0\r\n"
+            "Content-Type: multipart/related; boundary=\"----=_Part\"\r\n\r\n"
+            "------=_Part\r\nContent-Type: text/html; charset=utf-8\r\n"
+            "Content-Location: http://example.invalid/page\r\n\r\n" + html + "\r\n------=_Part--\r\n").encode("utf-8")
+
+
 def make_gzip(payload: bytes) -> bytes:
     import gzip
     buf = io.BytesIO()
@@ -301,6 +360,61 @@ class Corpus:
         self.add("Documents/misnamed_rtf.doc", make_rtf([
             f"Filed as a Word document, written as RTF: {marker('Documents/misnamed_rtf.doc')}.",
         ]), age_days=1500, note="FTS marker: RTF named .doc; read by its bytes")
+
+        # The text-underneath formats added on 2026-09-13, and a file with no
+        # extension at all.
+        self.add("Documents/server.log", (
+            "2026-01-04 08:00:01 INFO service started\n"
+            f"2026-01-04 08:00:02 WARN {marker('Documents/server.log')}\n"
+            "2026-01-04 08:00:03 INFO service stopped\n").encode("utf-8"),
+            age_days=8, note="FTS marker: log")
+        self.add("Documents/settings.xml", (
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<settings>\n"
+            f"  <note id=\"1\">{marker('Documents/settings.xml')}</note>\n</settings>\n").encode("utf-8"),
+            age_days=9, note="FTS marker: xml (kept raw, element names included)")
+        self.add("Documents/contact.vcf", (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada Example\r\n"
+            f"ORG:{marker('Documents/contact.vcf')}\r\nEND:VCARD\r\n").encode("utf-8"),
+            age_days=300, note="FTS marker: vCard")
+        self.add("Documents/hearing.ics", (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            f"SUMMARY:{marker('Documents/hearing.ics')}\r\nDTSTART:20260115T140000Z\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n").encode("utf-8"),
+            age_days=7, note="FTS marker: iCalendar")
+        self.add("Documents/README", (
+            f"Read me first. {marker('Documents/README')}.\n").encode("utf-8"),
+            age_days=20, note="FTS marker: no extension")
+        self.add("Documents/thumbnail", b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4,
+                 age_days=21, note="no extension, not a document: recorded as not processed")
+
+        # Email: the marker is inside an attachment or a forwarded message,
+        # so finding it proves the whole chain, not just the headers.
+        forwarded = make_message("Forwarded note", "b@example.invalid", "a@example.invalid",
+                                 "Tue, 02 Sep 2025 10:00:00 -0400",
+                                 f"Original note: {marker('Mail/forwarded.eml')}.")
+        self.add("Mail/agenda.eml", make_eml(
+            "Agenda for Thursday", "Ann Example <ann@example.invalid>", "bob@example.invalid",
+            "Wed, 03 Sep 2025 09:30:00 -0400", "The agenda is attached.",
+            attachments=[("enclosure.txt", f"Enclosure: {marker('Mail/agenda.eml')}.\n".encode("utf-8"))]),
+            age_days=375, note="FTS marker: eml, in its attachment")
+        self.add("Mail/forwarded.eml", make_eml(
+            "FW: note", "ann@example.invalid", "carol@example.invalid",
+            "Wed, 03 Sep 2025 11:00:00 -0400", "See the forwarded message.", forwarded=forwarded),
+            age_days=374, note="FTS marker: eml, in a forwarded message")
+        first = make_message("First message", "ann@example.invalid", "bob@example.invalid",
+                             "Mon, 01 Sep 2025 08:00:00 -0400", "Nothing to see in the first message.")
+        second = make_message("Second message", "bob@example.invalid", "ann@example.invalid",
+                              "Mon, 01 Sep 2025 09:00:00 -0400", f"Tally: {marker('Mail/archive.mbox')}.")
+        self.add("Mail/archive.mbox", make_mbox([
+            ("ann@example.invalid", "Mon Sep  1 08:00:00 2025", first),
+            ("bob@example.invalid", "Mon Sep  1 09:00:00 2025", second)]),
+            age_days=376, note="FTS marker: mbox, second of two messages")
+        self.add("Mail/saved_page.mht", make_mht("Archived page", [
+            "A page saved from the browser as a single file.",
+            f"It says: {marker('Mail/saved_page.mht')}.",
+        ]), age_days=50, note="FTS marker: mht")
+        self.add("Mail/discovery_schedule.msg", p2_fixture_blobs.blob("discovery_schedule.msg"),
+                 age_days=40, note="FTS marker: Outlook msg, in its attachment")
 
     def _known_duplicates(self):
         """Exact duplicates with a precomputed reclaimable-byte total."""

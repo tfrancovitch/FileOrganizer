@@ -426,10 +426,34 @@ def test_worker(tmp: Path):
                         "Documents\\legacy_ledger.xls": "Excel 97-2003", "Documents\\cover_letter.rtf": "RTF",
                         "Documents\\saved_page.html": "HTML", "Documents\\export.json": "JSON",
                         "Mixed\\inventory_extract.csv": "CSV", "Documents\\misnamed_rtf.doc": "RTF",
-                        "Malformed\\not_really.docx": "PlainText"}
+                        "Malformed\\not_really.docx": "PlainText",
+                        "Documents\\server.log": "Log", "Documents\\settings.xml": "XML",
+                        "Documents\\contact.vcf": "vCard", "Documents\\hearing.ics": "iCalendar",
+                        "Documents\\README": "PlainText", "Mail\\agenda.eml": "Email (EML)",
+                        "Mail\\archive.mbox": "Mailbox (MBOX)", "Mail\\saved_page.mht": "Web archive (MHTML)",
+                        "Mail\\discovery_schedule.msg": "Outlook message (MSG)"}
     wrong = {rel: source_types.get(rel) for rel, want in expected_sources.items() if source_types.get(rel, ("", ""))[1] != want}
     check("each file was read as what its bytes are (a .doc holding RTF is RTF; a .docx holding text is text)",
           not wrong, str(wrong))
+    con = connect(project_dir)
+    thumb = con.execute(
+        "SELECT ec.status, ar.status FROM extracted_content ec JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id "
+        "JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+        "WHERE fp.relative_path=?", ("Documents\\thumbnail",)).fetchone()
+    titles = dict(con.execute(
+        "SELECT fp.relative_path, ar.title FROM analyzer_result ar JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id "
+        "JOIN analyzer a ON a.analyzer_id=rr.analyzer_id JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id "
+        "JOIN file_path fp ON fp.file_path_id=fs.file_path_id WHERE a.analyzer_key='content_extraction' AND ar.title IS NOT NULL").fetchall())
+    con.close()
+    check("a file with no extension that is not a document is recorded as not processed, not as an error",
+          thumb is not None and tuple(thumb) == ("skipped", "not_processed"), str(tuple(thumb) if thumb else None))
+    check("an email's subject is its Title column (eml and Outlook msg)",
+          titles.get("Mail\\agenda.eml") == "Agenda for Thursday" and titles.get("Mail\\discovery_schedule.msg") == "Discovery schedule",
+          str({k: v for k, v in titles.items() if k.startswith("Mail")}))
+    caps = capabilities(project_dir)
+    check("the extraction capability counts the not-document apart from the one unreadable file (the truncated PDF)",
+          "1 not documents" in caps["extraction"].detail and caps["extraction"].counts.get("not_documents") == 1
+          and caps["extraction"].counts.get("failed") == 1, caps["extraction"].detail)
 
     worker = make_worker(app_root, project_dir, RunRequest(INDEX_TEXT, "Index text"), log)
     worker.stop_event.set()            # stop at the first check
@@ -500,9 +524,10 @@ def test_worker(tmp: Path):
     n_pdf = truth["by_extension"].get(".pdf", {}).get("count", 0)
     check(f"extraction estimates PDFs by page ({n_pdf} PDFs, pages counted by the PDF analyzer) and the rest by file",
           ext.get("pdf") and ext["pdf"]["files"] == n_pdf and ext["pdf"]["pages"] and ext["pdf"]["seconds_per_page"]
-          and ext["pdf"]["pages_counted_files"] >= 1 and ext.get("other") and ext["other"]["files"] > 0,
-          str({k: ext.get(k) for k in ("pdf", "other")}))
-    check("the description shows the PDF pages and the per-page rate", "PDFs:" in text and "ms/page" in text and "other documents:" in text)
+          and ext["pdf"]["pages_counted_files"] >= 1 and ext.get("families") and sum(f["files"] for f in ext["families"]) > 0,
+          str({k: ext.get(k) for k in ("pdf", "families")}))
+    check("the description shows the PDF pages, the per-page rate, and each family of the other documents",
+          "PDFs:" in text and "ms/page" in text and "Office documents:" in text and "text-like files:" in text and "email and mailboxes:" in text)
 
     # -- the Files page's engine support ------------------------------------
     section("9. Files page: sorted paging, columns, count, export, summary")
@@ -571,7 +596,10 @@ def test_worker(tmp: Path):
           bucket["text"]["files"] == n_text and bucket["text"]["analysed"] == n_text, str(bucket["text"]))
     check("summary buckets carry bytes that add up with 'other' to the total",
           sum(b["bytes"] for b in summary["buckets"]) + summary["other_bytes"] == summary["bytes"] == truth["totals"]["logical_bytes"])
-    n_other_extractable = sum(v["count"] for k, v in truth["by_extension"].items() if k in (".csv", ".json", ".html", ".htm", ".rtf"))
+    import fo_analyzer_engine as _eng
+    extraction_only = set(_eng.ADAPTER_BY_KEY["content_extraction"].declared_extensions) - set(summary["all_bucket_extensions"])
+    n_other_extractable = sum(v["count"] for k, v in truth["by_extension"].items()
+                              if ("" if k == "(none)" else k) in extraction_only)
     check(f"summary says how many 'Other' files can still have text extracted ({n_other_extractable})",
           summary["other_extractable"] == n_other_extractable, f"got {summary['other_extractable']}")
     check("the Other link excludes only the buckets' extensions, so its list matches its count",
