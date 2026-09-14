@@ -16,6 +16,8 @@ The keys, and what they assert. Per path (every path the case lists):
   file_observation.error_kind   the current observation's error_kind
   hash_status                   file_state.hash_status == value (or in the list)
   hash.error_kind               the latest hash_measurement's error_kind
+  hash.size_bytes               the bytes the latest hash_measurement says it read
+  hash.full_hash                the latest hash_measurement's digest (case-insensitive)
   analyzer.status               every non-extraction analyzer row == value;
                                 "none" asserts there are no such rows
   analyzer.<key>.status         that analyzer's row (image, pdf, office, ...)
@@ -112,7 +114,7 @@ def _observation(conn, observation_id):
 def _hash_measurement(conn, observation_id):
     if observation_id is None:
         return None
-    return conn.execute("SELECT hash_status, error_kind, error_message FROM hash_measurement "
+    return conn.execute("SELECT hash_status, error_kind, error_message, size_bytes, full_hash FROM hash_measurement "
                         "WHERE file_observation_id = ? ORDER BY hash_measurement_id DESC LIMIT 1",
                         (observation_id,)).fetchone()
 
@@ -194,6 +196,13 @@ def _per_path(conn, truth, key, value, relative_path, row):
     if key == "hash.error_kind":
         hm = _hash_measurement(conn, obs_id)
         return hm is not None and hm["error_kind"] == value, f"hash error_kind={hm['error_kind'] if hm else None!r}"
+    if key == "hash.size_bytes":
+        hm = _hash_measurement(conn, obs_id)
+        return hm is not None and hm["size_bytes"] == value, f"hash size_bytes={hm['size_bytes'] if hm else None}"
+    if key == "hash.full_hash":
+        hm = _hash_measurement(conn, obs_id)
+        got = (hm["full_hash"] or "").upper() if hm else None
+        return got == str(value).upper(), f"full_hash={got}"
     if key == "analyzer.status":
         rows = {k: s for k, s in _analyzer_rows(conn, obs_id).items() if k != "content_extraction"}
         if value == "none":
