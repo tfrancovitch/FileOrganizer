@@ -36,6 +36,7 @@ from .fts import FtsManager, FtsUnavailable
 from .query import QueryEngine, QueryError, QUERY_SCHEMA, SEMANTIC_CONTRACT
 from .reports import ReportCatalog
 from .saved import SavedQueryStore
+from . import VERSION
 from . import hub as hub_view
 from .runner import RunRequest, PRESCAN, run_blocking, app_root_for
 
@@ -185,7 +186,7 @@ class Phase2App(tk.Tk):
         #: (stop_event, worker thread) while a run owns the window; else None.
         self.active_run=None
 
-        self.title("The File Organizer")
+        self.title(f"The File Organizer {VERSION}")
         enable_fault_log(self.app_root)
         width=min(1280,max(1000,self.winfo_screenwidth()-120))
         height=min(820,max(650,self.winfo_screenheight()-160))
@@ -282,7 +283,7 @@ class Phase2App(tk.Tk):
         self.release_connection()
         import fo_db
         try:
-            conn,_project=fo_db.open_project(str(project_dir),app_version=f"P2-{__import__('Phase2').VERSION}")
+            conn,_project=fo_db.open_project(str(project_dir),app_version=fo_db.APP_VERSION)
             conn.close()
         except Exception as exc:
             messagebox.showerror("Open project",f"This project could not be opened.\n\n{exc}",parent=self)
@@ -305,7 +306,7 @@ class Phase2App(tk.Tk):
         self.engine=QueryEngine(self.conn,saved_store=self.store,fts_manager=self.fts)
         self.info=project_info(self.conn)
         name=self.info.get("name",self.project_dir.name)
-        self.title(f"The File Organizer — {name}")
+        self.title(f"The File Organizer {VERSION} — {name}")
         self.project_var.set(f"Project: {name}")
         self.refresh_evidence_strip()
 
@@ -325,7 +326,7 @@ class Phase2App(tk.Tk):
         """Leave the open project. Callers confirm first (see _confirm_leave)."""
         self.release_connection()
         self.project_dir=None; self.info={}
-        self.title("The File Organizer"); self.project_var.set("No project open"); self.scope_var.set("")
+        self.title(f"The File Organizer {VERSION}"); self.project_var.set("No project open"); self.scope_var.set("")
         self._set_project_controls(False)
 
     def _confirm_leave(self, verb):

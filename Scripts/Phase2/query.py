@@ -278,7 +278,7 @@ def _resolve_value(expr, params, execution_time):
 
 
 class QueryEngine:
-    ENGINE_VERSION = "P2.9.1-query-1"
+    ENGINE_VERSION = "B7-query-1"
 
     def __init__(self, conn, saved_store=None, fts_manager=None):
         self.conn = conn

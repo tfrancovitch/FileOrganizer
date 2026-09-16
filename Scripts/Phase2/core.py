@@ -82,8 +82,8 @@ def require_phase2_schema(conn: sqlite3.Connection):
     version = schema_version(conn)
     if version < REQUIRED_SCHEMA_VERSION:
         raise RuntimeError(
-            f"This project is schema {version}. Phase 2 P2.9.1 requires schema "
-            f"{REQUIRED_SCHEMA_VERSION}. Install/apply the P2.9.1 validated overlay first."
+            f"This project is schema {version}. The File Organizer {VERSION} requires schema "
+            f"{REQUIRED_SCHEMA_VERSION}."
         )
     return version
 

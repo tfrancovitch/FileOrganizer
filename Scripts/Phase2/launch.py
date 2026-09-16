@@ -24,7 +24,7 @@ if __name__=="__main__":
     if project_dir is not None:
         # Use the existing trusted project-isolation/migration boundary first.
         import fo_db
-        conn,_project=fo_db.open_project(str(project_dir),app_version="P2.9.1")
+        conn,_project=fo_db.open_project(str(project_dir),app_version=fo_db.APP_VERSION)
         conn.close()
     from Phase2.gui import Phase2App
     app=Phase2App(project_dir); app.mainloop()

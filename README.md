@@ -1,13 +1,25 @@
-# The File Organizer — Phase 1
+# The File Organizer
 
 **A Windows desktop tool that builds a complete, trustworthy inventory of your
-files and tells you which ones are genuine duplicates.**
+files, tells you which ones are genuine duplicates, and answers questions about
+what is inside them.**
 
-Phase 1 is **observational**. It looks, measures and records. It never renames,
-moves, deletes or edits anything you point it at.
+Phases 1 and 2 are **observational**. They look, measure, read and record. They
+never rename, move, delete or edit anything you point them at, and never open a
+cloud-only file.
 
 ---
 
+## B7 — Phase 2, entering adversarial testing
+
+B7 is Phase 1 (Observe) and Phase 2 (Understand) as one product with one
+version. It adds the one window and the project summary, the Files page with
+sorting, filtering, columns and export, 31 standard reports and saved queries,
+text extraction from 113 formats with OCR of scans, honest measured estimates,
+a Cancel that keeps what it did, and — on every done line of the summary — a
+link to do it again after the folder changed. `CHANGELOG-B7.md` has the whole
+of it; `..\PROJECT_PLAN.md` is the single source of truth for where the
+project stands.
 
 ## B6.1 — A–F reconciliation
 
@@ -197,8 +209,16 @@ from the first door is not thoroughness.
 
 The landing page for an open project: source folders, total files and size,
 fingerprints, duplicates and reclaimable space, files by type with how many
-have been analysed, and the text state (not extracted / extracted / indexed).
-A small button sits on any line a run would change.
+have been analysed, and the text state (not extracted / extracted / index out
+of date / indexed). A button sits in the first column of any line a run would
+change; where the work is done, the word that says so (SCANNED, COMPLETE,
+ANALYZED, INDEXED) sits there instead, with a link beside it to do it again:
+**Scan again** after the folder changed (new files observed, vanished ones
+marked missing, everything already collected kept), **Fingerprint again** to
+re-read every file, **Analyze again** on a bucket, **Extract again** after a
+change on the Options page. A re-scan makes the summary say plainly what it no
+longer knows — a file that changed has no current fingerprint or analysis until
+the run that examines it again.
 
 **Files** lists every current file: click a heading to sort, right-click one to
 filter by that column or choose columns, page with Previous/Next, and export
@@ -257,12 +277,15 @@ folder — never next to your originals.
 ## Known limitations
 
 - **Windows only.** Paths, metadata and the long-path handling are Windows-specific.
-- **No pause/resume.** A run can be stopped, but restarts from the beginning.
-- **Cloud/offline files.** Hashing a placeholder may trigger a download. The
-  program can skip cloud-only files where the workflow offers it.
+- **No pause/resume.** A run can be stopped and keeps what it did, but running
+  the stage again restarts from its first file.
+- **Cloud-only files are never opened.** A OneDrive placeholder is recorded
+  from its directory entry and skipped by every stage that reads bytes, with
+  `skipped_cloud_only` written down; nothing is downloaded.
 - **ffprobe is separate.** Audio and video need FFmpeg installed and on PATH.
-- **Legacy Office formats.** `.doc`, `.xls` and `.ppt` are detected but not
-  deeply analysed; the modern XML formats are.
+- **Legacy Office formats.** `.doc`, `.xls` and `.ppt` are read for their
+  text (straight from the OLE2 container; Excel through `xlrd`) but the Office
+  *analyzer* describes only the modern XML formats.
 - **Analyzers depend on third-party libraries** and inherit their limits — a
   malformed PDF is reported as an error on that file, not repaired.
 - **Duplicate groups are facts, not advice.** Phase 1 tells you what is

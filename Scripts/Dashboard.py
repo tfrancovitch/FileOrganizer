@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""
 Part of: The File Organizer
-Version: B6.1
+Version: B7
 
 Tkinter dashboard for the database-backed Phase 1 runtime.
 
@@ -460,7 +460,8 @@ class Dashboard(tk.Tk):
         self.clear_container()
         frame = self.container
 
-        ttk.Label(frame, text="The File Organizer", font=("Segoe UI", 16, "bold")).pack(pady=((60, 10) if CLASSIC_MODE else (28, 6)))
+        ttk.Label(frame, text="The File Organizer " + (fo_coordinator.APP_VERSION if fo_coordinator is not None else ""),
+                  font=("Segoe UI", 16, "bold")).pack(pady=((60, 10) if CLASSIC_MODE else (28, 6)))
         self.startup_status_var = tk.StringVar(value="Checking installation...")
         ttk.Label(frame, textvariable=self.startup_status_var, font=("Segoe UI", 10)).pack(pady=(0, 20))
 
