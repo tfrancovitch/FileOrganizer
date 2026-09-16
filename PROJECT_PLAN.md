@@ -156,7 +156,7 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up. So does **Fingerprint again** — which is what makes it the one way to catch a file whose bytes changed under the same size and modified time.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
-- **Text extraction has not yet run on the real corpus.** With OCR, pictures and archives all on, the estimate for it is **~15 hours** — 3 h for the PDFs (2 h 45 of that OCR of 9,868 pages with no text layer), 1 h 10 looking at 25,269 pictures, and 10 h reading the documents inside 462 zips (4.5 GB of scanned legal batches, OCR again). With those switched off on the Options page it is 20–30 minutes. Cancel keeps what was done. The user decides.
+- **Text extraction has not yet run on the real corpus.** With OCR, pictures and archives all on, the estimate for it is **~15 h 17 min** (measured 2026-09-15, after the PDF analyzer was run again under B7 and its page-one text flags corrected: 305 PDFs with no text layer, not 348) — 1 h 26 for the PDFs (52 min of that OCR of **3,079** pages with no text layer, down from 9,868), 17 min for Office, 1 h 23 looking at 25,269 pictures, 3 min for text-like files, and **12 h 10 reading the documents inside 462 zips** (4.5 GB of scanned legal batches, OCR again). With OCR, pictures and archives switched off on the Options page it is **~23 minutes**. Cancel keeps what was done. The user decides. (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md` §7)
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
@@ -406,8 +406,8 @@ rather than time-boxed, and it does not exist for network shares.
      corpus at `C:\FOTest` ✔
 
 **To close Phase 2** — the user's decision
-12. Extract and index, or not — 20–30 min for the documents alone, ~15 h with
-    OCR of the pictures and the zips' scanned batches; the Options page chooses
+12. Extract and index, or not — ~23 min for the documents alone, ~15 h 17 min
+    with OCR of the pictures and the zips' scanned batches; the Options page chooses
 13. Ask the corpus things — what is taking the space, which duplicate groups are
     worth acting on, what is in the archives — and record what was asked and
     whether it answered
