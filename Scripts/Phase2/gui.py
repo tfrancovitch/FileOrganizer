@@ -239,7 +239,9 @@ class Phase2App(tk.Tk):
     def _build_shell(self):
         self.columnconfigure(1,weight=1); self.rowconfigure(0,weight=1)
         nav=ttk.Frame(self,padding=8); nav.grid(row=0,column=0,sticky="nsew")
-        ttk.Label(nav,text="The File Organizer",font=("Segoe UI",13,"bold")).pack(fill="x",pady=(4,16))
+        ttk.Label(nav,text="The File Organizer",font=("Segoe UI",13,"bold")).pack(fill="x",pady=(4,0))
+        # The build, where a screenshot of a finding will show it.
+        ttk.Label(nav,text=f"Build {VERSION}",foreground="#666").pack(fill="x",pady=(0,14))
         self.nav_open=ttk.Button(nav,text="Open Project",style="Nav.TButton",command=self.show_open_panel); self.nav_open.pack(fill="x",pady=2)
         self.nav_new=ttk.Button(nav,text="New Project",style="Nav.TButton",command=self.show_new_panel); self.nav_new.pack(fill="x",pady=2)
         self.nav_sep=ttk.Separator(nav); self.nav_sep.pack(fill="x",pady=10)
