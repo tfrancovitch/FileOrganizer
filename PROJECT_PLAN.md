@@ -429,8 +429,11 @@ rather than time-boxed, and it does not exist for network shares.
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? 113 now, OCR included. What remains is samples for WordPerfect, OneNote and the non-TIFF camera RAW formats, and the adversarial corpus of the Master Matrix in `C:\FOTest\Research`.
 
-**Unpushed:** the `phase2` branch exists only on this machine (82 commits beyond
-`main` on the evening of 2026-09-15, the corpus session’s still landing).
+**Unpushed:** the `phase2` branch exists only on this machine: 78 commits beyond
+`main` on 2026-09-15, plus the 7 commits of `phase2-loose-ends` (this day’s work,
+already in the install) awaiting `git merge --ff-only phase2-loose-ends` once the
+corpus session has committed its working tree; the corpus session’s own work
+still landing.
 
 **Handoffs:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the environment,
 the rules, the decisions already settled, the defects and the traps, for a session
