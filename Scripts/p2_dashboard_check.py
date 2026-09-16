@@ -679,7 +679,142 @@ def test_worker(tmp: Path):
           detail and any(e["label"] == "PDF Analysis" and any(k == "PageCount" for k, _ in e["fields"]) for e in detail), str([(e["label"], len(e["fields"])) for e in detail]))
     c.close()
 
+    test_folder_changes(app_root, project_dir, corpus_dir, log)
     return project_dir
+
+
+def test_folder_changes(app_root, project_dir, corpus_dir, log):
+    """The folder changes after its scan: one file added, one changed, one
+    removed. Then every "again" the summary offers, through the worker, in
+    the order a person would take them -- and the summary honest at each
+    step. Ends in the fully collected state the window checks expect."""
+    from Phase2.runner import RunRequest, PRESCAN, FINGERPRINT, ANALYSIS, INDEX_TEXT
+    from Phase2.core import connect
+    from Phase2.capability import project_summary
+    from Phase2.fts import index_is_current
+
+    section("9b. The folder changes: Scan again, then everything again")
+    keys = ("inventory", "identity", "analyze.text", "extraction", "search")
+    caps = capabilities(project_dir)
+    check("before: inventory, fingerprints, text analysis, extraction and search all complete",
+          all(caps[k].state == "available" for k in keys), str({k: caps[k].state for k in keys}))
+    present_before = scalar(project_dir, "SELECT COUNT(*) FROM file_state WHERE state='present'")
+    identified_before = caps["identity"].counts.get("identified", 0)
+    text_done_before = caps["analyze.text"].counts.get("analyzed", 0)
+    extracted_before = caps["extraction"].counts.get("extracted", 0)
+
+    def state_of(rel):
+        return scalar(project_dir, "SELECT fs.state FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+                                   "WHERE fp.relative_path=?", (rel,))
+
+    def authority_of(rel):
+        return scalar(project_dir, "SELECT CASE WHEN fs.content_id IS NULL THEN 'absent' WHEN fs.content_observation_id=fs.current_observation_id "
+                                   "THEN 'current' ELSE 'stale' END FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+                                   "WHERE fp.relative_path=?", (rel,))
+
+    added = corpus_dir / "Bulk" / "text" / "added_after_scan.txt"
+    changed = corpus_dir / "Bulk" / "text" / "doc_001.txt"
+    removed = corpus_dir / "Bulk" / "text" / "doc_002.txt"
+    added.write_bytes(b"a file that arrived after the scan: xylophone quorum brisket\n")
+    with changed.open("ab") as handle:
+        handle.write(b"a line appended after the scan: tessellated kumquat ledger\n")
+    removed.unlink()
+
+    # -- Scan again -------------------------------------------------------
+    outcome = make_worker(app_root, project_dir, RunRequest(PRESCAN, "Scan again"), log).run()
+    check("Scan again completes on the existing project", outcome.ok, f"{outcome.status}: {outcome.message}")
+    present = scalar(project_dir, "SELECT COUNT(*) FROM file_state WHERE state='present'")
+    check(f"one file added and one removed: still {present_before} present", present == present_before, f"got {present}")
+    check("the added file is present; the removed one is marked missing, its record kept",
+          state_of("Bulk\\text\\added_after_scan.txt") == "present" and state_of("Bulk\\text\\doc_002.txt") == "missing",
+          f"added={state_of('Bulk' + chr(92) + 'text' + chr(92) + 'added_after_scan.txt')} removed={state_of('Bulk' + chr(92) + 'text' + chr(92) + 'doc_002.txt')}")
+    check("the changed file keeps its old fingerprint marked stale (a new observation, the same content_id)",
+          authority_of("Bulk\\text\\doc_001.txt") == "stale", authority_of("Bulk\\text\\doc_001.txt"))
+    caps = capabilities(project_dir)
+    ic = caps["identity"].counts
+    check("the summary no longer calls fingerprinting complete: the added and changed files have no current verdict, the removed one has left",
+          caps["identity"].state == "partial" and ic.get("identified") == identified_before - 2
+          and ic.get("unexamined") == 2 and caps["identity"].action == "Find My Duplicates",
+          f"{caps['identity'].state}: {caps['identity'].detail}")
+    check("the duplicate answer is marked partial for the same reason",
+          caps["duplicates"].state == "partial" and "no verdict" in caps["duplicates"].detail, caps["duplicates"].detail)
+    check("the text bucket is partial again: two files (added, changed) have no current analysis, the removed one is not counted",
+          caps["analyze.text"].state == "partial" and caps["analyze.text"].counts.get("analyzed") == text_done_before - 2
+          and caps["analyze.text"].action == "Analyze", caps["analyze.text"].detail)
+    check("extraction is partial again, counted per current present file: two not attempted, the removed one gone",
+          caps["extraction"].state == "partial" and caps["extraction"].counts.get("extracted") == extracted_before - 2
+          and caps["extraction"].counts.get("unattempted") == 2, caps["extraction"].detail)
+    check("a re-scan does not make the text index out of date (it depends on the extracted texts alone)",
+          caps["search"].state == "available", caps["search"].detail)
+    c = connect(project_dir)
+    summary = project_summary(c)
+    c.close()
+    check("the summary's fingerprint bytes count only current fingerprints",
+          summary["identified_bytes"] == scalar(project_dir, "SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present' "
+                                                             "AND content_id IS NOT NULL AND content_observation_id=current_observation_id"))
+
+    # -- Fingerprint again ------------------------------------------------
+    outcome = make_worker(app_root, project_dir, RunRequest(FINGERPRINT, "Full Fingerprinting"), log).run()
+    check("Fingerprint again completes", outcome.ok, f"{outcome.status}: {outcome.message}")
+    caps = capabilities(project_dir)
+    check("every present file has a current fingerprint again",
+          caps["identity"].state == "available" and caps["identity"].counts.get("identified") == present
+          and authority_of("Bulk\\text\\doc_001.txt") == "current", caps["identity"].detail)
+
+    # -- Analyze again ----------------------------------------------------
+    runs_before = scalar(project_dir, "SELECT COUNT(*) FROM analyzer_run rr JOIN analyzer a ON a.analyzer_id=rr.analyzer_id WHERE a.analyzer_key='text'")
+    outcome = make_worker(app_root, project_dir, RunRequest(ANALYSIS, "Analyze: Text / Markdown", analyzer_keys=["text"]), log).run()
+    check("Analyze again completes", outcome.ok, f"{outcome.status}: {outcome.message}")
+    caps = capabilities(project_dir)
+    runs_after = scalar(project_dir, "SELECT COUNT(*) FROM analyzer_run rr JOIN analyzer a ON a.analyzer_id=rr.analyzer_id WHERE a.analyzer_key='text'")
+    check("it is a new analyzer run over every text file, and the bucket is complete again",
+          runs_after == runs_before + 1 and caps["analyze.text"].state == "available"
+          and caps["analyze.text"].counts.get("analyzed") == text_done_before, caps["analyze.text"].detail)
+    words = [r[0] for r in query(project_dir,
+        "SELECT ar.word_count FROM analyzer_result ar JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id "
+        "JOIN analyzer a ON a.analyzer_id=rr.analyzer_id JOIN file_observation fo ON fo.file_observation_id=ar.file_observation_id "
+        "JOIN file_path fp ON fp.file_path_id=fo.file_path_id WHERE a.analyzer_key='text' AND fp.relative_path=? "
+        "ORDER BY ar.analyzed_utc, ar.analyzer_result_id", ("Bulk\\text\\doc_001.txt",))]
+    check("the changed file's newest result describes the file as it is now (nine more words than its first)",
+          len(words) >= 2 and words[-1] == words[0] + 9, str(words))
+
+    # -- Extract again, then the index ------------------------------------
+    outcome = make_worker(app_root, project_dir, RunRequest(ANALYSIS, "Extract text", analyzer_keys=["content_extraction"]), log).run()
+    check("Extract again completes", outcome.ok, f"{outcome.status}: {outcome.message}")
+    caps = capabilities(project_dir)
+    rows_now = scalar(project_dir, "SELECT COUNT(*) FROM extracted_content WHERE status='extracted'")
+    check("extraction counts files, not rows: complete again at one per file although the table holds two attempts per file",
+          caps["extraction"].state == "available" and caps["extraction"].counts.get("extracted") == extracted_before
+          and rows_now > extracted_before, f"{caps['extraction'].detail}; rows={rows_now}")
+    c = connect(project_dir)
+    current = index_is_current(c)
+    summary = project_summary(c)
+    c.close()
+    check("the text index is now out of date, the summary says so and offers Index text",
+          not current and caps["search"].state == "partial" and caps["search"].action == "Index text"
+          and summary["text_state"] == "index out of date", f"current={current}; {caps['search'].detail}")
+    outcome = make_worker(app_root, project_dir, RunRequest(INDEX_TEXT, "Index text"), log).run()
+    check("Index text completes", outcome.ok, f"{outcome.status}: {outcome.message}")
+    caps = capabilities(project_dir)
+    check("search is available again", caps["search"].state == "available", caps["search"].detail)
+    from Phase2.fts import FtsManager
+    from Phase2.query import QueryEngine, QUERY_SCHEMA, SEMANTIC_CONTRACT
+    from Phase2.saved import SavedQueryStore
+    c = connect(project_dir, write=True)
+    engine = QueryEngine(c, saved_store=SavedQueryStore(c), fts_manager=FtsManager(c, project_dir))
+    hits = {}
+    for phrase in ("xylophone quorum brisket", "tessellated kumquat ledger"):
+        hits[phrase] = [r["path.file_name"] for r in engine.execute({
+            "query_schema": QUERY_SCHEMA, "semantic_contract": SEMANTIC_CONTRACT,
+            "subject": {"entity": "file", "temporal": {"mode": "current"}, "current_file_states": ["present"]},
+            "scope": {"kind": "project"},
+            "where": {"all": [{"text_match": {"mode": "phrase", "query": {"kind": "literal", "value": phrase}}}]},
+        })["rows"]]
+    c.close()
+    check("the new file's text and the appended line are both found; the removed file is not",
+          hits["xylophone quorum brisket"] == ["added_after_scan.txt"] and hits["tessellated kumquat ledger"] == ["doc_001.txt"], str(hits))
+    caps = capabilities(project_dir)
+    check("after: everything complete again", all(caps[k].state == "available" for k in keys), str({k: caps[k].state for k in keys}))
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +863,18 @@ def _button(widget, text):
         if isinstance(w, tk.ttk.Button) and str(w.cget("text")) == text:
             return w
         found = _button(w, text)
+        if found is not None:
+            return found
+    return None
+
+
+def _label(widget, text):
+    """The first label reading exactly `text` -- the summary's links are labels."""
+    import tkinter as tk
+    for w in widget.winfo_children():
+        if isinstance(w, (tk.ttk.Label, tk.Label)) and str(w.cget("text")) == text:
+            return w
+        found = _label(w, text)
         if found is not None:
             return found
     return None
@@ -795,6 +942,29 @@ def test_gui_views(project_dir: Path):
         check("summary: analysed buckets say ANALYZED in the first column; buckets by type carry counts and bytes",
               "ANALYZED" in texts and any("files   (" in t for t in texts), str(texts))
         check("summary: no 'Choose what to analyze' screen any more", not any("Choose what to analyze" in t for t in texts))
+        # Work that is done can be done over: the link sits beside the word.
+        check("summary: SCANNED, COMPLETE, ANALYZED and INDEXED each carry their 'again' link",
+              all(t in texts for t in ("Scan again", "Fingerprint again", "Analyze again", "Extract again"))
+              and all(t in texts for t in ("SCANNED", "COMPLETE", "ANALYZED", "INDEXED")), str([t for t in texts if "again" in t]))
+        started = []
+        real_start = app.start_run
+        app.start_run = lambda req: started.append(req)
+        try:
+            for link in ("Scan again", "Fingerprint again", "Analyze again", "Extract again"):
+                w = _label(app.content, link)
+                if w is not None:
+                    w.event_generate("<Button-1>", x=1, y=1); app.update()
+        finally:
+            app.start_run = real_start
+        kinds = [(r.kind, r.title, tuple(r.analyzer_keys or ())) for r in started]
+        from Phase2.runner import PRESCAN, FINGERPRINT
+        check("each link hands the right run to start_run: a Pre-Scan over the same folders, Full Fingerprinting, one analyzer, extraction",
+              len(kinds) == 4 and kinds[0][0] == PRESCAN and not started[0].source_roots and kinds[1][0] == FINGERPRINT
+              and kinds[2][0] == ANALYSIS and len(kinds[2][2]) == 1 and kinds[3][2] == ("content_extraction",), str(kinds))
+        check("the window title carries the product version", f"The File Organizer {gui.VERSION}" in app.title(), app.title())
+        import fo_db
+        from Phase2 import VERSION as core_version
+        check("one product version: fo_db.APP_VERSION and Phase2.VERSION agree", fo_db.APP_VERSION == core_version, f"{fo_db.APP_VERSION} vs {core_version}")
 
         # -- Files: paging, sorting, columns ----------------------------------
         n_files = app.conn.execute("SELECT COUNT(*) FROM file_state WHERE state='present'").fetchone()[0]

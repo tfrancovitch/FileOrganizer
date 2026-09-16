@@ -5,15 +5,49 @@ No source file is opened by this module.
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 from . import VERSION
-from .core import evidence_signature, utc_now
+from .core import fingerprint, utc_now
 
 FTS_KEY="literal_extracted_text/v1"
 
 
 class FtsUnavailable(RuntimeError): pass
+
+
+def extraction_signature(conn):
+    """What the index is built from: the extracted texts, and nothing else.
+
+    The index maps each distinct text to its extracted_content rows; which
+    file currently holds a text is decided at query time, against
+    file_state. So a re-scan, a fingerprinting run or an analyzer run
+    changes nothing the index holds. The wider `core.evidence_signature`
+    (every run, every hash, every observation) marked it stale after any
+    of those, and the next search rebuilt it in silence -- seconds on a
+    fixture, minutes inside one click on a large project. Only extraction
+    adding rows, or a new core, is a reason to rebuild.
+    """
+    parts={}
+    for name,sql in {
+        "extracted_max":"SELECT COALESCE(MAX(extracted_content_id),0) FROM extracted_content",
+        "extracted_rows":"SELECT COUNT(*) FROM extracted_content WHERE status='extracted'",
+    }.items():
+        try: parts[name]=conn.execute(sql).fetchone()[0]
+        except sqlite3.OperationalError: parts[name]=None
+    parts["phase2"]=VERSION
+    return fingerprint(parts)
+
+
+def index_is_current(conn):
+    """True when a valid index exists and was built from the extraction as it
+    stands now. Reads only, so the summary can ask on any connection."""
+    try:
+        row=conn.execute("SELECT status,input_signature FROM p2_derived_index WHERE derived_index_key=?",(FTS_KEY,)).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row and row["status"]=="valid" and row["input_signature"]==extraction_signature(conn))
 
 
 class FtsManager:
@@ -29,10 +63,10 @@ class FtsManager:
             return False
 
     def _valid(self):
-        sig=evidence_signature(self.conn)
+        sig=extraction_signature(self.conn)
         row=self.conn.execute("SELECT status,input_signature FROM p2_derived_index WHERE derived_index_key=?",(FTS_KEY,)).fetchone()
         if row and row["status"]=="valid" and row["input_signature"]!=sig:
-            self.conn.execute("UPDATE p2_derived_index SET status='stale',notes=? WHERE derived_index_key=?",("Extraction/current evidence changed.",FTS_KEY)); self.conn.commit()
+            self.conn.execute("UPDATE p2_derived_index SET status='stale',notes=? WHERE derived_index_key=?",("Text was extracted after the index was built.",FTS_KEY)); self.conn.commit()
             return False
         return bool(row and row["status"]=="valid" and row["input_signature"]==sig)
 
@@ -52,7 +86,7 @@ class FtsManager:
                 f"{bad} extracted-text row(s) lack trustworthy content-addressed identity. "
                 "Run the P2.9.1 schema correction/backfill or re-run content extraction before building FTS."
             )
-        sig=evidence_signature(self.conn)
+        sig=extraction_signature(self.conn)
         self.conn.execute(
             "INSERT INTO p2_derived_index(derived_index_key,index_kind,definition_version,status,engine_version) VALUES(?,?,?,?,?) "
             "ON CONFLICT(derived_index_key) DO UPDATE SET status='building',definition_version=excluded.definition_version,engine_version=excluded.engine_version,notes=NULL",

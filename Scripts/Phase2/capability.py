@@ -57,6 +57,13 @@ class Capability:
         return f"<Capability {self.key} {self.state}>"
 
 
+#: A verdict counts only against the observation it was made on (fo_state's
+#: staleness rule): the fingerprint of a file re-observed since is history.
+_CURRENT_FINGERPRINT = "(content_id IS NOT NULL AND content_observation_id=current_observation_id)"
+_CURRENT_SIZE_UNIQUE = "(hash_status='size_unique' AND hash_observation_id=current_observation_id)"
+_CURRENT_UNREADABLE = "(hash_status IN ('error','skipped_cloud_only') AND hash_observation_id=current_observation_id)"
+
+
 def _scalar(conn, sql, args=(), default=0):
     try:
         row = conn.execute(sql, args).fetchone()
@@ -125,7 +132,12 @@ def _sum_over(ext_counts, exts):
 
 
 def _analyzed_counts(conn):
-    """analyzer key -> how many CURRENT file locations it has a result for."""
+    """analyzer key -> how many CURRENT, PRESENT file locations it has a result for.
+
+    A file that vanished keeps its last observation and its results, so
+    without the state filter it stayed in this count while leaving the
+    bucket's file count -- "267 files, 268 analysed" after a re-scan.
+    """
     try:
         rows = conn.execute(
             "SELECT a.analyzer_key, COUNT(DISTINCT fo.file_path_id) "
@@ -135,6 +147,7 @@ def _analyzed_counts(conn):
             "  JOIN file_observation fo ON fo.file_observation_id=ar.file_observation_id "
             "  JOIN file_state fs ON fs.file_path_id=fo.file_path_id "
             "                    AND fs.current_observation_id=ar.file_observation_id "
+            "                    AND fs.state='present' "
             " GROUP BY a.analyzer_key").fetchall()
         return {r[0]: r[1] for r in rows}
     except Exception:
@@ -191,6 +204,64 @@ def _failed_counts(conn):
         return {}
 
 
+_EXTRACTION_OUTCOMES = ("extracted", "failed", "empty", "not_documents", "cloud_only",
+                        "ocr_files", "ocr_review")
+
+
+def _current_extraction_counts(conn):
+    """How the CURRENT extraction attempt on each present file ended.
+
+    One file, one outcome: its newest content_extraction result against its
+    current observation. extracted_content keeps a row per attempt, so an
+    earlier run's rows -- and rows for an observation since replaced by a
+    re-scan -- are history, not the state of the project.
+    """
+    counts = dict.fromkeys(_EXTRACTION_OUTCOMES, 0)
+    try:
+        row = conn.execute("""
+            WITH cur AS (
+                SELECT ar.analyzer_result_id, ar.status AS result_status, ar.detail_json
+                  FROM analyzer_result ar
+                  JOIN analyzer_run rr ON rr.analyzer_run_id=ar.analyzer_run_id
+                  JOIN analyzer a ON a.analyzer_id=rr.analyzer_id AND a.analyzer_key='content_extraction'
+                  JOIN file_state fs ON fs.current_observation_id=ar.file_observation_id AND fs.state='present'
+                 WHERE NOT EXISTS (
+                       SELECT 1 FROM analyzer_result n
+                       JOIN analyzer_run nr ON nr.analyzer_run_id=n.analyzer_run_id
+                       JOIN analyzer na ON na.analyzer_id=nr.analyzer_id
+                       WHERE n.file_observation_id=ar.file_observation_id
+                         AND na.analyzer_key='content_extraction'
+                         AND (n.analyzed_utc>ar.analyzed_utc
+                              OR (n.analyzed_utc=ar.analyzed_utc AND n.analyzer_result_id>ar.analyzer_result_id))))
+            SELECT SUM(CASE WHEN ec.status='extracted' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN ec.status='error' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN ec.status='empty' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN ec.status='skipped' AND cur.result_status='not_processed' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN ec.status='skipped' AND cur.result_status='skipped_cloud_only' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN ec.status IN ('extracted','empty')
+                             AND json_extract(cur.detail_json,'$.OcrPages') IS NOT NULL THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN ec.status IN ('extracted','empty')
+                             AND json_extract(cur.detail_json,'$.OcrPages') IS NOT NULL
+                             AND json_extract(cur.detail_json,'$.OcrReview')='yes' THEN 1 ELSE 0 END)
+              FROM cur
+              JOIN extracted_content ec ON ec.analyzer_result_id=cur.analyzer_result_id""").fetchone()
+        if row is not None:
+            for name, value in zip(_EXTRACTION_OUTCOMES, row):
+                counts[name] = int(value or 0)
+    except Exception:
+        pass
+    return counts
+
+
+def _text_index_current(conn):
+    """Whether the text index was built from the extraction as it stands now."""
+    try:
+        from .fts import index_is_current
+        return index_is_current(conn)
+    except Exception:
+        return True
+
+
 def project_capabilities(conn):
     """Everything this project can and cannot currently answer.
 
@@ -236,10 +307,15 @@ def project_capabilities(conn):
             None, present=present, inaccessible=0))
 
     # --- content identity --------------------------------------------------
-    identified = _scalar(
-        conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND content_id IS NOT NULL")
-    size_unique = _scalar(
-        conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND hash_status='size_unique'")
+    # A verdict belongs to an observation. A file re-observed since it was
+    # fingerprinted (its size or modified time changed, so a re-scan gave it
+    # a new current observation) keeps the old content_id on its row, marked
+    # stale by content_observation_id <> current_observation_id -- the rule
+    # the query engine, the exports and the duplicate projection all apply.
+    # Counting content_id alone said "COMPLETE" over a stale fingerprint and
+    # offered no way to renew it; found by the re-scan from the window.
+    identified = _scalar(conn, f"SELECT COUNT(*) FROM file_state WHERE state='present' AND {_CURRENT_FINGERPRINT}")
+    size_unique = _scalar(conn, f"SELECT COUNT(*) FROM file_state WHERE state='present' AND {_CURRENT_SIZE_UNIQUE}")
 
     # A file with neither a fingerprint nor a size-unique proof has NO verdict.
     # Why it has none matters: a run that was stopped can be run again; a
@@ -249,18 +325,16 @@ def project_capabilities(conn):
     # which after a stopped run would have been exactly the overstatement
     # this module exists to prevent.
     no_verdict = max(0, present - identified - size_unique)
-    unexamined = _scalar(
-        conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND content_id IS NULL "
-              "AND (hash_status IS NULL OR hash_status IN ('not_attempted','unresolved'))")
     unreadable = _scalar(
-        conn, "SELECT COUNT(*) FROM file_state WHERE state='present' AND content_id IS NULL "
-              "AND hash_status IN ('error','skipped_cloud_only')")
+        conn, f"SELECT COUNT(*) FROM file_state WHERE state='present' "
+              f"AND NOT ({_CURRENT_FINGERPRINT}) AND {_CURRENT_UNREADABLE}")
+    unexamined = max(0, no_verdict - unreadable)
 
     def _no_verdict_sentence():
         parts = []
         if unexamined:
-            parts.append(f"{unexamined:,} were never examined (a run was stopped, or "
-                         f"they were added since)")
+            parts.append(f"{unexamined:,} were never examined as they are now (a run was "
+                         f"stopped, or they were added or changed since)")
         if unreadable:
             parts.append(f"{unreadable:,} could not be read")
         return (f"{no_verdict:,} files have no verdict: " + "; ".join(parts) + ". "
@@ -355,8 +429,12 @@ def project_capabilities(conn):
     # --- text extraction and search ---------------------------------------
     extract = _analyzer_extension_map().get("content_extraction")
     extractable = _sum_over(ext_counts, extract[1])[0] if extract else 0
-    extracted = _scalar(
-        conn, "SELECT COUNT(*) FROM extracted_content WHERE status='extracted'")
+    # Counted per current file, from its newest extraction attempt -- never
+    # as rows in extracted_content, which keeps one row per attempt. Counted
+    # as rows, a second extraction run said "16,480 of 8,240 extracted", and
+    # a file re-observed since its extraction still counted as extracted.
+    xc = _current_extraction_counts(conn)
+    extracted = xc["extracted"]
     unsupported = present - extractable
 
     if extractable == 0:
@@ -375,28 +453,13 @@ def project_capabilities(conn):
         # extension that turned out to be a picture or a program is "not a
         # document" -- nothing went wrong with it, so it is not counted as
         # unreadable; a cloud-only file was never opened, by rule.
-        failed = _scalar(conn, "SELECT COUNT(*) FROM extracted_content WHERE status='error'")
-        empty = _scalar(conn, "SELECT COUNT(*) FROM extracted_content WHERE status='empty'")
-        not_documents = _scalar(conn, """
-            SELECT COUNT(*) FROM extracted_content ec
-              JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id
-             WHERE ec.status='skipped' AND ar.status='not_processed'""")
-        cloud_only = _scalar(conn, """
-            SELECT COUNT(*) FROM extracted_content ec
-              JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id
-             WHERE ec.status='skipped' AND ar.status='skipped_cloud_only'""")
+        failed = xc["failed"]
+        empty = xc["empty"]
+        not_documents = xc["not_documents"]
+        cloud_only = xc["cloud_only"]
         attempted = extracted + failed + empty + not_documents + cloud_only
         unattempted = max(0, extractable - attempted)
-        ocr_files, ocr_review = 0, 0
-        try:
-            ocr_files, ocr_review = conn.execute("""
-                SELECT COUNT(*), COALESCE(SUM(CASE WHEN json_extract(ar.detail_json,'$.OcrReview')='yes' THEN 1 ELSE 0 END),0)
-                  FROM extracted_content ec
-                  JOIN analyzer_result ar ON ar.analyzer_result_id=ec.analyzer_result_id
-                 WHERE ec.status IN ('extracted','empty')
-                   AND json_extract(ar.detail_json,'$.OcrPages') IS NOT NULL""").fetchone()
-        except Exception:                                      # noqa: BLE001
-            pass
+        ocr_files, ocr_review = xc["ocr_files"], xc["ocr_review"]
         parts = [f"{extracted:,} of {extractable:,} extracted"]
         if ocr_files:
             parts.append(f"{ocr_files:,} read by OCR, {ocr_review:,} of them to double-check")
@@ -425,6 +488,16 @@ def project_capabilities(conn):
     elif indexed == 0:
         search_state, search_detail, action = UNAVAILABLE, (
             f"{extracted:,} extracted documents are not yet indexed."), RUN_INDEX
+    elif not _text_index_current(conn):
+        # Text was extracted after the index was built (an "Extract again",
+        # or new files extracted after a re-scan). The index still answers
+        # for what it holds, and a search rebuilds it first; the summary
+        # says so and offers the build, rather than letting one click on a
+        # large project turn into minutes of silent work.
+        search_state, action = PARTIAL, RUN_INDEX
+        search_detail = (f"{indexed:,} distinct documents indexed, but text has been extracted since "
+                         "the index was built. Index text to bring it up to date; a search would "
+                         "otherwise rebuild it first.")
     else:
         search_state, action = AVAILABLE, None
         search_detail = f"{indexed:,} distinct documents indexed."
@@ -513,7 +586,7 @@ def project_summary(conn):
     extract_entry = ext_map.get("content_extraction")
     other_extractable = _sum_over(ext_counts, extract_entry[1] - bucket_exts)[0] if extract_entry else 0
     identified_bytes = _scalar(
-        conn, "SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present' AND content_id IS NOT NULL")
+        conn, f"SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present' AND {_CURRENT_FINGERPRINT}")
 
     identity = caps.get("identity")
     duplicates = caps.get("duplicates")
@@ -526,6 +599,8 @@ def project_summary(conn):
         text_state = "not extracted"
     elif search and search.state == AVAILABLE:
         text_state = "indexed"
+    elif search and search.state == PARTIAL:
+        text_state = "index out of date"
     else:
         text_state = "extracted, not indexed"
 

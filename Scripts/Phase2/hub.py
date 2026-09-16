@@ -67,14 +67,30 @@ def show_hub(app):
     grid.columnconfigure(2, weight=1)
     row = [0]
 
-    def line(label, value, action=None, status=None, note=None, bold=False, link=None):
+    def line(label, value, action=None, status=None, note=None, bold=False, link=None, again=None):
         """One line: [button | status word] label value. `link` makes the
-        label clickable -- a bucket name opens the Files page on that bucket."""
+        label clickable -- a bucket name opens the Files page on that bucket.
+
+        `again` is (text, command) for work that is done and can be done
+        over -- a re-scan after the folder changed, an analyzer run again
+        after it was corrected. It sits beside the status word in the same
+        first-column cell, so the word still says "done" and the line the
+        link belongs to is never in doubt (the user's rule for this page).
+        """
         if action:
             # A run needs the project under Projects\; a view ("Show which") does not.
             enabled = can_run or action[0] == "Show which"
             ttk.Button(grid, text=action[0], width=18, command=action[1],
                        state="normal" if enabled else "disabled").grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
+        elif again and can_run:
+            cell = ttk.Frame(grid)
+            cell.grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
+            ttk.Label(cell, text=status or "", foreground="#1f6244",
+                      font=("Segoe UI", 9, "bold")).pack(side="left")
+            lnk = ttk.Label(cell, text=again[0], foreground="#1a4d8f", cursor="hand2",
+                            font=("Segoe UI", 9, "underline"))
+            lnk.bind("<Button-1>", lambda e, cmd=again[1]: cmd())
+            lnk.pack(side="left", padx=(8, 0))
         else:
             ttk.Label(grid, text=status or "", width=18, foreground="#1f6244",
                       font=("Segoe UI", 9, "bold")).grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
@@ -110,8 +126,13 @@ def show_hub(app):
     if inv is not None and inv.state != cap.AVAILABLE and inv.counts.get("incomplete_roots"):
         files_text = "at least " + files_text
     line("Source folder(s)", "\n".join(summary["roots"]) or "—")
+    # A folder changes after its scan; until the next scan the inventory
+    # cannot know. "Scan again" is the whole of that: the Pre-Scan's stages
+    # over the same folders, new files observed, vanished ones marked
+    # missing, everything already collected kept against its observation.
     line("Total files", files_text, act(inv), status="SCANNED",
-         note=None if inv is None or inv.state == cap.AVAILABLE else inv.detail, bold=True)
+         note=None if inv is None or inv.state == cap.AVAILABLE else inv.detail, bold=True,
+         again=("Scan again", lambda: app.start_run(RunRequest(PRESCAN, "Scan again"))))
 
     ident = summary["identity"]
     ic = (ident.counts if ident else {}) or {}
@@ -124,8 +145,13 @@ def show_hub(app):
                    f"({_human_bytes(summary['identified_bytes'])} of {_human_bytes(summary['bytes'])})")
         if ic.get("size_unique") and not ic.get("no_verdict"):
             fp_text += f"; the other {ic['size_unique']:,} proven unique by size without being opened"
+    # Full Fingerprinting reads every file whether or not it has a digest, so
+    # "Fingerprint again" is a real re-verification: the one way to catch a
+    # file whose bytes changed under the same size and modified time.
     line("Fingerprints", fp_text, act(ident), status="COMPLETE",
-         note=ident.detail if ident is not None and ident.state == cap.PARTIAL and ic.get("no_verdict") else None, bold=True)
+         note=ident.detail if ident is not None and ident.state == cap.PARTIAL and ic.get("no_verdict") else None, bold=True,
+         again=("Fingerprint again", lambda: app.start_run(RunRequest(FINGERPRINT, "Full Fingerprinting")))
+         if ident is not None and ident.state == cap.AVAILABLE else None)
 
     dup = summary["duplicates"]
     if dup is None or dup.state == cap.UNAVAILABLE:
@@ -163,10 +189,16 @@ def show_hub(app):
             value += f"   {done:,} analysed"
         if b.get("failed"):
             value += f"   {b['failed']:,} could not be analyzed"
-        action = (b["action"], lambda k=b["key"], lbl=b["label"]: app.start_run(
-            RunRequest(ANALYSIS, f"Analyze: {lbl}", analyzer_keys=[k]))) if b["action"] else None
+        run_bucket = lambda k=b["key"], lbl=b["label"]: app.start_run(     # noqa: E731
+            RunRequest(ANALYSIS, f"Analyze: {lbl}", analyzer_keys=[k]))
+        action = (b["action"], run_bucket) if b["action"] else None
+        # An analyzer run takes every current file of its type, so "Analyze
+        # again" replaces every record with a fresh one -- the way to bring
+        # stored results up to a corrected analyzer (the PDF text flags,
+        # defect 21) without waiting for the files to change.
         line(b["label"], value, action, status="ANALYZED" if not b["action"] else "",
-             link=lambda exts=b["extensions"], lbl=b["label"]: app.show_files_for_extensions(exts, lbl))
+             link=lambda exts=b["extensions"], lbl=b["label"]: app.show_files_for_extensions(exts, lbl),
+             again=("Analyze again", run_bucket) if not b["action"] else None)
     if summary["other"]:
         other_text = f"{summary['other']:,} files   ({_human_bytes(summary['other_bytes'])})   no analyzer describes these types"
         if summary.get("other_extractable"):
@@ -195,10 +227,20 @@ def show_hub(app):
     elif summary["text_state"] == "indexed":
         text_line = f"extracted and indexed   ({summary['extracted']:,} of {summary['extractable']:,} extracted, {summary['indexed']:,} indexed)"
         text_status = "INDEXED"
+    elif summary["text_state"] == "index out of date":
+        text_line = (f"extracted, index out of date   ({summary['extracted']:,} of {summary['extractable']:,} extracted; "
+                     f"text was extracted after the index of {summary['indexed']:,} documents was built)")
+        text_status = "EXTRACTED"
     else:
         text_line = f"extracted, not indexed   ({summary['extracted']:,} of {summary['extractable']:,} extracted)"
         text_status = "EXTRACTED"
     text_action = act(ext) if (ext is not None and ext.action) else act(srch)
+    # Extraction reads every extractable file again: the way to apply a
+    # change on the Options page (OCR switched on, say) to files already read.
+    text_again = None
+    if text_status and not text_action:
+        text_again = ("Extract again", lambda: app.start_run(
+            RunRequest(ANALYSIS, "Extract text", analyzer_keys=["content_extraction"])))
     text_note = None
     if ext is not None and ext.counts.get("extracted") and (
             ext.state != cap.AVAILABLE or ext.counts.get("failed")
@@ -209,7 +251,7 @@ def show_hub(app):
     elif srch is not None and srch.counts.get("unsupported") and summary["extractable"]:
         text_note = (f"{srch.counts['unsupported']:,} files are in formats this product cannot extract text "
                      "from, so a search will never match inside them.")
-    line("Text", text_line, text_action, status=text_status, note=text_note)
+    line("Text", text_line, text_action, status=text_status, note=text_note, again=text_again)
     if ext is not None and ext.counts.get("ocr_review"):
         # Scans OCR could not trust: the user asked for a flag, and a way to
         # the list.
