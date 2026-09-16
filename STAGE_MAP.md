@@ -4,8 +4,8 @@
 it writes, and whether it opens a file. One click is rarely one process, and this
 is the reference for which processes a click actually starts.
 
-**Last verified:** 2026-09-11, against the running application (the one-window
-Dashboard) and the code in `FileOrganizer-Phase1-RC-B6.1`.
+**Last verified:** 2026-09-15, against build B7 running from
+`FileOrganizer-Phase1-RC-B6.1` (the folder name is stale; see its `BASELINE.md`).
 
 **Where the clicks are now.** Every stage below is started from the Dashboard
 (`Scripts\Phase2\gui.py` + `hub.py`) through the blocking runner
@@ -54,6 +54,18 @@ artefact of the scan); **nothing is marked missing** on the strength of a walk t
 did not finish; the run is `cancelled`; the hub says "at least N files" and offers
 the Pre-Scan again. Roots not yet started are not scanned. There is no resume — the
 next Pre-Scan walks from the beginning.
+
+**Scanning again.** The folder changes after its scan, and until the next scan the
+inventory cannot know. **Scan again**, beside the word SCANNED on the summary, runs
+stages 1–4 over the project's own roots as one more `prescan` run. A file seen for
+the first time becomes `present`; a file the completed walk did not see becomes
+`missing` (its record, observations and results are kept); a file whose size or
+modified time changed gets a new current observation, and everything measured on
+the old one — fingerprint, analysis, extracted text — is marked stale by its
+observation id, so the summary says the file has no current verdict and offers
+the run that would examine it again. An unchanged file gets no new history row;
+its `verified_utc` is refreshed and it stays the current input for every later
+stage. The text index is unaffected: it is signed by the extracted texts alone.
 
 **After a prescan you can already answer:** how many files, how much space, by
 type, by folder, by age, largest files, largest folders, what could not be read.
@@ -133,6 +145,9 @@ become `unique_by_hash`.
 
 > Running this *after* Find My Duplicates re-reads everything rather than topping
 > up the files that were skipped. Worth knowing before offering it as an upgrade.
+> The same is true of **Fingerprint again** beside COMPLETE on the summary: every
+> file is read again, digest or no digest — which is exactly what makes it the one
+> way to catch a file whose bytes changed under the same size and modified time.
 
 **Stopping it.** Same rule: files never reached are `not_attempted`; a hashed file
 whose digest matched nothing among the hashed files is `unresolved`, not
@@ -187,13 +202,24 @@ deleted — never into `Runs\`.
 observation the engine loaded the file under, not re-found by path in the newest
 scan's rows (which, in `history.mode=changes`, do not exist for an unchanged file).
 
+**Running a bucket again.** An analyzer run takes every current present file of
+its type whether or not it has a result, so **Analyze again** (beside ANALYZED) is
+a fresh `content_analysis` run whose results replace the old ones as the newest
+for each file — the way a corrected analyzer (the PDF text flags, defect 21) is
+applied to stored records. **Extract again** (beside INDEXED or EXTRACTED) is the
+same for `ContentExtraction.ps1`, after a change on the Options page; it leaves the
+text index out of date, and the summary says so and offers Index text.
+
 ---
 
 ## Run kind 5 — text indexing (Phase 2, on demand)
 
 Not a Phase 1 run. Builds a full-text index **from the extracted-text artifacts**,
-never from source files. Triggered on the first text search rather than
-automatically, so the first search after an extraction is slow.
+never from source files. The summary offers it as **Index text** once anything is
+extracted, and again — with the Text line reading "index out of date" — after
+any later extraction; a text search on an out-of-date index rebuilds it first,
+which is slow on a large project. The index is signed by the extracted texts
+alone, so a re-scan, fingerprinting or a bucket analysis does not stale it.
 
 Writes `p2_fts_text`, `p2_fts_text_map`, `p2_derived_index`.
 

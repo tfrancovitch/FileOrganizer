@@ -4,13 +4,18 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-13, later — OCR with a quality judgement; 113 extraction formats; the full test corpus at `C:\FOTest`
+**Last updated:** 2026-09-15 — build **B7**; Scan again and the other “again” links on the summary; the summary made honest after a re-scan (defects 25–28)
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction now
 reads 113 formats including scans by OCR, and awaits the user's decision (the
 estimate is honest about what OCR of a 30 GB picture library and 32 GB of zips
-would cost, and the Options page can leave those out); closeout drafted
+would cost, and the Options page can leave those out); closeout drafted;
+the adversarial corpus of the Master Matrix is being built (the corpus session’s
+commits: `Corpus 01_Naming` … `The mutation runner`), and **B7** is the build that
+meets it
+**Build:** **B7** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
+project and log records it; `FileOrganizer\CHANGELOG-B7.md`
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -72,7 +77,7 @@ A nineteenth, adopted 2026-09-10:
 | Phase | Name | Status |
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
-| **2** | **Understand** | **Built; used on a real corpus through fingerprinting and every analyzer, source files confirmed untouched; closeout drafted — the user's decision** |
+| **2** | **Understand** | **Built; used on a real corpus through fingerprinting and every analyzer, source files confirmed untouched; closeout drafted — the user's decision. B7 enters adversarial testing** |
 | 3 | Decide / Plan | Not started |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
@@ -103,7 +108,7 @@ query engine being tested.
 | Deep keyset pagination | 231 rows over 10 pages, no repeats |
 | Source immutability | **231 / 231 unchanged** |
 | Scale — 100,000 real files | Worst report 629 ms, median ~95 ms |
-| **Dashboard checks** (`p2_dashboard_check.py`) | **168 / 168** — every run kind to completion and stopped, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in 46 formats found through the index (the email ones only inside attachments, the scans' only by OCR), the clean scans unflagged and the poor scans flagged with reasons, the Options page's switches, and every view of the real window |
+| **Dashboard checks** (`p2_dashboard_check.py`) | **194 / 194** — every run kind to completion and stopped, the folder changed after its scan (one file added, one changed, one removed) and Scan again, Fingerprint again, Analyze again, Extract again and Index text through the worker with the summary honest at each step, the estimate-first run screen and its caution, sorted paging over every file, exports, the summary's arithmetic, value lists, analysis columns, the failures view against ground truth, every marker phrase in 46 formats found through the index (the email ones only inside attachments, the scans' only by OCR), the clean scans unflagged and the poor scans flagged with reasons, the Options page's switches, and every view of the real window |
 | **Real corpus** — 41,056 files, 73.6 GB, OneDrive | Pre-Scan 68 s; Full Fingerprinting 9 min (estimate said ~8); 3,753 duplicate groups, 8,519 files, 2.4 GB reclaimable. **All seven analyzers run on the real project: 30 min against a ~51 min estimate; 31,254 files analysed, 16 per-file errors recorded with reasons; 30,112 archive members listed** (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md`) |
 | **Source immutability, real folder** | **41,056 / 41,056 unchanged** in size and modification time after the Pre-Scan, Full Fingerprinting, all seven analyzers and the archive re-run |
 | Stopped Find My Duplicates, then a complete one | Complete run still returns the exact 4 groups / 68,889 bytes |
@@ -136,6 +141,10 @@ query engine being tested.
 | 22 | **The extraction estimate said ~40 hours for a ~20-minute job.** It sampled six small PDFs, measured 0.06 MB/s, and extrapolated by bytes across 5.5 GB — but PDF extraction costs per page, and most of those bytes are pictures the reader never decodes | PDFs are estimated by page (seconds per page from a PDF-only sample × pages the PDF analyzer already counted); other documents by file and byte as before. Same corpus: ~17 min |
 | 23 | `self_check.py` required schema 7 while every database is schema 8 — the health check failed on every machine | Requires 8, kept equal to `fo_db.APP_SCHEMA_VERSION` |
 | 24 | An openpyxl read-only workbook was never closed after extraction, holding the source file open | Closed in a `finally` |
+| 25 | **The summary said Fingerprints COMPLETE over a stale fingerprint.** The identity counts took `content_id` alone; a file re-observed since it was fingerprinted keeps the old `content_id`, marked stale by `content_observation_id <> current_observation_id` — the rule the query engine, the exports and the duplicate projection already applied. Found the day a re-scan could be started from the window | The capability applies the staleness rule to fingerprints, size-unique proofs and read failures alike; a changed file has “no verdict” and Find My Duplicates / Full Fingerprinting is offered again |
+| 26 | **Extraction was counted as rows, not files.** `extracted_content` keeps a row per attempt, so a second extraction run would have said “16,480 of 8,240 extracted”, and a file re-observed since its extraction still counted as extracted | Counted per present file from its newest attempt against its current observation — extracted, failed, empty, not documents, cloud-only, OCR |
+| 27 | **A vanished file stayed in a bucket's “analysed” count** while leaving its file count (“267 files, 268 analysed” after a re-scan) | Present files only |
+| 28 | **The text index went stale after any run** — its signature was the whole evidence signature (every run, hash and observation) — and the next search rebuilt it in silence, with the summary still saying INDEXED: seconds on a fixture, minutes inside one click on a large project | Signed by the extracted texts alone (which file holds a text is decided at query time); when extraction does run again the summary reads “index out of date” and offers Index text |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -145,7 +154,7 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 
 - **Text extraction covers 113 formats** — every document, email, OpenDocument, EPUB and Office variant, source and configuration, the documents inside zips, WordPerfect and OneNote (by scanning, unverified), files with no extension, and **pages with no text layer and pictures that look like documents, by OCR** (Windows' engine; every page judged, poor scans flagged for a person). Not covered: non-TIFF camera RAW and anything the OCR gate calls a photograph. Text the product cannot extract is never searchable, **and the search says nothing about it.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
-- **Upgrading fingerprints re-reads everything** rather than topping up.
+- **Upgrading fingerprints re-reads everything** rather than topping up. So does **Fingerprint again** — which is what makes it the one way to catch a file whose bytes changed under the same size and modified time.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
 - **Text extraction has not yet run on the real corpus.** With OCR, pictures and archives all on, the estimate for it is **~15 hours** — 3 h for the PDFs (2 h 45 of that OCR of 9,868 pages with no text layer), 1 h 10 looking at 25,269 pictures, and 10 h reading the documents inside 462 zips (4.5 GB of scanned legal batches, OCR again). With those switched off on the Options page it is 20–30 minutes. Cancel keeps what was done. The user decides.
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
@@ -404,13 +413,24 @@ rather than time-boxed, and it does not exist for network shares.
     whether it answered
 14. Sign the closeout; Phase 3 handoff follows from it
 
+**Done 2026-09-15 — loose ends before adversarial testing**
+15. **Scan again** on the summary (the Pre-Scan’s stages over the project’s own
+    folders; new files present, vanished ones missing, changed ones re-observed),
+    with **Fingerprint again**, **Analyze again** and **Extract again** beside
+    their words — and the summary honest after a re-scan: defects 25–28 ✔
+16. **B7** — one product version everywhere, `CHANGELOG-B7.md`, the window title
+    shows the build ✔
+17. The PDF analyzer run again on the real project (handoff item 2.2) — see
+    `Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md` ✔
+
 **Decisions still open**
 - Does a re-run constitute a new project?
 - Is consumer mode a preference or a separate edition?
 - Does the journal need to be tamper-evident, or merely out of the way?
 - Should text extraction cover more formats? 113 now, OCR included. What remains is samples for WordPerfect, OneNote and the non-TIFF camera RAW formats, and the adversarial corpus of the Master Matrix in `C:\FOTest\Research`.
 
-**Unpushed:** the `phase2` branch is **69 commits** and exists only on this machine.
+**Unpushed:** the `phase2` branch exists only on this machine (82 commits beyond
+`main` on the evening of 2026-09-15, the corpus session’s still landing).
 
 **Handoffs:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the environment,
 the rules, the decisions already settled, the defects and the traps, for a session
