@@ -43,7 +43,10 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "Database"))
 
-APP_ROOT = Path(r"C:\FileOrganizerTesting\FileOrganizer-Phase1-RC-B6.1")
+# B7.2 -- the install this suite belongs to is the one it lives in, so a
+# copy of the install (FileOrganizer-Phase2-B7.2\) runs its own suite
+# against its own Projects folder rather than the folder it was copied from.
+APP_ROOT = SCRIPTS.parent
 RESULTS: list[tuple[str, bool, str]] = []
 
 
