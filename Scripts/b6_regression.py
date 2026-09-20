@@ -429,7 +429,11 @@ def test_missing_root_is_not_empty_root():
 
 def test_enumeration_determinism(trials=5):
     import random
-    names = ["a/x.txt", "a/B.txt", "a/b.txt", "z/1.txt", "z/10.txt",
+    # No two names may differ only by case: on a case-insensitive volume
+    # the second would overwrite the first and the surviving spelling would
+    # follow the shuffle -- which is what this check found on 2026-09-15
+    # (9 of 10 files, five trials in disagreement over a/B.txt vs a/b.txt).
+    names = ["a/x.txt", "a/Y.txt", "a/b.txt", "z/1.txt", "z/10.txt",
              "z/2.txt", "m/n/deep.txt", "m/a.txt", "Top.txt", "top2.txt"]
     orders = []
     for _ in range(trials):
