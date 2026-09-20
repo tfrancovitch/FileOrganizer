@@ -515,7 +515,7 @@ ADAPTERS = [
                                            ".pm", ".png", ".potm", ".potx", ".ppsm", ".ppsx", ".ppt", ".pptm", ".pptx",
                                            ".properties", ".ps1", ".psd1", ".psm1", ".pst", ".py", ".pyw", ".r", ".rb", ".reg",
                                            ".rs", ".rst", ".rtf", ".scss", ".sh", ".sql", ".srt", ".swift", ".tex", ".tif",
-                                           ".tiff", ".toml", ".ts", ".tsx", ".txt", ".vb", ".vbs", ".vcf", ".vtt", ".webp", ".wpd",
+                                           ".tiff", ".toml", ".ts", ".tsx", ".txt", ".vb", ".vbs", ".vcf", ".vtt", ".webp", ".wp", ".wpd",
                                            ".xls", ".xlsm", ".xlsx", ".xltm", ".xltx", ".xml", ".yaml", ".yml", ".zip", ".zsh"}),
 ]
 
@@ -720,7 +720,12 @@ class AnalyzerEngine(object):
                     # path representation becomes the ordinary one.
                     result.fields = {}
                     result.extra = None
-                    result.error = normalize_diagnostic_text(str(exc))
+                    # A library that raises with no message (pdfminer's
+                    # PdfminerException on a password-protected PDF) has
+                    # still failed: an empty error text would be recorded
+                    # as success, with no artifact and no count.
+                    result.error = (normalize_diagnostic_text(str(exc)).strip()
+                                    or "%s (the library gave no message)" % type(exc).__name__)
 
             # Counted always; retained only when there is no sink.
             outcome.record(result)

@@ -104,7 +104,7 @@ EXTENSIONS = ({".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md",
                ".doc", ".ppt", ".xls", ".rtf", ".html", ".htm", ".csv", ".json",
                ".xml", ".log", ".vcf", ".ics", "",
                ".eml", ".mbox", ".mht", ".mhtml", ".msg", ".pst", ".ost",
-               ".odt", ".ods", ".odp", ".odg", ".epub", ".zip", ".7z", ".wpd", ".one",
+               ".odt", ".ods", ".odp", ".odg", ".epub", ".zip", ".7z", ".wpd", ".wp", ".one",
                ".srt", ".vtt", ".rst", ".tex"}
               | CODE_EXTENSIONS | CONFIG_EXTENSIONS | OOXML_EXTENSIONS | PICTURE_EXTENSIONS)
 
@@ -423,6 +423,8 @@ def extract_document(path, depth=0):
         if inner == "outlook":
             text, fields = fo_email.msg_text(path)
             return "Outlook message (MSG)", text, fields
+        if inner == "encrypted":
+            raise ValueError("password-protected document (an encrypted Office package; no password is tried)")
         raise ValueError("OLE container without a Word, PowerPoint, Excel or Outlook document inside")
     if kind == "zip":
         inner = fo_extractors.zip_kind(path)

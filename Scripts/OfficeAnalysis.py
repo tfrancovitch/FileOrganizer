@@ -252,8 +252,26 @@ def analyze_legacy(path):
         ole.close()
 
 
+def _encrypted_package(path):
+    """True for a .docx/.xlsx/.pptx saved with a password to open: Office
+    wraps the encrypted ZIP package in an OLE2 container holding the
+    EncryptionInfo and EncryptedPackage streams. Named, never opened."""
+    long_path = to_long_path(path)
+    with open(long_path, "rb") as f:
+        if f.read(8) != bytes.fromhex("d0cf11e0a1b11ae1"):
+            return False
+    ole = olefile.OleFileIO(long_path)
+    try:
+        names = {"/".join(entry).lower() for entry in ole.listdir(streams=True, storages=False)}
+    finally:
+        ole.close()
+    return "encryptedpackage" in names and "encryptioninfo" in names
+
+
 def analyze_office(path):
     ext = Path(path).suffix.lower()
+    if ext in MODERN_EXTENSIONS and _encrypted_package(path):
+        raise ValueError("password-protected document (an encrypted Office package; no password is tried)")
     if ext == ".docx":
         return analyze_docx(path)
     elif ext == ".xlsx":

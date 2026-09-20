@@ -108,13 +108,17 @@ def _looks_like_text(raw):
 
 
 def ole_kind(path):
-    r"""For an OLE2 container: word, powerpoint, excel, outlook (a .msg), or
-    None -- by its streams."""
+    r"""For an OLE2 container: word, powerpoint, excel, outlook (a .msg),
+    encrypted (a password-to-open .docx/.xlsx/.pptx: Office wraps the
+    encrypted package in OLE2, with EncryptionInfo and EncryptedPackage
+    streams), or None -- by its streams."""
     if olefile is None:
         raise RuntimeError("olefile is not installed")
     ole = olefile.OleFileIO(to_long_path(path))
     try:
         names = {"/".join(entry).lower() for entry in ole.listdir(streams=True, storages=False)}
+        if "encryptedpackage" in names and "encryptioninfo" in names:
+            return "encrypted"
         if "worddocument" in names:
             return "word"
         if "powerpoint document" in names:
@@ -609,6 +613,15 @@ def odf_text(path):
             raw = zf.read("content.xml")
         except KeyError:
             raise ValueError("OpenDocument file without content.xml")
+        if not raw.lstrip().startswith(b"<"):
+            # A password-protected OpenDocument keeps its entries as
+            # ciphertext and describes them in the manifest.
+            try:
+                manifest = zf.read("META-INF/manifest.xml")
+            except KeyError:
+                manifest = b""
+            if b"encryption-data" in manifest:
+                raise ValueError("password-protected document (an encrypted OpenDocument; no password is tried)")
     out = []
     p_tag, h_tag = "{%s}p" % _ODF_TEXT_NS, "{%s}h" % _ODF_TEXT_NS
     s_tag, tab_tag, br_tag = "{%s}s" % _ODF_TEXT_NS, "{%s}tab" % _ODF_TEXT_NS, "{%s}line-break" % _ODF_TEXT_NS
@@ -943,7 +956,12 @@ def archive_text(path, depth, extract_fn, extensions):
 # ---------------------------------------------------------------------------
 
 #: WordPerfect 6+ fixed-length function groups: code -> total size in bytes.
-_WP6_FIXED = {0xC0: 4, 0xC1: 9, 0xC2: 11, 0xC3: 2, 0xC4: 2, 0xC5: 5, 0xC6: 6, 0xC7: 7}
+#: WordPerfect 5.x fixed-length codes, with their sizes. Attribute on and
+#: off (0xC3, 0xC4) are three bytes -- code, attribute, code -- not two:
+#: read as two, the closing code was taken for a new one and swallowed the
+#: first letter of every bold or underlined word ("EPORT TITLE", Tika's
+#: testWordPerfect_5_1.wp, 2026-09-13).
+_WP6_FIXED = {0xC0: 4, 0xC1: 9, 0xC2: 11, 0xC3: 3, 0xC4: 3, 0xC5: 5, 0xC6: 6, 0xC7: 7}
 #: Single-byte codes that stand for a break of some kind.
 _WP_BREAKS = {0x0A, 0x0B, 0x0C, 0x0D, 0x84, 0x85, 0xCC, 0xCD, 0xCE, 0xCF}
 
@@ -994,6 +1012,24 @@ def wpd_text(path):
                 elif charset == 1:
                     out.append(_WP_MULTINATIONAL.get(ch, "?"))
             i += size
+        elif major >= 2 and b >= 0xF0:
+            # WordPerfect 6 and later: 0xF0-0xFF are FIXED-length codes,
+            # each closed by its own byte -- 0xF0 is the extended character
+            # (F0 char charset F0), 0xF1 undo, 0xF2/0xF3 attribute on/off.
+            # Read as a variable group, "F0 1D 04 F0" gave a size of 61,444
+            # and the reader stepped off the end of the first real file it
+            # met (Tika's testWordPerfect.wpd, 2026-09-13): eight characters
+            # of a two-kilobyte document.
+            if b == 0xF0 and i + 3 < n:
+                ch, charset = raw[i + 1], raw[i + 2]
+                if charset == 0 and 0x20 <= ch <= 0x7E:
+                    out.append(chr(ch))
+                elif charset == 4 and ch < 0x80:
+                    out.append(_WP_TYPOGRAPHIC.get(ch, ""))
+                elif charset == 1:
+                    out.append(_WP_MULTINATIONAL.get(ch, "?"))
+            closing = raw.find(bytes([b]), i + 1, i + 17)
+            i = closing + 1 if closing > 0 else i + 4
         else:
             if major == 0:
                 # WordPerfect 5.x: the group's length sits at bytes 2-3 and
