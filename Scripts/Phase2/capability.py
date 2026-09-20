@@ -62,6 +62,10 @@ class Capability:
 _CURRENT_FINGERPRINT = "(content_id IS NOT NULL AND content_observation_id=current_observation_id)"
 _CURRENT_SIZE_UNIQUE = "(hash_status='size_unique' AND hash_observation_id=current_observation_id)"
 _CURRENT_UNREADABLE = "(hash_status IN ('error','skipped_cloud_only') AND hash_observation_id=current_observation_id)"
+#: B7.2 (C-011) -- a symbolic link or junction: deliberately never opened,
+#: because it is a name for another row's bytes. Its verdict is that fact;
+#: it is neither unexamined nor unreadable.
+_CURRENT_LINK = "(hash_status='skipped_link' AND hash_observation_id=current_observation_id)"
 
 
 def _scalar(conn, sql, args=(), default=0):
@@ -324,11 +328,16 @@ def project_capabilities(conn):
     # earlier wording said so whenever anything at all had been fingerprinted,
     # which after a stopped run would have been exactly the overstatement
     # this module exists to prevent.
-    no_verdict = max(0, present - identified - size_unique)
+    links = _scalar(conn, f"SELECT COUNT(*) FROM file_state WHERE state='present' AND {_CURRENT_LINK}")
+    no_verdict = max(0, present - identified - size_unique - links)
     unreadable = _scalar(
         conn, f"SELECT COUNT(*) FROM file_state WHERE state='present' "
               f"AND NOT ({_CURRENT_FINGERPRINT}) AND {_CURRENT_UNREADABLE}")
     unexamined = max(0, no_verdict - unreadable)
+
+    def _links_sentence():
+        return (f"{links:,} are links to other files and were not opened. "
+                if links else "")
 
     def _no_verdict_sentence():
         parts = []
@@ -349,7 +358,7 @@ def project_capabilities(conn):
         caps.append(Capability(
             "identity", "Which files are identical", PARTIAL,
             f"{identified:,} of {present:,} files fingerprinted and {size_unique:,} "
-            f"proven unique by size. " + _no_verdict_sentence() +
+            f"proven unique by size. " + _links_sentence() + _no_verdict_sentence() +
             "The duplicate question is not fully answered.",
             RUN_DUPLICATES if unexamined else None,
             identified=identified, total=present, size_unique=size_unique,
@@ -361,7 +370,9 @@ def project_capabilities(conn):
         caps.append(Capability(
             "identity", "Which files are identical", PARTIAL,
             f"{identified:,} of {present:,} files fingerprinted. The other "
-            f"{size_unique:,} have a size no other file shares, so they cannot be "
+            f"{size_unique:,} have a size no other file shares"
+            + (f" and {links:,} are links to other files" if links else "")
+            + ", so they cannot be "
             f"duplicates — the duplicate question is fully answered. Fingerprint "
             f"everything only if you also want verifiable identity for moves or "
             f"change detection.",

@@ -1424,6 +1424,170 @@ def test_case_twin_folds_stably_and_visibly():
     shutil.rmtree(corpus, ignore_errors=True)
 
 
+def test_link_is_never_opened_by_the_hash_engine():
+    r"""B7.2 (C-011). A file symbolic link or junction is 'SkippedLink' in
+    both pipelines -- no digest, no group -- and its target keeps its own
+    verdict. Until B7.2 the engine opened the link, Windows resolved it, and
+    the link joined the target's duplicate group offering the target's bytes
+    as reclaimable."""
+    import fo_hash_engine
+    corpus = tempfile.mkdtemp()
+    for name, body in (("a.txt", b"the same twenty-nine bytes!!\n"), ("b.txt", b"the same twenty-nine bytes!!\n")):
+        with open(os.path.join(corpus, name), "wb") as handle:
+            handle.write(body)
+    entries = [fo_hash_engine.FileEntry(1, 1, os.path.join(corpus, "a.txt"), 29),
+               fo_hash_engine.FileEntry(2, 2, os.path.join(corpus, "b.txt"), 29),
+               # the link: size 0, is_link -- the engine must not even stat it
+               fo_hash_engine.FileEntry(3, 3, os.path.join(corpus, "link.txt"), 0, is_link=True)]
+    ex = fo_hash_engine.HashEngine().run_exhaustive(entries)
+    se = fo_hash_engine.HashEngine().run_selective(entries)
+    status = {r.key: r.final_status for r in ex.results}
+    check("B7.2", "a link is SkippedLink in the Full Run and grouped with nothing",
+          status[3] == fo_hash_engine.STATUS_SKIPPED_LINK and status[1] == status[2] == "ConfirmedDuplicate"
+          and len(ex.groups) == 1 and all(m.key != 3 for g in ex.groups for m in g.members)
+          and fo_hashes._EXHAUSTIVE_STATUS[fo_hash_engine.STATUS_SKIPPED_LINK] == "skipped_link",
+          "%s groups=%d" % (status, len(ex.groups)))
+    sstatus = {r.key: r.final_status for r in se.results}
+    check("B7.2", "a link is SkippedLink in the Duplicate Run and never a size candidate",
+          sstatus[3] == fo_hash_engine.STATUS_SKIPPED_LINK and se.candidate_count == 2
+          and fo_hashes._SELECTIVE_STATUS[fo_hash_engine.STATUS_SKIPPED_LINK] == "skipped_link",
+          "%s candidates=%d" % (sstatus, se.candidate_count))
+    # And the loader recognises one from file_state: reparse point + link tag.
+    check("B7.2", "load_entries marks a symlink-tagged reparse point as a link",
+          win_meta.is_link_tag(0xA000000C) and win_meta.is_link_tag(0xA0000003)
+          and not win_meta.is_link_tag(0x9000601A) and not win_meta.is_link_tag(None), "")
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_size_changed_since_listing_is_reported_not_recorded():
+    r"""B7.2 (I-005). A file whose size at open time is not the size listed
+    gets CHANGED SINCE LISTING and no digest, in place of the new bytes'
+    digest beside the old size."""
+    import fo_hash_engine
+    corpus = tempfile.mkdtemp()
+    path = os.path.join(corpus, "f.txt")
+    with open(path, "wb") as handle:
+        handle.write(b"x" * 232)
+    entries = [fo_hash_engine.FileEntry(1, 1, path, 51)]          # listed at 51, now 232
+    ex = fo_hash_engine.HashEngine().run_exhaustive(entries)
+    r = ex.results[0]
+    check("B7.2", "a size that changed since listing is an error with no digest",
+          r.final_status == "Error" and r.error_kind == fo_hash_engine.ERROR_CHANGED_SINCE_LISTING
+          and r.full_hash is None and "51" in r.error_message and "232" in r.error_message
+          and len(ex.errors) == 1,
+          "status=%s kind=%s hash=%s" % (r.final_status, r.error_kind, r.full_hash))
+    ok = fo_hash_engine.HashEngine().run_exhaustive([fo_hash_engine.FileEntry(1, 1, path, 232)]).results[0]
+    check("B7.2", "the same file at its listed size hashes normally",
+          ok.final_status == "UniqueByHash" and ok.full_hash, ok.final_status)
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_unlistable_folder_leaves_its_files_unverified():
+    r"""B7.2 (D-003c). Files under a directory that exists but could not be
+    listed are 'unverified' after the scan, not 'missing'; a scan that lists
+    it again finds them 'reappeared'. Files under a directory the OS says is
+    gone are 'missing'."""
+    corpus = build_corpus(tempfile.mkdtemp(), files=40)      # d00..d15, 40 files
+    conn, _project = new_project(corpus)
+    do_run(conn, corpus, "r0", hash_files=False)
+
+    def scan_with(errors, label):
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version) VALUES (1,?,'scan','running',?,'B7.2',8)",
+            (label, fo_state.utc_now()))
+        run_id = cursor.lastrowid
+        conn.commit()
+        statistics = fo_scan.ScanStatistics()
+        skip = {os.path.normcase(p) for p, _a in errors}
+
+        def walk():
+            for record in fo_scan.scan(corpus, 1, statistics):
+                if os.path.normcase(os.path.dirname(record.path)) in skip:
+                    continue                      # the walker could not list these
+                yield record
+            for path, absent in errors:
+                statistics.errors.append(fo_scan.ScanError(
+                    fo_scan.DIRECTORY_ACCESS_ERROR, path, "Access is denied", absent=absent))
+        ingestor = fo_inventory_records.RecordIngestor(conn, run_id)
+        summary = ingestor.ingest_records(walk(), corpus, "MDY",
+                                          scan_errors=lambda: statistics.errors,
+                                          path_events=lambda: statistics.path_events)
+        ingestor.finish()
+        for scan_id in ingestor.scan_ids.values():
+            conn.execute("UPDATE inventory_scan SET status='completed' WHERE inventory_scan_id=?", (scan_id,))
+        conn.commit()
+        return summary
+
+    def states_under(folder):
+        return sorted(r[0] for r in conn.execute(
+            "SELECT fs.state FROM file_state fs JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+            "WHERE fp.relative_path LIKE ? ESCAPE '!'", (folder + "\\%",)))
+
+    denied, gone = os.path.join(corpus, "d03"), os.path.join(corpus, "d05")
+    summary = scan_with([(denied, False), (gone, True)], "r1")
+    present = conn.execute("SELECT COUNT(*) FROM file_state WHERE state='present'").fetchone()[0]
+    check("B7.2", "files under an unlistable folder are unverified; under a gone folder, missing",
+          set(states_under("d03")) == {"unverified"} and set(states_under("d05")) == {"missing"}
+          and summary["unverified"] == len(states_under("d03")) and summary["vanished"] == len(states_under("d05"))
+          and present == 40 - len(states_under("d03")) - len(states_under("d05")),
+          "d03=%s d05=%s summary unverified=%s vanished=%s present=%d"
+          % (states_under("d03"), states_under("d05"), summary["unverified"], summary["vanished"], present))
+    summary = scan_with([], "r2")
+    reappeared = conn.execute(
+        "SELECT COUNT(*) FROM file_observation o JOIN file_path fp ON fp.file_path_id=o.file_path_id "
+        "WHERE o.change_kind='reappeared' AND fp.relative_path LIKE 'd03\\%' ESCAPE '!'").fetchone()[0]
+    check("B7.2", "once the folder lists again its files are present, as 'reappeared'",
+          set(states_under("d03")) == {"present"} and reappeared == len(states_under("d03"))
+          and summary["unverified"] == 0,
+          "d03=%s reappeared=%d" % (states_under("d03"), reappeared))
+    conn.close()
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_terminal_logs_and_binary_members():
+    r"""B7.2 (Y-020c, Y-022b). Terminal escape sequences are stripped where
+    text is decoded, so a colourised log is text and its words survive; and
+    an archive member named .txt whose bytes are binary meets the same gate
+    as a top-level file."""
+    import fo_extractors
+    esc = chr(27)
+    colour = "".join("%s[32m2026-01-%02d%s[0m %s[1mINFO%s[0m step %d finished\n"
+                     % (esc, i % 28 + 1, esc, esc, esc, i) for i in range(60))
+    colour += "%s[33mWARN%s[0m marker phrase here\n" % (esc, esc)
+    text, _enc = fo_text.decode_bytes(colour.encode("utf-8"))
+    check("B7.2", "a colourised log decodes to its words and passes the binary gate",
+          esc not in text and "INFO step 7 finished" in text and "marker phrase here" in text
+          and fo_extractors._looks_like_text(colour.encode("utf-8")),
+          repr(text[:60]))
+    noise = hashlib.sha256(b"seed").digest() * 3200        # 100 KB, never text
+    note = fo_extractors._member_text("noise.txt", noise, 0, {".txt": None})
+    plain = fo_extractors._member_text("plain.txt", b"just words\n", 0, {".txt": None})
+    check("B7.2", "a binary archive member named .txt yields a one-line note, not its bytes",
+          note is not None and len(note) < 200 and "binary" in note and plain == "just words\n",
+          "note=%r" % (note,))
+
+
+def test_garbage_pdf_date_empties_one_field():
+    r"""B7.2 (E-008b). A /CreationDate pypdf cannot parse leaves one field
+    marked unparseable; the file is analysed."""
+    import p2_build_acceptance_corpus as builder
+    import PDFAnalysis
+    pdf = builder.make_pdf("Info dictionary with garbage dates").replace(
+        b"trailer\n<</Size", b"trailer\n<</Info<</CreationDate(garbage)/ModDate(D:99999999999999)>>/Size")
+    path = os.path.join(tempfile.mkdtemp(), "bad_info.pdf")
+    with open(path, "wb") as handle:
+        handle.write(pdf)
+    try:
+        result = PDFAnalysis.analyze_pdf(path)
+        ok = result["PageCount"] == "1" and "unparseable" in result["CreationDate"]
+        detail = "%s" % (result,)
+    except Exception as exc:                                    # noqa: BLE001
+        ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
+    check("B7.2", "a garbage PDF date empties one field instead of failing the file", ok, detail)
+    shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+
 def test_run_finalized_flag():
     r"""Migration 006's anti-false-completion flag is finally written: 1 for a
     terminal status the process reached, 0 for a pause and for a run a later
@@ -1512,6 +1676,14 @@ def main():
     test_attribute_words_render_and_compare()
     test_case_twin_folds_stably_and_visibly()
     test_run_finalized_flag()
+    print()
+
+    print(" B7.2 -- the rest of the adversarial round's defects")
+    test_link_is_never_opened_by_the_hash_engine()
+    test_size_changed_since_listing_is_reported_not_recorded()
+    test_unlistable_folder_leaves_its_files_unverified()
+    test_terminal_logs_and_binary_members()
+    test_garbage_pdf_date_empties_one_field()
     print()
 
     print(" Scalability (B5-E)")

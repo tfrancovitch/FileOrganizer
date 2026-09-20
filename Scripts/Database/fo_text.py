@@ -179,7 +179,38 @@ class TextStats(object):
 # Text decoding -- deterministic first, probabilistic only as fallback
 # ---------------------------------------------------------------------------
 
+import re
+
+#: B7.2 (Y-020c) -- ANSI escape sequences: CSI (ESC [ ... final byte, the
+#: colour and cursor codes of every terminal log), OSC (ESC ] ... BEL/ST)
+#: and the two-byte ESC forms. Formatting, never words.
+_ANSI_ESCAPES = re.compile(
+    "\x1b\\[[0-?]*[ -/]*[@-~]"                 # CSI
+    "|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)"   # OSC, ended by BEL or ST
+    "|\x1b[ -/]*[0-~]")                         # any other ESC sequence (ECMA-48: intermediates, then a final)
+
+
+def strip_ansi(text):
+    """Text with its terminal formatting removed (B7.2, Y-020c)."""
+    if not text or "" not in text:
+        return text
+    return _ANSI_ESCAPES.sub("", text)
+
+
 def decode_bytes(raw):
+    r"""Decode text bytes; terminal formatting stripped (see _decode_bytes).
+
+    B7.2 (Y-020c): a 3 KB CI log with 180 colour codes was refused as
+    binary, because ESC counted as a control character. The codes are
+    removed here, at the one place every reader, the binary gate and the
+    word counts share, so they never reach stored text either. What
+    remains is exactly the text a terminal would have shown.
+    """
+    text, label = _decode_bytes(raw)
+    return strip_ansi(text), label
+
+
+def _decode_bytes(raw):
     r"""Decode text bytes without letting chardet override valid UTF-8.
 
     B6.1 correctness rule: Unicode encodings with an explicit BOM win;

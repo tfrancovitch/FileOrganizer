@@ -234,6 +234,9 @@ class StateProjector(object):
         self.changed_count = 0
         self.unchanged_count = 0
         self.vanished_count = 0
+        #: B7.2 (D-003c) -- locations under a directory this scan could
+        #: not list, left 'unverified' rather than declared missing.
+        self.unverified_count = 0
         self._roots_primed = set()
 
     # -- priming ------------------------------------------------------
@@ -445,8 +448,18 @@ class StateProjector(object):
 
     # -- vanished detection -------------------------------------------
 
-    def mark_vanished(self, source_root_id, scan_id, now=None):
+    def mark_vanished(self, source_root_id, scan_id, now=None, unverified_under=()):
         r"""Locations this COMPLETED scan did not see become 'missing'.
+
+        B7.2 (D-003c): except those under a directory the scan could not
+        LIST -- `unverified_under` holds those directories' relative path
+        keys. The scan has no evidence about them either way (the folder
+        exists; a denied ACL, a dropped share or a pulled drive hid it),
+        so they become 'unverified', the state migration 006 defined for
+        absence of evidence, and the next scan that can list the folder
+        finds them again as 'reappeared'. A directory the OS reports as
+        NOT FOUND is not in this list: that is evidence, and what was
+        under it is missing.
 
         THE PRECONDITION IS THE POINT. This must only ever be called
         for a scan that ran to completion over a root that was actually
@@ -459,14 +472,30 @@ class StateProjector(object):
         """
         now = now or utc_now()
         seen = self._seen
-        moved = 0
-        batch = []
+        prefixes = tuple(key.rstrip("\\") + "\\" for key in unverified_under if key is not None)
+        whole_root = any(key == "" for key in unverified_under)
+        batch, unverified = [], []
         for row in self.conn.execute(
-                "SELECT file_path_id FROM file_state "
-                "WHERE source_root_id = ? AND state IN ('present', 'inaccessible')",
+                "SELECT fs.file_path_id, fp.relative_path_key FROM file_state fs "
+                "JOIN file_path fp ON fp.file_path_id = fs.file_path_id "
+                "WHERE fs.source_root_id = ? AND fs.state IN ('present', 'inaccessible')",
                 (source_root_id,)):
-            if row[0] not in seen:
+            if row[0] in seen:
+                continue
+            key = row[1] or ""
+            if whole_root or (prefixes and key.startswith(prefixes)):
+                unverified.append(row[0])
+            else:
                 batch.append(row[0])
+        if unverified:
+            # verified_utc is left alone: nothing verified them. The scan
+            # that decided their state is recorded, as for missing rows.
+            self.conn.executemany(
+                "UPDATE file_state SET state = 'unverified', "
+                "state_changed_utc = ?, current_scan_id = ?, current_run_id = ? "
+                "WHERE file_path_id = ?",
+                [(now, scan_id, self.run_id, fid) for fid in unverified])
+            self.unverified_count += len(unverified)
         if not batch:
             return 0
         self.conn.executemany(

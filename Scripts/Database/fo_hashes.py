@@ -44,6 +44,7 @@ _SELECTIVE_STATUS = {
     "RuledOutByFullHash": "ruled_out_full",
     "ConfirmedDuplicate": "confirmed_duplicate",
     "SkippedCloudOnly": "skipped_cloud_only",
+    "SkippedLink": "skipped_link",           # B7.2 (C-011)
     "Error": "error",
     # Only a run that was STOPPED produces these. 'not_attempted' was never
     # opened; 'unresolved' was read (its digest is kept) but a same-size or
@@ -55,6 +56,7 @@ _EXHAUSTIVE_STATUS = {
     "UniqueByHash": "unique_by_hash",
     "ConfirmedDuplicate": "confirmed_duplicate",
     "SkippedCloudOnly": "skipped_cloud_only",
+    "SkippedLink": "skipped_link",           # B7.2 (C-011)
     "Error": "error",
     "NotAttempted": "not_attempted",
     "Unresolved": "unresolved",

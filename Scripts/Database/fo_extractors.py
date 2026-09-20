@@ -859,6 +859,11 @@ def _member_text(name, data, depth, readable):
     if suffix not in readable:
         return None
     if suffix in _TEXT_MEMBER_SUFFIXES:
+        # B7.2 (Y-022b) -- the same gate a top-level file meets. Without
+        # it, 100 KB of random bytes named .txt inside a zip became
+        # 102,419 characters of stored, indexed "text".
+        if not _looks_like_text(data[:4096]):
+            return "(not read: the member's bytes are binary, whatever its name says)"
         if suffix in (".html", ".htm"):
             return html_to_text(data)
         text, _enc = fo_text.decode_bytes(data)

@@ -24,6 +24,8 @@ The keys, and what they assert. Per path (every path the case lists):
   analyzer.<key>.detail         fields of that analyzer's detail_json == the given values
   analyzer.<key>.has_fields     the named detail_json fields are present and not blank
   extracted_content.status      the extraction row's status; "none" = no row
+  extracted_content.char_count_lt  the extraction row's char_count is below value
+                                (B7.2: a binary member yields a one-line note)
   file_name                     file_path.file_name == value (byte-exact)
   file_name_length              len(file_name) == value
   extension_key                 file_path.extension_key == value
@@ -169,14 +171,18 @@ def _analyzer_detail(conn, observation_id, analyzer_key):
 
 
 def _extraction_status(conn, observation_id):
+    row = _extraction_row(conn, observation_id)
+    return row["status"] if row else None
+
+
+def _extraction_row(conn, observation_id):
     if observation_id is None:
         return None
-    row = conn.execute(
-        "SELECT ec.status FROM extracted_content ec "
+    return conn.execute(
+        "SELECT ec.status, ec.char_count FROM extracted_content ec "
         "JOIN analyzer_result r ON r.analyzer_result_id = ec.analyzer_result_id "
         "WHERE r.file_observation_id = ? ORDER BY ec.extracted_content_id DESC LIMIT 1",
         (observation_id,)).fetchone()
-    return row[0] if row else None
 
 
 def _duplicate_summary(conn, content_id):
@@ -253,6 +259,10 @@ def _per_path(conn, truth, key, value, relative_path, row):
             return got is None, f"extracted_content={got!r}"
         allowed = value if isinstance(value, list) else [value]
         return got in allowed, f"extracted_content={got!r}"
+    if key == "extracted_content.char_count_lt":
+        row_ec = _extraction_row(conn, obs_id)
+        got = row_ec["char_count"] if row_ec else None
+        return got is not None and got < value, f"char_count={got!r}"
     if key == "file_name":
         return row["file_name"] == value, f"file_name={row['file_name']!r}"
     if key == "file_name_length":

@@ -181,12 +181,19 @@ class ScanError(object):
     that still knows which one happened.
     """
 
-    __slots__ = ("kind", "path", "message")
+    __slots__ = ("kind", "path", "message", "absent")
 
-    def __init__(self, kind, path, message):
+    def __init__(self, kind, path, message, absent=False):
         self.kind = kind
         self.path = path
         self.message = message
+        #: B7.2 (D-003c) -- True when the OS said the location does not
+        #: exist (deleted or renamed since its parent listed it): that is
+        #: evidence of absence, and what was under it is missing. False
+        #: for a directory that exists and could not be listed -- denied,
+        #: a dropped share, a pulled drive -- which is absence of evidence:
+        #: what was under it keeps its last state as 'unverified'.
+        self.absent = bool(absent)
 
     def as_line(self):
         r"""The Logs\errors.txt line shape R6 writes and R2/R3 parse."""
@@ -462,7 +469,9 @@ def scan(root_path, next_db_id=1, statistics=None, progress=None,
             entries = _list_directory(current)
         except OSError as exc:
             statistics.errors.append(
-                ScanError(DIRECTORY_ACCESS_ERROR, current, _message(exc)))
+                ScanError(DIRECTORY_ACCESS_ERROR, current, _message(exc),
+                          absent=isinstance(exc, (FileNotFoundError,
+                                                  NotADirectoryError))))
             continue
 
         if not entries:

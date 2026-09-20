@@ -28,6 +28,7 @@ if HERE not in sys.path:
 
 import fo_hash_engine                                           # noqa: E402
 import fo_hashes                                                # noqa: E402
+import win_meta                                                 # noqa: E402
 
 
 utc_now = fo_hashes.utc_now
@@ -58,7 +59,8 @@ def load_entries(conn, inventory_scan_ids):
     rows = conn.execute(
         "SELECT fs.current_observation_id AS file_observation_id, "
         "       fs.current_legacy_db_id AS legacy_db_id, fs.size_bytes, "
-        "       fs.is_offline_or_cloud, fp.relative_path, sr.root_path "
+        "       fs.is_offline_or_cloud, fs.is_reparse_point, fs.reparse_tag, "
+        "       fp.relative_path, sr.root_path "
         "FROM file_state fs "
         "JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
         "JOIN source_root sr ON sr.source_root_id=fs.source_root_id "
@@ -70,7 +72,11 @@ def load_entries(conn, inventory_scan_ids):
         key=row["file_observation_id"], db_id=row["legacy_db_id"],
         path=_join(row["root_path"], row["relative_path"]),
         size=row["size_bytes"] or 0,
-        is_offline_or_cloud=bool(row["is_offline_or_cloud"])) for row in rows]
+        is_offline_or_cloud=bool(row["is_offline_or_cloud"]),
+        # B7.2 (C-011) -- a junction or symbolic link is handed to the
+        # engine as what it is, so it is never opened as its target.
+        is_link=bool(row["is_reparse_point"]) and win_meta.is_link_tag(row["reparse_tag"]))
+        for row in rows]
 
 def _join(root_path, relative_path):
     r"""Rebuild the absolute Windows path a record was observed at.

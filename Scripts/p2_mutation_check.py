@@ -17,11 +17,11 @@ What changes at that moment, and what the program is expected to say:
          D1\late.txt created (D1 already listed)      no row until the next scan
   I-002  D2\f2.txt deleted (already listed)           observed; the hash stage says FILE MISSING
   I-003  D2\f3.txt renamed (already listed)           old name observed then FILE MISSING; new name absent
-  I-005  D2\f1.txt rewritten larger (already listed)  the observation keeps the listed size; the hash
-                                                      measurement says 51 bytes with the digest of 232
+  I-005  D2\f1.txt rewritten larger (already listed)  the hash stage finds 232 bytes where 51 were listed
+                                                      and records CHANGED SINCE LISTING, no digest (B7.2)
   I-008  D6 deleted whole (not yet listed)            its listing fails: DIRECTORY ACCESS ERROR, inaccessible
   D-003b D4 made unlistable (not yet listed)          DIRECTORY ACCESS ERROR -- and its files, known from
-                                                      the scan at rest: what state do they get?
+                                                      the scan at rest, are 'unverified', not missing (B7.2)
   Y-043  D3\f1.txt held open exclusively during       the hash stage says ACCESS DENIED (a sharing
          the hash stage                               violation reads the same as a denied ACL)
   Y-045  the root itself gone before a scan           root_availability 'missing'; nothing marked missing
@@ -197,12 +197,12 @@ def main():
             case("I-003b", ["D2\\f3_renamed.txt"], {"row_count": 0}, condition="File renamed during scan: the new name",
                  notes="absent until the next scan"),
             case("I-004", ["D2\\f3.txt"], {"hash.error_kind": "FILE MISSING"}, notes="a rename is a move within the tree: the same observation as I-003"),
-            case("I-005", ["D2\\f1.txt"], {"file_state.state": "present", "size_bytes": len(body(2, 1)), "hash.size_bytes": len(body(2, 1)),
-                                            "hash.full_hash": hashlib.sha256(REWRITTEN).hexdigest().upper()},
-                 classification="DEFECT", matrix_expects="Detect/change state if feasible",
-                 notes="observed 2026-09-13: listed at 51 bytes, rewritten to 232, then hashed -- the measurement records size_bytes 51 (copied from "
-                       "the observation) with the digest of the 232 new bytes, and nothing marks the observation stale; the file's size at open "
-                       "time would have told the hash stage the file had changed. For the user's decision"),
+            case("I-005", ["D2\\f1.txt"], {"file_state.state": "present", "size_bytes": len(body(2, 1)),
+                                            "hash.error_kind": "CHANGED SINCE LISTING"},
+                 matrix_expects="Detect/change state if feasible",
+                 notes="listed at 51 bytes, rewritten to 232, then hashed. Until B7.2 the measurement recorded size_bytes 51 with the digest of "
+                       "the 232 new bytes and nothing marked the observation stale; since B7.2 (defect 48) the hash stage compares the size at "
+                       "open time with the size listed, records CHANGED SINCE LISTING with no digest, and says to scan again"),
             case("I-008", ["D6"], {"file_observation.status": "inaccessible", "file_observation.error_kind": "DIRECTORY ACCESS ERROR", "rows_below": 3},
                  classification="SCOPE", matrix_expects="Continue safely; report the folder as gone",
                  notes="a folder deleted before it was listed fails its listing like a denied one: DIRECTORY ACCESS ERROR (the OS error text says the path was not found); its three files keep their rows"),
@@ -230,14 +230,15 @@ def main():
         print(f"        D6 files after the changing scan: {d6_states}")
         print(f"        scan: {dict(scan)}")
         conn.close()
-        truth["cases"].append(case("D-003c", sorted(states), {"file_state.state": "missing"},
+        truth["cases"].append(case("D-003c", sorted(states), {"file_state.state": "unverified"},
                                    condition="Files under a folder that could not be listed, known from the scan before",
-                                   classification="DEFECT",
                                    matrix_expects="Exists but cannot be accessed -- not missing; MISSING needs evidence of absence",
-                                   notes="observed 2026-09-13: mark_vanished marks every location a completed scan did not see as 'missing', "
-                                         "and a directory error does not stop it -- so the three files under D4, which exist and were merely "
-                                         "unlistable, are 'missing'. A dropped share or a pulled drive mid-walk does the same to everything under it. "
-                                         "For the user's decision"))
+                                   notes="until B7.2 mark_vanished marked every location a completed scan did not see as 'missing', and a "
+                                         "directory error did not stop it, so the three files under D4 -- which exist and were merely "
+                                         "unlistable -- were 'missing', as everything under a dropped share or a pulled drive would be. Since "
+                                         "B7.2 (defect 46) what lies under a directory that exists but could not be listed is 'unverified' "
+                                         "(migration 006's absence-of-evidence state) until a scan can list it; only a directory the OS "
+                                         "reports as gone has its files marked missing"))
         conn = connect(project_dir)
         p2_cases.assert_case(conn, truth, truth["cases"][-1], check)
         conn.close()

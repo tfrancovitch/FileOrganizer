@@ -131,6 +131,16 @@ STATUS_RULED_OUT = "RuledOut"
 STATUS_CONFIRMED = "ConfirmedDuplicate"
 STATUS_NEEDS_FULL = "NeedsFullHash"
 STATUS_SKIPPED_CLOUD = "SkippedCloudOnly"
+#: B7.2 (C-011) -- a symbolic link or junction to a file. Never opened:
+#: Windows would resolve it and hand back the TARGET's bytes, and the
+#: link would then be grouped with its target as a duplicate offering
+#: the target's bytes as reclaimable. A link is a name, not a copy.
+STATUS_SKIPPED_LINK = "SkippedLink"
+#: B7.2 (I-005) -- the error kind for a file whose size at open time is
+#: not the size the inventory listed. The digest of the new bytes beside
+#: the old size would be an inconsistent pair; nothing is recorded, and
+#: the remedy is a scan.
+ERROR_CHANGED_SINCE_LISTING = "CHANGED SINCE LISTING"
 STATUS_ERROR = "Error"
 
 FINAL_UNIQUE_BY_SIZE = "UniqueBySize"
@@ -205,6 +215,10 @@ class FileReader(object):
             return text.replace("\\", "/")
         return text
 
+    def size_on_disk(self, path):
+        """The file's size now, before it is read (B7.2, I-005)."""
+        return os.stat(self.open_path(path)).st_size
+
     def partial_digest(self, path, window):
         r"""SHA-256 over the first `window` bytes, or the whole file if
         it is smaller.
@@ -265,14 +279,17 @@ class FileEntry(object):
     which is what keeps the engine free of the database.
     """
 
-    __slots__ = ("key", "db_id", "path", "size", "is_offline_or_cloud")
+    __slots__ = ("key", "db_id", "path", "size", "is_offline_or_cloud", "is_link")
 
-    def __init__(self, key, db_id, path, size, is_offline_or_cloud=False):
+    def __init__(self, key, db_id, path, size, is_offline_or_cloud=False,
+                 is_link=False):
         self.key = key
         self.db_id = db_id
         self.path = path
         self.size = int(size or 0)
         self.is_offline_or_cloud = bool(is_offline_or_cloud)
+        #: B7.2 -- a symbolic link or junction (win_meta.is_true_link).
+        self.is_link = bool(is_link)
 
 
 class HashResult(object):
@@ -284,7 +301,7 @@ class HashResult(object):
     it would be indistinguishable from a real one downstream.
     """
 
-    __slots__ = ("key", "db_id", "path", "size", "is_offline_or_cloud",
+    __slots__ = ("key", "db_id", "path", "size", "is_offline_or_cloud", "is_link",
                  "size_group_id", "partial_hash", "partial_group_id",
                  "partial_status", "full_hash", "final_status",
                  "duplicate_group_id", "needed_full_hash",
@@ -296,6 +313,7 @@ class HashResult(object):
         self.path = entry.path
         self.size = entry.size
         self.is_offline_or_cloud = entry.is_offline_or_cloud
+        self.is_link = getattr(entry, "is_link", False)
         self.size_group_id = None
         self.partial_hash = None
         self.partial_group_id = None
@@ -569,6 +587,28 @@ class HashEngine(object):
                               "avoid triggering a download." % len(skipped))
         return skipped
 
+    def _skip_links(self, results):
+        r"""B7.2 (C-011). Mark every symbolic link or junction to a file
+        'SkippedLink' and return the set of keys to leave out.
+
+        The inventory row is the link (a reparse point, size 0). Opening
+        it makes Windows resolve it, so the digest would be the target's,
+        the link would join the target's duplicate group, and the report
+        would offer the target's bytes as reclaimable -- deleting the
+        link reclaims nothing, deleting the target breaks the link. The
+        row keeps a hash_measurement with no digest and a status that
+        says what it is.
+        """
+        skipped = set()
+        for result in results:
+            if result.is_link:
+                result.final_status = STATUS_SKIPPED_LINK
+                skipped.add(result.key)
+        if skipped:
+            self._log("INFO", "%d symbolic link(s) or junction(s) were left "
+                              "unread: a link is a name, not a copy." % len(skipped))
+        return skipped
+
     def _hash_one(self, result, mode):
         """Hash one file. Returns True on success, False on failure.
 
@@ -578,6 +618,19 @@ class HashEngine(object):
         other four thousand results.
         """
         try:
+            # B7.2 (I-005) -- the size now against the size listed. A file
+            # rewritten between the walk and this open would otherwise get
+            # the new bytes' digest recorded beside the old size, and
+            # nothing would say the inventory was stale for it.
+            actual = self.reader.size_on_disk(result.path)
+            if actual != result.size:
+                result.fail(ERROR_CHANGED_SINCE_LISTING,
+                            "listed at %d byte(s), found %d: the inventory is stale "
+                            "for this file. Scan again, then fingerprint again."
+                            % (result.size, actual))
+                self._log("WARNING", "%s: %s -- %s"
+                          % (ERROR_CHANGED_SINCE_LISTING, result.path, result.error_message))
+                return False, 0
             if mode == "partial":
                 digest, read = self.reader.partial_digest(
                     result.path, self.partial_hash_bytes)
@@ -610,6 +663,7 @@ class HashEngine(object):
         # --- B6.2 P4b: cloud-only files are set aside before anything
         #     opens them, and never enter the candidate set ---
         cloud_skip = self._skip_cloud_only(results)
+        cloud_skip |= self._skip_links(results)          # B7.2 (C-011)
         if cloud_skip:
             entries = [e for e in entries if e.key not in cloud_skip]
 
@@ -843,7 +897,8 @@ class HashEngine(object):
         outcome.results = results
 
         # B6.2 P4b -- cloud-only files are never opened, even by a Full Run.
-        cloud_skip = self._skip_cloud_only(results)
+        # B7.2 (C-011) -- nor are links.
+        cloud_skip = self._skip_cloud_only(results) | self._skip_links(results)
 
         hashable = [r for r in results if r.key not in cloud_skip]
         total = len(hashable)
@@ -867,7 +922,7 @@ class HashEngine(object):
 
         buckets = {}
         for result in results:
-            if result.final_status == STATUS_SKIPPED_CLOUD:
+            if result.final_status in (STATUS_SKIPPED_CLOUD, STATUS_SKIPPED_LINK):
                 continue
             if outcome.cancelled and result.key not in attempted:
                 result.final_status = STATUS_NOT_ATTEMPTED

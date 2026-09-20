@@ -421,7 +421,7 @@ MARKERS.update({
     "07_File_Types/misnamed/photo.jpg": ("docx under jpg marker", True),          # a real .docx named .jpg: read by its bytes
     "07_File_Types/misnamed/notes.docx": ("program under docx marker", False),    # a program named .docx: nothing to read
     "19_Extraction_Safety/control_chars.txt": ("escapes before marker", True),     # two control characters: within the allowance
-    "19_Extraction_Safety/colour.log": ("ansi colour log marker", False),          # a colourised log: refused as binary
+    "19_Extraction_Safety/colour.log": ("ansi colour log marker", True),           # a colourised log: its escape sequences stripped (B7.2)
     "19_Extraction_Safety/nul_bytes.txt": ("nulls before marker", False),          # a NUL byte means binary: refused whole
     "19_Extraction_Safety/encodings/utf8_bom.txt": ("encoding utf8bom marker", True),
     "19_Extraction_Safety/encodings/utf16le_bom.txt": ("encoding utf16le marker", True),
@@ -2729,14 +2729,14 @@ class Corpus:
         self.add(base + "/bad_dates.docx", normalize_ooxml(buf.getvalue()), age_days=45, case="E-008")
         pdf = make_pdf("Info dictionary with garbage dates").replace(
             b"trailer\n<</Size", b"trailer\n<</Info<</CreationDate(garbage)/ModDate(D:99999999999999)>>/Size")
-        self.add(base + "/bad_info.pdf", pdf, age_days=46, expect_analyzer_failure=True, case="E-008b")
+        self.add(base + "/bad_info.pdf", pdf, age_days=46, case="E-008b")
         self.case("E-008", construction="G", expected=dict(present, **{"extracted_content.status": "extracted", "analyzer.office.status": "analyzed"}),
                   notes="python-docx shrugs at the dates: analysed, text read")
-        self.case("E-008b", construction="G", condition="Invalid internal metadata (PDF /Info dates)", classification="DEFECT",
-                  expected=dict(present, **{"extracted_content.status": "extracted", "analyzer.pdf.status": "error"}),
+        self.case("E-008b", construction="G", condition="Invalid internal metadata (PDF /Info dates)",
+                  expected=dict(present, **{"extracted_content.status": "extracted", "analyzer.pdf.status": "analyzed"}),
                   matrix_expects="Graceful parser failure",
-                  notes="observed 2026-09-13: pypdf's date conversion raises on '/CreationDate (garbage)' and the whole PDF analysis is an error, "
-                        "though the page is fine and extraction reads it; a garbage date should empty one field, not fail the file. Minor; for the user's decision")
+                  notes="pypdf's date conversion raises on '/CreationDate (garbage)'; until B7.2 the whole PDF analysis was an error though the "
+                        "page is fine. Since B7.2 (defect 49) the garbage date empties one field ('garbage (unparseable)') and the file is analysed")
 
         # E-009 -- a partial download, under its download name and under the real one.
         partial = make_xlsx([["Line", "Amount"], ["Rent", 1200]])[:900]
@@ -3016,11 +3016,12 @@ class Corpus:
         colour = "".join("\x1b[32m2026-01-%02d\x1b[0m \x1b[1mINFO\x1b[0m step %d finished\n" % (i % 28 + 1, i) for i in range(60))
         colour += "\x1b[33mWARN\x1b[0m " + marker(base + "/colour.log") + "\n"
         self.add(base + "/colour.log", colour.encode("utf-8"), age_days=73, case="Y-020c")
-        self.case("Y-020c", construction="G", condition="Text with ANSI colour codes (a terminal log)", classification="DEFECT",
-                  expected=dict(present, **{"extracted_content.status": "error", "marker_indexed": False}),
+        self.case("Y-020c", construction="G", condition="Text with ANSI colour codes (a terminal log)",
+                  expected=dict(present, **{"extracted_content.status": "extracted", "marker_indexed": True}),
                   matrix_expects="Extraction does not corrupt output",
-                  notes="observed 2026-09-13: ESC counts as a control character and a 3 KB log with 180 colour codes is refused as binary "
-                        "('not a recognised document format (binary)') -- a real-world shape (CI, npm, PowerShell transcripts). Minor; for the user's decision")
+                  notes="until B7.2 ESC counted as a control character and a 3 KB log with 180 colour codes was refused as binary; since B7.2 "
+                        "(defect 50) terminal escape sequences are removed where text is decoded, so the gate sees text and the stored text is "
+                        "what a terminal would have shown -- a real-world shape (CI, npm, PowerShell transcripts)")
         self.add(base + "/nul_bytes.txt",
                  b"two nulls \x00\x00 and then: " + marker(base + "/nul_bytes.txt").encode("utf-8") + b"\n",
                  age_days=73, case="Y-020b")
@@ -3037,12 +3038,12 @@ class Corpus:
                   notes="observed 2026-09-13: the sniff's binary gate refuses it ('not a recognised document format (binary)'); no misleading text is produced")
         self.add(base + "/binary_as_text/noise_inside.zip", make_zip([("noise.txt", random_bytes(SEED + 23, 100 * 1024))]),
                  age_days=74, case="Y-022b")
-        self.case("Y-022b", construction="G", condition="Binary file presented as text, inside an archive", classification="DEFECT",
-                  expected=dict(present, **{"extracted_content.status": "extracted"}),
+        self.case("Y-022b", construction="G", condition="Binary file presented as text, inside an archive",
+                  expected=dict(present, **{"extracted_content.status": "extracted", "extracted_content.char_count_lt": 1000}),
                   matrix_expects="Do not produce misleading text output",
-                  notes="observed 2026-09-13: the archive-member text path (_member_text -> decode_bytes) has no sniff, so 100 KB of random bytes "
-                        "named .txt inside a zip became 102,419 characters of stored, indexed text -- the gate that protects a top-level file "
-                        "does not protect a member. Minor; for the user's decision")
+                  notes="until B7.2 the archive-member text path had no sniff, so 100 KB of random bytes named .txt inside a zip became 102,419 "
+                        "characters of stored, indexed text; since B7.2 (defect 51) a member named as text meets the same binary gate as a "
+                        "top-level file and yields a one-line note instead")
 
         # Y-023 -- six encodings of the same English line, each with its marker.
         def line(key):
@@ -3401,14 +3402,14 @@ class HostileCorpus(Corpus):
             for case_id in ("C-011", "C-012", "C-013", "Z-001b"):
                 self.decline(case_id, "symbolic links cannot be created here (%s); Developer Mode or elevation is needed" % exc)
         else:
-            self.case("C-011", construction="G", classification="DEFECT",
+            self.case("C-011", construction="G",
                       expected=dict(present, is_reparse_point=1, reparse_tag=0xA000000C, size_bytes=0,
-                                    duplicate_group_members=2, reclaimable_bytes=29),
+                                    hash_status="skipped_link", not_grouped=True),
                       matrix_expects="Correctly classify link/object; do not conflate a link with its target",
-                      notes="observed 2026-09-13: the row is the link (reparse point, size 0), but the hash stage opens the path, Windows resolves it, "
-                            "and the link is hashed as its target's bytes -- so the duplicate report groups link and target and offers the target's 29 bytes "
-                            "as reclaimable. Deleting the link reclaims nothing; deleting the target breaks the link. For the user's decision")
-            self.conflations.append({"link": "03_Links\\file_link.txt", "target": "03_Links\\targets\\document.txt", "bytes": 29})
+                      notes="the row is the link (reparse point, size 0). Until B7.2 the hash stage opened the path, Windows resolved it, "
+                            "and the link was hashed as its target's bytes, grouped with the target and offered its 29 bytes as reclaimable; "
+                            "since B7.2 (defect 47) the hash stage recognises a junction or symbolic link and never opens it -- "
+                            "hash_status 'skipped_link', no digest, no group")
             self.add_symlink("03_Links/folder_link", "03_Links/targets/folder", is_dir=True, case="C-012")
             self.case("C-012", construction="G", expected={"rows_below": 0},
                       notes="a directory symlink is skipped ('Symlinks / junctions (not recursed)'); the target's files appear once, at their real path")
@@ -3420,9 +3421,10 @@ class HostileCorpus(Corpus):
             self.case("C-013", construction="G", classification="SCOPE",
                       expected={"file_state.state": "present"},
                       matrix_expects="Record link and unresolved target",
-                      notes="the file link is a present row (reparse point) whose hash stage reports FILE MISSING; the folder link is skipped without error; neither records a target")
+                      notes="the file link is a present row (reparse point) whose hash stage records it as a link (skipped_link, B7.2) without resolving it; the folder link is skipped without error; neither records a target")
             self.case("C-013b", construction="G", condition="Broken symbolic link to a file: the hash stage",
-                      expected={"is_reparse_point": 1, "hash.error_kind": "FILE MISSING"})
+                      expected={"is_reparse_point": 1, "hash_status": "skipped_link"},
+                      notes="B7.2: a link is never opened by the hash stage, target or no target -- skipped_link; until B7.2 it was opened and reported FILE MISSING")
             self.case("C-013b")["paths"].append("03_Links\\broken_file_link.txt")
             self.case("Y-004", construction="G", expected={"is_reparse_point": 1, "reparse_tag": 0xA000000C},
                       notes="a symbolic link is a reparse point that is not a junction (tag IO_REPARSE_TAG_SYMLINK): recorded with its tag, "
@@ -3432,7 +3434,7 @@ class HostileCorpus(Corpus):
             self.case("Z-001b", construction="G", condition="File symbolic link whose target is outside the root", classification="SCOPE",
                       expected=dict(present, is_reparse_point=1, size_bytes=0),
                       matrix_expects="the scan never follows a link out of the root",
-                      notes="the row is inside the root and is marked a reparse point; the hash stage reads C:\\FOTest\\README.md through it -- bytes from outside the root under a path inside it")
+                      notes="the row is inside the root and is marked a reparse point; since B7.2 the hash stage does not open it (skipped_link); an analyzer still reads C:\\FOTest\\README.md through it -- bytes from outside the root under a path inside it")
         self.add_junction("03_Links/junction_to_folder", "03_Links/targets/folder", case="C-014")
         self.case("C-014", construction="G", expected={"rows_below": 0}, notes="skipped; the target's files appear once, at their real path")
         self.add_junction("03_Links/loop/back_to_parent", "03_Links/loop", case="C-015")

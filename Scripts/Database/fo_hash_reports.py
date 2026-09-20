@@ -338,6 +338,7 @@ def partial_hash_report(project_name, run_folder, generated, outcome,
     confirmed = outcome.count_partial_status(engine.STATUS_CONFIRMED)
     needs_full = outcome.count_partial_status(engine.STATUS_NEEDS_FULL)
     skipped = outcome.count_partial_status(engine.STATUS_SKIPPED_CLOUD)
+    links = sum(1 for r in results if r.final_status == engine.STATUS_SKIPPED_LINK)
     errors = sum(1 for r in results
                  if r.partial_status == engine.STATUS_ERROR and r.size_group_id)
     cloud_hashed = sum(1 for r in results
@@ -368,6 +369,8 @@ def partial_hash_report(project_name, run_folder, generated, outcome,
                     format_bytes(needs_reclaim)))
     if skipped > 0:
         lines.append("  Skipped (cloud-only, not hashed)   : %s" % format_count(skipped))
+    if links > 0:
+        lines.append("  Skipped (links, not hashed)        : %s" % format_count(links))
     if errors > 0:
         lines.append("  Errors (could not be hashed)       : %s (see Logs\\errors_partialhash.txt)"
                      % format_count(errors))

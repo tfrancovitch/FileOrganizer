@@ -10,14 +10,16 @@ twice on a real 41,056-file corpus; every note acted on; the crash fixed; all se
 analyzers run on the real corpus with source immutability confirmed; extraction
 reads 114 formats including scans by OCR, and **is not run on the real corpus, by
 the user's decision of 2026-09-19**; **the closeout approved the same day** — the
-three real-use sessions judged sufficient; what remains of Phase 2 is **the
-adversarial round (P2.13)** on build B7, and Phase 3 begins when it is done;
-the adversarial corpus of the Master Matrix is built (`C:\FOTest`: `Corpus\` 853
-files, `Hostile\` 10,026, the mutation runner; 709 + 109 + 37 checks green), and
-**B7** is the build that meets it
-**Build:** **B7** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
-project and log records it; `FileOrganizer\CHANGELOG-B7.md`; tag `phase2-b7` on
-GitHub (`tfrancovitch/FileOrganizer`), the install byte-identical to it
+three real-use sessions judged sufficient; **the adversarial round (P2.13) is
+done** — the P2 stress test of 2026-09-19 (the first two-root project) and the
+Master Matrix corpus found defects 33–51, fixed in B7.1 and B7.2 (2026-09-20);
+one case (A-014) stays by decision; **Phase 3 begins**. The adversarial corpus
+is built (`C:\FOTest`: `Corpus\` 853 files, `Hostile\` 10,026, the mutation
+runner) and every suite is green on **B7.2**
+**Build:** **B7.2** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
+project and log records it; `FileOrganizer\CHANGELOG-B7.2.md` (and B7.1, B7);
+tag `phase2-b7.2` on GitHub (`tfrancovitch/FileOrganizer`); the clean install
+`FileOrganizer-Phase2-B7.2\` is byte-identical to it
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -79,8 +81,8 @@ A nineteenth, adopted 2026-09-10:
 | Phase | Name | Status |
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
-| **2** | **Understand** | **Built and accepted — closeout approved 2026-09-19. Open only for the adversarial round (P2.13) on build B7; Phase 3 follows it** |
-| 3 | Decide / Plan | Not started |
+| **2** | **Understand** | **Shipped — B7.2. Closeout approved 2026-09-19; the adversarial round (P2.13) closed 2026-09-20 with B7.1 and B7.2 (defects 33–51; A-014 kept by decision)** |
+| 3 | Decide / Plan | **Next** — the handoff follows from the closeout's §7 |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
 | 6 | Local LLMs | Research horizon |
@@ -163,7 +165,13 @@ query engine being tested.
 | 42 | **OneDrive files' attributes rendered as a bare number** (`524320`, `1572902`) and the reports' Hidden/System counts — a substring test R6 also used — could not see them: 8 and 2 reported, 9 and 3 on disk | Pinned, Unpinned, RecallOnOpen, RecallOnDataAccess by name, any remainder as hex; values .NET could name render as before; change detection compares attribute words, so the spelling change is not a change of the file |
 | 43 | **The folded case twin was a chimera** (A-014, still open) — the second name silently overwrote the first's size, so the row flipped between the twins on every scan, read "modified" each time and put 2 bytes in the drift check | The first record keeps the row; the second is a `FOLDED_CASE_TWIN` event, warned once per scan and counted in the preliminary report; the hostile truth's expected bytes moved with it |
 | 44 | **Two-root bookkeeping** — the report merged same-named top-level folders across roots and printed an ambiguous "(root)", the header named one root, the ingest stage said "(0.0s)" for work that streams inside the walk, and a scan row inherited another root's counts, notes and duration | Top-level folders qualified by root when there is more than one (R6's lines otherwise); the header names every root; the stage note carries the time; each scan row keeps its own counts |
-| 45 | **New Project's folder list was drawn behind its own row** — the list was a child of the form packed `in_` a sibling row created after it, which Tk stacks above; every Add landed in a list nobody could see, so Add looked like it wiped the path and added nothing | The list is a child of the row it sits in; a line under it says how many folders will be inventoried; `p2_dashboard_check` adds two through the real form |
+| 45 | **New Project's folder list was drawn behind its own row** — the list was a child of the form packed `in_` a sibling row created after it, which Tk stacks above; every Add landed in a list nobody could see, so Add looked like it wiped the path and added nothing | The list is a child of the row it sits in; a line under it says how many folders will be inventoried; `p2_dashboard_check` adds two through the real form (195 checks) |
+| 46 | **Files under a folder that could not be listed were marked missing** (D-003c) — vanished-detection marked every location a completed scan had not seen, and a directory error did not stop it, so a changed ACL, a dropped share or a pulled drive mid-walk turned everything under it into *missing* | The walker records whether a failed directory exists or is gone (`ScanError.absent`); what lies under an unlistable one becomes `unverified` (migration 006's absence-of-evidence state) and is `reappeared` once the folder lists again; only a directory the OS reports as gone has its files marked missing |
+| 47 | **A file symbolic link was hashed as its target** (C-011) — the row was the link (reparse point, size 0), but the hash stage opened the path, Windows resolved it, and the link joined the target's duplicate group offering the target's bytes as reclaimable | A junction or symbolic link to a file is handed to the engine as a link and never opened: `hash_status` `skipped_link`, no digest, no group, in both passes; the project summary counts links apart from unreadable files |
+| 48 | **A file rewritten between listing and hashing kept the listed size beside the new digest** (I-005) — an inconsistent pair nothing marked stale | The hash stage compares the size at open time with the size listed; a difference is `CHANGED SINCE LISTING`, no digest, and the message says to scan again |
+| 49 | **A garbage PDF date failed the whole PDF analysis** (E-008b) — pypdf raises on a `/CreationDate` it cannot parse | The date empties one field (`garbage (unparseable)`); the file is analysed |
+| 50 | **A colourised terminal log was refused as binary** (Y-020c) — ESC counted as a control character; 180 colour codes in a 3 KB CI log | Terminal escape sequences are removed where text is decoded, so the gate sees text and the stored text is what a terminal showed |
+| 51 | **An archive member named as text was decoded without a sniff** (Y-022b) — 100 KB of random bytes named `.txt` inside a zip became 102,419 characters of indexed "text" | A member named as text meets the same binary gate as a top-level file and yields a one-line note |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
@@ -173,17 +181,12 @@ available opt-in. **The walk is roughly 2× faster than B6.2.**
 
 Each is asserted *as it behaves today* so the suites stay green and the case is
 listed under `defects` in `C:\FOTest\CASE_RESULTS*.json`; the check fails the day
-the defect is fixed, which is when the expectation moves.
+the defect is fixed, which is when the expectation moves. B7.2 fixed six of the
+seven (defects 46–51); one remains, by decision.
 
 | Case | Defect | Where |
 |---|---|---|
-| A-014 (= Y-009, Y-053, W-003) | A case-only pair in a case-sensitive directory folds into one row — `file_path` is unique on a lower-cased key. Since B7.1 (defect 43) the row is the first file's, the second is a `FOLDED_CASE_TWIN` event and counted in the report; one row for two files remains. The walk counts two | `fo_inventory` ingest; Hostile_Naming |
-| C-011 | A file symbolic link is a present row (reparse point, size 0) but the hash stage opens the path, Windows resolves it, and the link is hashed as its target's — so the two are grouped as duplicates | hash engine; Hostile\02_Identity |
-| I-005 | A file rewritten between listing and hashing keeps the listed size beside the new digest; nothing marks the observation stale | hash engine; mutation runner |
-| D-003c | Files under a folder that became unlistable after they were observed are marked *missing*, though the folder still exists and holds them | ingest; mutation runner |
-| E-008b | pypdf raises on a garbage `/CreationDate`, and the whole PDF analysis is an error though the page is fine and extraction reads it | `PDFAnalysis.py`; Corpus\05_Corruption |
-| Y-020c | ESC counts as a control character, so a 3 KB log with 180 colour codes is refused as binary | `fo_extractors.sniff`; Corpus\19_Extraction_Safety |
-| Y-022b | An archive member is decoded with no sniff: 100 KB of random bytes named `.txt` inside a zip became 102,419 characters of "text" | `ContentExtraction._member_text`; Corpus\19_Extraction_Safety |
+| A-014 (= Y-009, Y-053, W-003) | A case-only pair in a case-sensitive directory folds into one row — `file_path` is unique on a lower-cased key. B7.1 (defect 43) made the fold stable and visible: the row is the first file's, the second is a `FOLDED_CASE_TWIN` event counted in the report. The per-directory case-sensitivity fix was **declined for B7.2 (2026-09-20)**; one row for two files remains, and the walk counts two | `fo_inventory` ingest; Hostile_Naming |
 
 ### Known limits
 
@@ -469,11 +472,14 @@ rather than time-boxed, and it does not exist for network shares.
     with branch `phase2`; the install verified byte-identical to the tag ✔
 
 **Next — the last part of Phase 2**
-26. **The adversarial round (P2.13)**, in its own session: every Master Matrix
-    case run against B7, each difference classified as *defect* (fix it, plan
-    table, B7.x), *scope* (a known limit, or Phase 3) or *test wrong* (fix the
-    truth). Findings name the build.
-27. Then Phase 3 — the handoff follows from the closeout's §7.
+26. **The adversarial round (P2.13)** ✔ — done 2026-09-19/20. The P2 stress test
+    (the first two-root project) found defect 33, which had hidden half the
+    project from every pass; fixing it uncovered 34–45 (B7.1); the six DEFECT
+    cases the corpus had recorded became 46–51 (B7.2), each case now asserting
+    what the matrix expects; A-014 stays by decision. Findings name the build.
+27. **Then Phase 3** — next; the handoff follows from the closeout's §7, from
+    the clean install `FileOrganizer-Phase2-B7.2\` (byte-identical to tag
+    `phase2-b7.2`).
 
 **Decided 2026-09-19 — the closeout**
 12. Extract and index, or not — **not**, by the user's decision ✔

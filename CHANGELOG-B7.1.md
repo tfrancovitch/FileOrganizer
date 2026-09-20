@@ -103,7 +103,7 @@ Thirteen defects, numbered 33–45 in `PROJECT_PLAN.md` §4.
 On the final code: `b6_regression` 63 checks (19 new, marked B7.1; the
 two-root one reproduces the stress-test failure in miniature against the
 pre-fix ingestor), `p2_mutation_check` 37/37, `p2_hostile_check` 109/109 with
-`--rebuild`, `p2_dashboard_check` 196 (all passed; one new, which adds two folders through the real form), `p2_acceptance` 709/709
+`--rebuild`, `p2_dashboard_check` 195 (all passed; one new, which adds two folders through the real form), `p2_acceptance` 709/709
 against a `P2Accept` rebuilt from scratch by B7.1. The stress project,
 re-created and then scanned and fingerprinted again: 52,200 rows, both roots
 in every pass, 52,177 hashed, the 23 designed hostile errors, drift +0 / +0.

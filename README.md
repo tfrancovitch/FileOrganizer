@@ -10,6 +10,18 @@ cloud-only file.
 
 ---
 
+## B7.2 — the adversarial round closed
+
+B7.2 fixes the six defects the Master Matrix corpus had recorded as DEFECT
+cases: files under an unlistable folder marked missing, a file symbolic link
+hashed as its target, a file rewritten between listing and hashing recorded
+as an inconsistent pair, a garbage PDF date failing the whole analysis, a
+colourised log refused as binary, and a binary archive member decoded as
+text. Each case now asserts what the matrix expects. One stays by decision
+(A-014, the case-only pair). `CHANGELOG-B7.2.md` has the detail; defects
+46–51 in `..\PROJECT_PLAN.md` §4. With it, Phase 2's last part — the
+adversarial round (P2.13) — is done.
+
 ## B7.1 — the first fix build of the adversarial round
 
 B7.1 fixes what the P2 stress test — the first project with two source

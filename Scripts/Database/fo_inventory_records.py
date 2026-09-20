@@ -90,6 +90,10 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         #: B7.1 -- records folded into a row this scan already held (a
         #: case-only twin). Counted here, stored as events, reported.
         self.folded_count = 0
+        #: B7.2 (D-003c) -- per root, the relative path keys of directories
+        #: that exist but could not be listed. What is under them is left
+        #: 'unverified' by mark_vanished rather than declared missing.
+        self.unlisted_keys = {}
 
     # -- entry point --------------------------------------------------
 
@@ -182,8 +186,17 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         if root_available and walked_completely:
             for root_id in sorted(walked_roots):
                 vanished += self.projector.mark_vanished(
-                    root_id, self.scan_ids[root_id])
+                    root_id, self.scan_ids[root_id],
+                    unverified_under=self.unlisted_keys.get(root_id, ()))
             self.conn.commit()
+            if self.projector.unverified_count:
+                self._warn(
+                    "%d file(s) sit under %d folder(s) this scan could not list; "
+                    "they keep their last known state as 'unverified' -- not "
+                    "missing, since nothing showed them gone -- until a scan can "
+                    "list the folder again."
+                    % (self.projector.unverified_count,
+                       sum(len(v) for v in self.unlisted_keys.values())))
         elif root_available:
             self._warn(
                 "The walk was stopped after %d file(s). Files it had not reached "
@@ -225,6 +238,7 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
                 "unchanged": self.projector.unchanged_count,
                 "vanished": vanished,
                 "folded": self.folded_count,
+                "unverified": self.projector.unverified_count,
                 "history_mode": self.history_mode,
                 "root_availability": availability}
 
@@ -540,6 +554,19 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
             # be listed, so everything under it was skipped.
             if error.kind == "DIRECTORY ACCESS ERROR":
                 dir_errors += 1
+                # B7.2 (D-003c) -- an existing directory that could not be
+                # listed shields what it holds from vanished-detection; a
+                # directory the OS reports as gone does not.
+                if not getattr(error, "absent", False):
+                    root_for_key, relative_for_key, _m = resolver.resolve(error.path)
+                    # The root itself (a pulled drive, a dropped share): the
+                    # resolver names it by its basename; the empty key means
+                    # "everything under this root".
+                    unlisted_path = str(error.path).lower().rstrip("\\/")
+                    is_root = any(rid == root_for_key and unlisted_path == rkey
+                                  for rid, rkey, _display in resolver.entries)
+                    self.unlisted_keys.setdefault(root_for_key, []).append(
+                        "" if is_root else path_key(relative_for_key))
             if stored >= max_entries:
                 continue          # keep COUNTING; stop STORING
             raw_path = error.path

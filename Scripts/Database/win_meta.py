@@ -262,6 +262,16 @@ def is_cloud_placeholder(attributes):
         return False
 
 
+def is_link_tag(reparse_tag):
+    """Is this reparse tag a junction or symlink? (B7.2: for callers that
+    hold file_state.is_reparse_point and reparse_tag rather than the raw
+    attribute word -- is_true_link() needs the word.)"""
+    try:
+        return int(reparse_tag) in _TRUE_LINK_TAGS
+    except (TypeError, ValueError):
+        return False
+
+
 def is_true_link(attributes, reparse_tag):
     r"""Is this entry a junction or symlink R6 refuses to recurse into?
 

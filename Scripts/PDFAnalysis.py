@@ -58,7 +58,15 @@ def analyze_pdf(path):
         result["Title"] = meta.title or ""
         result["Author"] = meta.author or ""
         result["Producer"] = meta.producer or ""
-        result["CreationDate"] = str(meta.creation_date) if meta.creation_date else ""
+        # B7.2 (E-008b) -- pypdf raises on a /CreationDate it cannot parse
+        # ("garbage", "D:99999999999999"). That empties one field; it does
+        # not fail a file whose pages are fine. The raw string is kept
+        # when the value is a string, so a person can still see it.
+        try:
+            result["CreationDate"] = str(meta.creation_date) if meta.creation_date else ""
+        except Exception:                                       # noqa: BLE001
+            raw = meta.get("/CreationDate")
+            result["CreationDate"] = ("%s (unparseable)" % raw) if isinstance(raw, str) and raw else ""
 
     # "Has extractable text" means SOME page has text, not the first page.
     # Judged by page one alone, a book whose cover is a picture was called
