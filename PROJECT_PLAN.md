@@ -4,18 +4,20 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-19 — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
+**Last updated:** 2026-09-19, evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
-analyzers run on the real corpus with source immutability confirmed; extraction now
-reads 113 formats including scans by OCR, and awaits the user's decision (the
-estimate is honest about what OCR of a 30 GB picture library and 32 GB of zips
-would cost, and the Options page can leave those out); closeout drafted;
+analyzers run on the real corpus with source immutability confirmed; extraction
+reads 114 formats including scans by OCR, and **is not run on the real corpus, by
+the user's decision of 2026-09-19**; **the closeout approved the same day** — the
+three real-use sessions judged sufficient; what remains of Phase 2 is **the
+adversarial round (P2.13)** on build B7, and Phase 3 begins when it is done;
 the adversarial corpus of the Master Matrix is built (`C:\FOTest`: `Corpus\` 853
 files, `Hostile\` 10,026, the mutation runner; 709 + 109 + 37 checks green), and
 **B7** is the build that meets it
 **Build:** **B7** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
-project and log records it; `FileOrganizer\CHANGELOG-B7.md`
+project and log records it; `FileOrganizer\CHANGELOG-B7.md`; tag `phase2-b7` on
+GitHub (`tfrancovitch/FileOrganizer`), the install byte-identical to it
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
 
 ---
@@ -77,7 +79,7 @@ A nineteenth, adopted 2026-09-10:
 | Phase | Name | Status |
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
-| **2** | **Understand** | **Built; used on a real corpus through fingerprinting and every analyzer, source files confirmed untouched; closeout drafted — the user's decision. B7 enters adversarial testing** |
+| **2** | **Understand** | **Built and accepted — closeout approved 2026-09-19. Open only for the adversarial round (P2.13) on build B7; Phase 3 follows it** |
 | 3 | Decide / Plan | Not started |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
@@ -176,7 +178,7 @@ the defect is fixed, which is when the expectation moves.
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up. So does **Fingerprint again** — which is what makes it the one way to catch a file whose bytes changed under the same size and modified time.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
-- **Text extraction has not yet run on the real corpus.** With OCR, pictures and archives all on, the estimate for it is **~15 h 17 min** (measured 2026-09-15, after the PDF analyzer was run again under B7 and its page-one text flags corrected: 305 PDFs with no text layer, not 348) — 1 h 26 for the PDFs (52 min of that OCR of **3,079** pages with no text layer, down from 9,868), 17 min for Office, 1 h 23 looking at 25,269 pictures, 3 min for text-like files, and **12 h 10 reading the documents inside 462 zips** (4.5 GB of scanned legal batches, OCR again). With OCR, pictures and archives switched off on the Options page it is **~23 minutes**. Cancel keeps what was done. The user decides. (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md` §7)
+- **Text extraction is not run on the real corpus — the user's decision of 2026-09-19.** With OCR, pictures and archives all on, the estimate for it is **~15 h 17 min** (measured 2026-09-15, after the PDF analyzer was run again under B7 and its page-one text flags corrected: 305 PDFs with no text layer, not 348) — 1 h 26 for the PDFs (52 min of that OCR of **3,079** pages with no text layer, down from 9,868), 17 min for Office, 1 h 23 looking at 25,269 pictures, 3 min for text-like files, and **12 h 10 reading the documents inside 462 zips** (4.5 GB of scanned legal batches, OCR again). With OCR, pictures and archives switched off on the Options page it is **~23 minutes**. Declined, not deferred; the summary's Text line stays “not extracted” and says so. (`Docs\Validation\PHASE_2_REAL_CORPUS_RUN_2026-09-12.md` §7)
 - **Cancel is honoured between files, never during one.** A single very large file finishes before the stop takes effect.
 - **One unexplained outlier:** a 100,000-file scan took 2,629 s once and 124.7 s every time since. Not reproduced; cause unknown.
 
@@ -291,25 +293,24 @@ Word 2016 automation hung on every variant save (Excel and PowerPoint did not), 
 the Word variants are derived; the rest of the Office fixtures are genuine and live
 in `Resources\Fixtures`.
 
-### What remains before Phase 2 closes
+### The closeout — approved 2026-09-19
 
-The living plan's own completion criteria:
+The living plan's own completion criteria, as the user decided them:
 
 | Criterion | Status |
 |---|---|
-| Acceptance run against a meaningful real project | **Partial → mostly met** — Pre-Scan and Full Fingerprinting on 41,056 real files, estimate honoured; analysis on a copy; the exploration was cut short by the crash before questions were asked |
-| Shareable evidence reviewed | Partial |
-| **Real user questions recorded** | **Partial → mostly met** — three sessions' notes recorded and acted on; the third session's include the first questions of the corpus itself (the empty files, the files that could not be analyzed, where the collected data is). The space and duplicate questions are still to be asked |
-| Analytical gaps classified | Partial |
-| High-value deficiencies corrected or deferred | **Done** — 24 defects, all fixed |
+| Acceptance run against a meaningful real project | **Met** — Pre-Scan, Full Fingerprinting and all seven analyzers on the real 41,056-file folder, every estimate honoured; text extraction on it **declined by the user** (the capability is verified on the test corpus) |
+| Shareable evidence reviewed | **Accepted as sufficient** — the summary, the failures list and the analyzers' columns read from real data in the third session |
+| **Real user questions recorded** | **Met** — three sessions' notes recorded and acted on; the third asked the first questions of the corpus itself and each was answered from stored evidence; the user judged this sufficient |
+| Analytical gaps classified | **Carried into the adversarial round** — the known limits are named; the seven engine defects the corpus found stand recorded as DEFECT cases; the round classifies the rest |
+| High-value deficiencies corrected or deferred | **Done** — 32 defects fixed; the seven the corpus found are recorded for the round |
 | Real source immutability confirmed | **Done — on the real folder**: 41,056 / 41,056 unchanged after every run |
-| **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Not evidenced** — the session did not reach a verdict |
+| **"Demonstrably useful as an exploratory tool rather than merely technically functional"** | **Met by the user's verdict, 2026-09-19** |
 
-**`Docs\Handoffs\P2.12_CLOSEOUT.md`** assesses each criterion against what
-exists and puts the decision to the user: close the phase on the evidence so far,
-or run one more session on a real folder with the reworked window first. The
-notes file or `Docs\Validation\PHASE_2_REAL_USE_RECORD.md` — either form — is
-where that session's questions go.
+**`Docs\Handoffs\P2.12_CLOSEOUT.md`** §5a records the decision and the three
+choices behind it: extraction on the real corpus declined, not deferred; the
+three sessions sufficient; the adversarial round (P2.13) the last part of Phase 2,
+run on build B7, with fixes during it becoming B7.1, B7.2 … as in the B6 line.
 
 ---
 
@@ -450,13 +451,21 @@ rather than time-boxed, and it does not exist for network shares.
 24. The parked rows declined with their reasons — 289 matrix rows: 199
     embodied, 90 declined, none untouched; `C:\FOTest\README.md` recomputed ✔
 
-**To close Phase 2** — the user's decision
-12. Extract and index, or not — ~23 min for the documents alone, ~15 h 17 min
-    with OCR of the pictures and the zips' scanned batches; the Options page chooses
-13. Ask the corpus things — what is taking the space, which duplicate groups are
-    worth acting on, what is in the archives — and record what was asked and
-    whether it answered
-14. Sign the closeout; Phase 3 handoff follows from it
+**Done 2026-09-19, evening — the build that governs the adversarial round**
+25. Build **B7** tagged `phase2-b7` on the closeout commit and pushed to GitHub
+    with branch `phase2`; the install verified byte-identical to the tag ✔
+
+**Next — the last part of Phase 2**
+26. **The adversarial round (P2.13)**, in its own session: every Master Matrix
+    case run against B7, each difference classified as *defect* (fix it, plan
+    table, B7.x), *scope* (a known limit, or Phase 3) or *test wrong* (fix the
+    truth). Findings name the build.
+27. Then Phase 3 — the handoff follows from the closeout's §7.
+
+**Decided 2026-09-19 — the closeout**
+12. Extract and index, or not — **not**, by the user's decision ✔
+13. Ask the corpus things — the three sessions judged sufficient by the user ✔
+14. Sign the closeout — **approved 2026-09-19** (`Docs\Handoffs\P2.12_CLOSEOUT.md` §5a) ✔
 
 **Done 2026-09-15 — loose ends before adversarial testing**
 15. **Scan again** on the summary (the Pre-Scan’s stages over the project’s own
@@ -475,10 +484,11 @@ rather than time-boxed, and it does not exist for network shares.
 - Should text extraction cover more formats? 114 now, OCR included; the samples for WordPerfect, OneNote and the non-TIFF RAW formats are in and the readers verified. What remains is Phase 3's relationship layer (the 69 SCOPE cases) and the seven open defects above.
 - The OneDrive placeholder (L-001/L-002/L-006) only the real corpus can hold: one "Free up space" file the user makes in `TOMMY STUFF`, then Scan again and Fingerprint again — `C:\FOTest\README.md` says how. The builder never touches the user's OneDrive.
 
-**Unpushed:** the `phase2` branch exists only on this machine: 90 commits beyond
-`main` on 2026-09-19 — `phase2-loose-ends` fast-forwarded in and retired, the
-corpus session's five commits on top; the install is in step (rework16 backup,
-manifest verified).
+**On GitHub:** branch `phase2` and tag `phase2-b7` pushed 2026-09-19
+(`https://github.com/tfrancovitch/FileOrganizer`); the install is in step
+(rework16 backup, manifest verified, byte-identical to the tag). `main` still
+stands at the Phase 1 ship (`phase1-b6.2`); fast-forwarding it is a decision for
+the end of Phase 2.
 
 **Handoffs:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the environment,
 the rules, the decisions already settled, the defects and the traps, for a session
