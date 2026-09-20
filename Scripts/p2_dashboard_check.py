@@ -55,6 +55,10 @@ sys.path.insert(0, str(SCRIPTS / "Database"))
 FAILURES: list[str] = []
 
 
+# A check name can carry any filename in the corpus; the console may be cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 def check(name, condition, detail=""):
     if condition:
         print(f"  PASS  {name}")

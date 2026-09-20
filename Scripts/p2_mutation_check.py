@@ -57,6 +57,10 @@ sys.path.insert(0, str(SCRIPTS / "Database"))
 RESULTS: list[tuple[str, bool, str]] = []
 
 
+# A check name can carry any filename in the corpus; the console may be cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 def check(name, ok, detail=""):
     RESULTS.append((name, bool(ok), detail))
     print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  -- {detail}" if detail and not ok else ""))
@@ -207,6 +211,9 @@ def main():
             case("Y-043", ["D3\\f1.txt"], {"file_state.state": "present", "hash.error_kind": "ACCESS DENIED"},
                  classification="SCOPE", matrix_expects="Metadata scan continues where possible; distinguish a lock from a denial",
                  notes="a sharing violation is reported as ACCESS DENIED, the same words as a denied ACL (the hash engine classifies only as the OS does)"),
+            case("D-011", ["D3\\f1.txt"], {"file_state.state": "present", "hash.error_kind": "ACCESS DENIED"},
+                 classification="SCOPE", matrix_expects="Inventory metadata if possible; no crash",
+                 notes="the locked file of Y-043: its metadata is inventoried, its bytes are not read, nothing crashes"),
         ]}
         conn = connect(project_dir)
         p2_cases.assert_cases(conn, truth, check, project_dir=project_dir, truth_path=Path(args.root) / "MUTATION_GROUND_TRUTH.json", home="Mutation")

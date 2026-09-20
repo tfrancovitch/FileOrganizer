@@ -22,6 +22,7 @@ The keys, and what they assert. Per path (every path the case lists):
                                 "none" asserts there are no such rows
   analyzer.<key>.status         that analyzer's row (image, pdf, office, ...)
   analyzer.<key>.detail         fields of that analyzer's detail_json == the given values
+  analyzer.<key>.has_fields     the named detail_json fields are present and not blank
   extracted_content.status      the extraction row's status; "none" = no row
   file_name                     file_path.file_name == value (byte-exact)
   file_name_length              len(file_name) == value
@@ -57,6 +58,8 @@ Across the case's paths:
   csv_export_safe               the Files export (Phase2.gui.export_files) has no
                                 cell beginning with = + - @ tab or return, and every
                                 case file is in it (needs the query engine)
+  no_office_automation_in_program  the program's own source (suites and builder excluded)
+                                names no COM automation of Office: nothing can run a macro
   inventory_scan.status         the latest scan's status
   scan.inaccessible_count       the latest scan's inaccessible count
 
@@ -130,20 +133,39 @@ def _analyzer_rows(conn, observation_id):
     return {key: status for key, status in rows}
 
 
+#: The analyzer fields the engine promotes out of detail_json into columns
+#: of analyzer_result (fo_analyzers.AnalyzerSpec.promoted), by their field
+#: names; a case asks for them by field name and gets them back from the column.
+_PROMOTED = {"title": ("Title",), "author": ("Author",), "content_created_reported": ("Created", "DateTimeOriginal"),
+             "width_px": ("Width",), "height_px": ("Height",), "duration_seconds": ("DurationSeconds",),
+             "word_count": ("WordCount",), "char_count": ("CharCount",)}
+
+
 def _analyzer_detail(conn, observation_id, analyzer_key):
-    """The detail_json of one analyzer's row for the current observation, as a dict."""
+    """One analyzer's fields for the current observation: detail_json plus
+    the promoted columns, as one dict."""
     if observation_id is None:
         return None
     row = conn.execute(
-        "SELECT r.detail_json FROM analyzer_result r JOIN analyzer_run ar USING (analyzer_run_id) "
+        "SELECT r.detail_json, r.title, r.author, r.content_created_reported, r.width_px, r.height_px, "
+        "r.duration_seconds, r.word_count, r.char_count "
+        "FROM analyzer_result r JOIN analyzer_run ar USING (analyzer_run_id) "
         "JOIN analyzer a USING (analyzer_id) WHERE r.file_observation_id = ? AND a.analyzer_key = ? "
         "ORDER BY r.analyzer_result_id DESC LIMIT 1", (observation_id, analyzer_key)).fetchone()
-    if row is None or not row[0]:
+    if row is None:
         return None
-    try:
-        return json.loads(row[0])
-    except ValueError:
-        return None
+    detail = {}
+    if row[0]:
+        try:
+            detail = json.loads(row[0])
+        except ValueError:
+            detail = {}
+    for column, names in zip(("title", "author", "content_created_reported", "width_px", "height_px",
+                              "duration_seconds", "word_count", "char_count"), row[1:]):
+        if names is not None:
+            for field in _PROMOTED[column]:
+                detail.setdefault(field, names)
+    return detail or None
 
 
 def _extraction_status(conn, observation_id):
@@ -220,6 +242,11 @@ def _per_path(conn, truth, key, value, relative_path, row):
         detail = _analyzer_detail(conn, obs_id, m.group(1)) or {}
         wrong = {k: detail.get(k) for k, v in value.items() if str(detail.get(k)) != str(v)}
         return not wrong, f"{m.group(1)} detail differs: {wrong} (have {dict(list(detail.items())[:6])})"
+    m = re.fullmatch(r"analyzer\.([a-z_]+)\.has_fields", key)
+    if m:
+        detail = _analyzer_detail(conn, obs_id, m.group(1)) or {}
+        missing = [k for k in value if not str(detail.get(k) or "").strip()]
+        return not missing, f"{m.group(1)} fields empty: {missing} (have {dict(list(detail.items())[:6])})"
     if key == "extracted_content.status":
         got = _extraction_status(conn, obs_id)
         if value == "none":
@@ -298,6 +325,23 @@ def _across(conn, truth, key, value, paths, rows, engine=None):
             "WHERE r.file_observation_id = ?", (found[0]["current_observation_id"],))}
         missing = [v for v in value if v not in names]
         return not missing, f"members={sorted(names)[:8]}{'...' if len(names) > 8 else ''}; missing {missing}"
+    if key == "no_office_automation_in_program":
+        # Read, not run: the program's own source (the suites and the corpus
+        # builder excluded) names no COM automation of Office, so no macro
+        # can execute during an inventory whatever a document carries.
+        scripts = Path(__file__).resolve().parent
+        offenders = []
+        for path in sorted(scripts.rglob("*.py")):
+            rel = path.relative_to(scripts).as_posix()
+            if rel.startswith(("p2_", "Tests/", "tests/")) or "test" in path.name.lower() or "__pycache__" in rel:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if re.search(r"win32com|comtypes|Dispatch(Ex)?\(|Excel\.Application|Word\.Application", text):
+                offenders.append(rel)
+        return (not offenders) == bool(value), f"COM automation named in: {offenders or 'nothing'}"
     if key == "canary_absent":
         import os
         present = [p for p in (os.path.expandvars(v) for v in value) if os.path.lexists(p)]

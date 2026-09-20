@@ -431,6 +431,21 @@ MARKERS.update({
     "19_Extraction_Safety/encodings/utf8_with_stray_bytes.txt": ("encoding straybytes marker", True),
 })
 
+MARKERS.update({
+    # Release 1 -- documents. What the readers reach, and what they do not.
+    "13_Excel_Office/hidden_sheets.xlsx": ("hidden sheet marker phrase", True),           # the hidden AND the very-hidden sheet are read
+    "13_Excel_Office/formulas_openpyxl.xlsx": ("formula result marker", False),           # no cached values: never opened in Excel
+    "13_Excel_Office/formulas_excel.xlsx": ("formula cached marker", True),               # the same workbook after Excel saved it
+    "13_Excel_Office/defined_names.xlsx": ("defined name marker", False),                 # names are not extracted
+    "13_Excel_Office/comments.xlsx": ("cell comment marker", False),                      # comments are not extracted
+    "13_Excel_Office/hyperlinks.xlsx": ("hyperlink target marker", False),                # the URL is not extracted; the cell text is
+    "13_Excel_Office/custom_properties.xlsx": ("custom property marker", False),          # custom document properties are not extracted
+    "16_Templates/hidden_text.docx": ("hidden run marker", True),                         # w:vanish text is read like any other
+    "16_Templates/tracked_changes.docx": ("deleted run marker", False),                   # w:delText is not w:t: deleted text is not the document's
+    "20_Automation/deploy.bat": ("automation batch marker", True),
+    "22_Security_Boundaries/db_connection.ini": ("hunter2 credential marker", True),      # a credential string is indexed like any other text
+})
+
 #: Files OCR is expected to flag for a person to look at.
 OCR_REVIEW_EXPECTED = ["Scans/scan_faded.png", "Scans/scan_bad.pdf"]
 #: Files OCR is expected to read cleanly (no review flag).
@@ -478,8 +493,9 @@ def make_pdf(text: str, padding: int = 0) -> bytes:
     return bytes(out)
 
 
-def normalize_ooxml(data: bytes) -> bytes:
-    """Rewrite an OOXML archive with fixed entry timestamps.
+def normalize_ooxml(data: bytes, keep_dates: bool = False) -> bytes:
+    """Rewrite an OOXML archive with fixed entry timestamps (and, unless
+    `keep_dates`, the document's own timestamps pinned to NOW).
 
     DOCX and XLSX are ZIPs, and both python-docx and openpyxl stamp every entry
     with the current clock time. That leaves files of identical size but
@@ -501,7 +517,7 @@ def normalize_ooxml(data: bytes) -> bytes:
             # openpyxl rewrites docProps/core.xml <dcterms:modified> at save
             # time regardless of what the properties were set to, so pin any
             # timestamp the document carries rather than trusting the library.
-            if name.startswith("docProps/"):
+            if name.startswith("docProps/") and not keep_dates:
                 payload = iso.sub(fixed, payload)
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
@@ -544,6 +560,137 @@ def make_xlsx(rows: list[list]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return normalize_ooxml(buf.getvalue())
+
+
+def xlsx_bytes(wb) -> bytes:
+    """An openpyxl workbook as reproducible bytes (pinned properties, fixed
+    entry times)."""
+    stamp = NOW.replace(tzinfo=None)
+    wb.properties.created = stamp
+    wb.properties.modified = stamp
+    buf = io.BytesIO()
+    wb.save(buf)
+    return normalize_ooxml(buf.getvalue())
+
+
+def rewrite_ooxml(data: bytes, edits: dict[str, bytes | None]) -> bytes:
+    """A copy of an OOXML package with parts replaced, added (name -> bytes)
+    or removed (name -> None). The way to reach what python-docx and
+    openpyxl do not expose: template content types, attached templates."""
+    src = zipfile.ZipFile(io.BytesIO(data))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        names = list(src.namelist()) + [n for n in edits if n not in src.namelist()]
+        for name in sorted(names):
+            payload = edits[name] if name in edits else src.read(name)
+            if payload is None:
+                continue
+            dst.writestr(zipfile.ZipInfo(name, NOW.timetuple()[:6]), payload, zipfile.ZIP_DEFLATED)
+    return out.getvalue()
+
+
+def make_dotx(paragraphs: list[str]) -> bytes:
+    """A Word template: a .docx whose main part is typed as a template."""
+    data = make_docx(paragraphs)
+    types = zipfile.ZipFile(io.BytesIO(data)).read("[Content_Types].xml")
+    types = types.replace(b"wordprocessingml.document.main+xml", b"wordprocessingml.template.main+xml")
+    return rewrite_ooxml(data, {"[Content_Types].xml": types})
+
+
+def attach_template(docx: bytes, target: str) -> bytes:
+    """The document with settings.xml naming `target` as its attached
+    template (the relationship Word writes for a document based on a
+    .dotx); `target` is a file:/// URI or a plain path, kept verbatim."""
+    zf = zipfile.ZipFile(io.BytesIO(docx))
+    settings = zf.read("word/settings.xml")
+    rels = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship Id="rIdTpl" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" '
+            b'Target="' + target.encode("utf-8") + b'" TargetMode="External"/></Relationships>')
+    if b'xmlns:r="' not in settings:
+        settings = settings.replace(b"<w:settings ", b'<w:settings xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ', 1)
+    settings = settings.replace(b"<w:settings", b"<w:settings", 1)
+    head_end = settings.index(b">", settings.index(b"<w:settings")) + 1
+    settings = settings[:head_end] + b'<w:attachedTemplate r:id="rIdTpl"/>' + settings[head_end:]
+    return rewrite_ooxml(docx, {"word/settings.xml": settings, "word/_rels/settings.xml.rels": rels})
+
+
+def make_xlsx_external(cells: list[list], links: list[tuple[str, str]], names: dict[str, str] | None = None) -> bytes:
+    """A workbook whose formulas reach into other workbooks. `links` are
+    (target, cached value) pairs -- the target as Excel stores it (a
+    file:/// URI, a relative name, an https:// address) and the value the
+    last save cached for [n]Sheet1!A1; formula cells in `cells` say
+    "=[1]Sheet1!A1". `names` adds defined names ({name: refers_to}) so a
+    reference can live in a name instead of a cell (Y-025)."""
+    from openpyxl import Workbook
+    from openpyxl.packaging.relationship import Relationship
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.workbook.external_link.external import (ExternalBook, ExternalCell, ExternalLink, ExternalRow,
+                                                          ExternalSheetData, ExternalSheetDataSet, ExternalSheetNames)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    for row in cells:
+        ws.append(row)
+    for target, cached in links:
+        link = ExternalLink()
+        link.externalBook = ExternalBook(
+            sheetNames=ExternalSheetNames(sheetName=["Sheet1"]),
+            sheetDataSet=ExternalSheetDataSet(sheetData=[ExternalSheetData(
+                sheetId=0, row=[ExternalRow(r=1, cell=[ExternalCell(r="A1", t="str", v=cached)])])]))
+        link.file_link = Relationship(type="externalLinkPath", Target=target, TargetMode="External")
+        wb._external_links.append(link)
+    for name, refers_to in (names or {}).items():
+        wb.defined_names[name] = DefinedName(name, attr_text=refers_to)
+    return xlsx_bytes(wb)
+
+
+def excel_available() -> bool:
+    try:
+        import win32com.client  # noqa: F401
+        return os.path.exists(r"C:\Program Files\Microsoft Office\Root\Office16\EXCEL.EXE")
+    except ImportError:
+        return False
+
+
+def excel_saved(source: Path, name: str, password: str | None = None) -> bytes:
+    """`source` opened, recalculated and saved again by Excel -- the only
+    way to a workbook with cached formula values, and to one that needs a
+    password to open. Excel runs invisible, on a file this builder wrote
+    (asserted), and is quit and, if it lingers, ended by PID; nothing in
+    the corpus is opened by it (rule 7)."""
+    import gc
+    import pythoncom
+    import win32com.client
+    import win32process
+    assert source.parent.name == "excel_work", source            # only files this builder wrote
+    out = source.parent / name
+    if out.exists():
+        out.unlink()
+    pythoncom.CoInitialize()
+    xl = win32com.client.DispatchEx("Excel.Application")
+    _tid, pid = win32process.GetWindowThreadProcessId(xl.Hwnd)
+    try:
+        xl.Visible = False
+        xl.DisplayAlerts = False
+        xl.AutomationSecurity = 3                       # msoAutomationSecurityForceDisable: no macro could run
+        book = xl.Workbooks.Open(str(source))
+        xl.CalculateFull()
+        if password:
+            book.SaveAs(str(out), FileFormat=51, Password=password)
+        else:
+            book.SaveAs(str(out), FileFormat=51)
+        book.Close(SaveChanges=False)
+        book = None
+    finally:
+        xl.Quit()
+        xl = None
+        gc.collect()
+        pythoncom.CoUninitialize()
+        alive = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True, text=True).stdout
+        if "EXCEL" in alive:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    return out.read_bytes()
 
 
 def make_png(width: int, height: int, colour: tuple[int, int, int]) -> bytes:
@@ -935,6 +1082,17 @@ def make_lnk(absolute_target: str, relative_target: str, is_dir: bool = False) -
     return header + link_info + string_data(relative_target) + string_data(".") + b"\x00\x00\x00\x00"
 
 
+def dotnet_extension(name: str) -> str:
+    """System.IO.Path.GetExtension, lower-cased -- what the scanner records
+    as extension_key (win_meta.dotnet_extension): everything from the last
+    dot unless the dot is the final character. `.gitignore` is `.gitignore`
+    here and nothing to os.path.splitext; the truth follows the program."""
+    dot = name.rfind(".")
+    if dot < 0 or dot == len(name) - 1:
+        return ""
+    return name[dot:].lower()
+
+
 def random_bytes(seed: int, n: int) -> bytes:
     """n bytes from one seeded generator. (`bytes(random.Random(seed).getrandbits(8)
     for _ in range(n))` re-seeds on every iteration and yields one byte n
@@ -1021,7 +1179,7 @@ class Corpus:
             "relative_path": relative,
             "size_bytes": size,
             "sha256": digest,
-            "extension": Path(relpath).suffix.lower(),
+            "extension": dotnet_extension(Path(relpath).name),
             "modified_utc": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "age_days": age_days,
             "note": note,
@@ -1138,6 +1296,577 @@ class Corpus:
         self._file_types()
         self._extreme_structures()
         self._extraction_safety()
+        # Release 1 -- documents (matrix Stage 3), 2026-09-15 on.
+        self._excel_office()
+        self._protection()
+        self._templates()
+        self._document_relationships()
+        self._embedded_objects()
+        self._automation_and_organisation()
+        self._registrations()
+        self._parked()
+
+    #: Matrix conditions this machine cannot build, by group, with the reason
+    #: (Corpus_Design_Proposal_v1.0 section 7). Declined here so the truth
+    #: lists them beside the cases and nothing is skipped silently.
+    PARKED = (
+        (("J-001", "J-002", "J-003", "J-004", "J-005", "J-006", "J-007", "J-008", "J-009", "J-010", "J-011", "J-012", "J-013",
+          "K-001", "K-002", "K-003", "K-004", "K-005", "K-006", "K-007", "U-002", "U-005", "U-010",
+          "Y-037", "Y-038", "Y-039", "Y-041", "Y-042", "X-009", "X-010", "X-011", "X-012"),
+         "network and authentication: no controlled share; a loopback SMB share (New-SmbShare) needs administrator rights and Windows Pro"),
+        (("L-003", "L-004", "L-005", "L-007", "L-008", "L-009", "X-013"),
+         "cloud beyond OneDrive placeholders: sync conflicts and shared libraries need a second device or account"),
+        (("L-001", "L-002", "L-006"),
+         "OneDrive placeholders: real corpus only -- one 'Free up space' file the user makes; expected is_offline_or_cloud=1, "
+         "hash and analyzers skipped_cloud_only, and the immutability check shows it was not hydrated (rule 2)"),
+        (("F-008",), "EFS: Windows Home has no Encrypting File System"),
+        (("W-002", "W-005", "W-006"),
+         "FAT/exFAT: a USB stick formatted FAT32 would do it (timestamps to 2 s, no attributes, no links); the user supplies the stick"),
+        (("V-005",), "security software: rule 7 -- nothing in the corpus may be dangerous to run against the inventory"),
+        (("S-001", "S-002", "S-003", "S-004", "S-005", "S-006", "T-004", "T-005", "T-006", "T-007", "T-008", "T-009", "Y-040"),
+         "corporate application dependencies: simulation only, and nothing in Phase 2 would observe them"),
+        (("B-007", "B-008", "U-008", "U-009", "Y-054"), "similarity and authority: LATER per the Architecture Review"),
+        # Release 1 (2026-09-15): what the libraries cannot author and Office would not.
+        (("M-008", "M-013", "Y-026", "Y-027"),
+         "pivot tables, Power Query and chart/text-box references need Excel to author them, and Excel's object model was used "
+         "for two files only (cached formula values, a password to open)"),
+        (("N-004", "N-005", "N-006", "N-007", "O-004", "V-004", "N-008", "N-009"),
+         "VBA class modules, UserForms, a protected VBA project and macros that name external resources need VBA authored in the "
+         "editor: no licence-clear sample has them and nothing here writes VBA (rule 7)"),
+        (("P-006", "P-008"), "an inaccessible or corporate template: the attachedTemplate relationship is not read, so the case "
+                             "would be indistinguishable from P-005 today; deferred to the relationship layer"),
+        (("Q-005",), "a referenced workbook behind a denied ACL: as P-006 -- no link is read, so nothing would observe the denial"),
+        (("D-006", "D-009"), "another user's file and unusual ownership need a second account or elevation (icacls /setowner)"),
+        (("Y-003",), "an NTFS volume mount point needs a second volume"),
+        (("Y-005", "Y-006"), "8.3 aliases and environment-variable paths are not inputs the program accepts: the root is always the "
+                             "long, expanded path"),
+        (("Y-007",), "NTFS refuses control characters in names even through the extended-length prefix (tested 2026-09-15); POSIX namespace only, as A-017"),
+        (("Y-010",), "timestamp precision differences need a FAT volume, as W-002"),
+        (("Y-036", "Y-044", "Y-046"), "folder redirection, application-virtualised files and a drive letter that changes between scans: "
+                                      "the project root is a fixed path by design; a root that moves is a different project"),
+    )
+
+    # -- Release 1: documents -------------------------------------------------
+
+    def _excel_office(self):
+        """13_Excel_Office: matrix section M, and the Y rows about
+        workbooks. The program records a workbook's properties and sheet
+        count and extracts every sheet's cell text; it records nothing
+        about hidden state, formulas, names, comments, links, tables,
+        charts or custom properties. Each case makes that explicit."""
+        from openpyxl import Workbook
+        from openpyxl.chart import BarChart, Reference
+        from openpyxl.comments import Comment
+        from openpyxl.packaging.custom import StringProperty
+        from openpyxl.workbook.defined_name import DefinedName
+        from openpyxl.worksheet.table import Table, TableStyleInfo
+        base = "13_Excel_Office"
+        present = {"file_state.state": "present"}
+        workbook = dict(present, **{"analyzer.office.status": "analyzed", "extracted_content.status": "extracted"})
+        scope = dict(classification="SCOPE", construction="G")
+
+        # M-001 -- the ordinary workbook already in Documents\.
+        self.case("M-001", construction="G", expected=dict(workbook, marker_indexed=True), notes="Documents\\budget_model.xlsx")
+        self.case("M-001")["paths"].append("Documents\\budget_model.xlsx")
+
+        # M-002 / M-003 / Y-030 -- a hidden sheet and a very-hidden sheet, each carrying the marker.
+        wb = Workbook()
+        wb.active.title = "Visible"
+        wb.active.append(["The visible sheet says nothing of note."])
+        hidden = wb.create_sheet("Hidden")
+        hidden.append(["The " + marker(base + "/hidden_sheets.xlsx") + " sits on a hidden sheet."])
+        hidden.sheet_state = "hidden"
+        very = wb.create_sheet("VeryHidden")
+        very.append(["The " + marker(base + "/hidden_sheets.xlsx") + " sits on a very hidden sheet too."])
+        very.sheet_state = "veryHidden"
+        self.add(base + "/hidden_sheets.xlsx", xlsx_bytes(wb), age_days=80, note="FTS marker on a hidden and a very-hidden sheet", case="M-002")
+        for cid, note in (("M-002", "the hidden sheet"), ("M-003", "the very-hidden sheet"),
+                          ("Y-030", "both hidden sheets hold relevant content")):
+            self.case(cid, expected=dict(workbook, marker_indexed=True, **{"analyzer.office.detail": {"ContentCount": "3"}}),
+                      matrix_expects="Detect hidden state", **scope,
+                      notes="%s: extraction reads every sheet whatever its state, so the marker is found and the sheet count "
+                            "includes it; the hidden state itself is not recorded -- hidden content is extracted, by decision" % note)
+            if cid != "M-002":
+                self.case(cid)["paths"].append(base.replace("/", "\\") + "\\hidden_sheets.xlsx")
+
+        # M-004 -- formulas: openpyxl writes them with no cached value; Excel caches results when it saves.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(["quantity", "unit price", "total"])
+        ws.append([4, 2.5, "=A2*B2"])
+        ws.append(["", "", '="formula "&"result marker"'])       # the marker exists only as a formula's result
+        openpyxl_formulas = xlsx_bytes(wb)
+        ws["C3"] = '="formula "&"cached marker"'                  # its own phrase, so the two files are told apart in the index
+        for_excel = xlsx_bytes(wb)
+        self.add(base + "/formulas_openpyxl.xlsx", openpyxl_formulas, age_days=81,
+                 note="formulas with no cached values (never opened in Excel)", case="M-004")
+        self.case("M-004", expected=dict(workbook, marker_indexed=False),
+                  matrix_expects="Extract formula data separately from displayed value", **scope,
+                  notes="a workbook written by a library and never opened in Excel has formulas and no cached values: extraction "
+                        "reads values only (data_only), so the formula cells read as empty and the marker is not found. Real files "
+                        "from generators (exports, scripts) look like this")
+        excel = self._excel_made("formulas_excel.xlsx", for_excel, "formulas_openpyxl.xlsx")
+        if excel is not None:
+            self.add(base + "/formulas_excel.xlsx", excel, age_days=81, note="the same workbook saved by Excel: cached values", case="M-004b")
+            self.case("M-004b", condition="Formulas, with cached values (saved by Excel)", construction="G",
+                      expected=dict(workbook, marker_indexed=True),
+                      notes="Excel opened the openpyxl workbook, recalculated and saved it (Research\\Samples\\excel_made\\); the "
+                            "cached results are read and the marker is found. Formula text is still not recorded")
+
+        # M-005 / Y-025 -- defined names, one of them reaching into another workbook.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(["The cells say nothing; the names do."])
+        wb.defined_names["Marker"] = DefinedName("Marker", attr_text='"%s"' % marker(base + "/defined_names.xlsx"))
+        wb.defined_names["Rate"] = DefinedName("Rate", attr_text="Data!$A$1")
+        wb.defined_names["Elsewhere"] = DefinedName("Elsewhere", attr_text="'[source_rates.xlsx]Sheet1'!$A$1")
+        self.add(base + "/defined_names.xlsx", xlsx_bytes(wb), age_days=82, note="three defined names, one pointing at another workbook", case="M-005")
+        self.case("M-005", expected=dict(workbook, marker_indexed=False), matrix_expects="Extract/index if supported", **scope,
+                  notes="defined names are not extracted: the marker, which exists only as a name's value, is not found")
+        self.case("Y-025", expected=dict(workbook), matrix_expects="Detect relationship where supported", **scope,
+                  notes="the name 'Elsewhere' refers to [source_rates.xlsx]; the relationship is not recorded")
+        self.case("Y-025")["paths"].append(base.replace("/", "\\") + "\\defined_names.xlsx")
+
+        # M-006 / M-007 -- a table and a chart.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sales"
+        ws.append(["region", "units"])
+        for region, units in (("north", 12), ("south", 7), ("east", 9), ("west", 4)):
+            ws.append([region, units])
+        table = Table(displayName="Sales", ref="A1:B5")
+        table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
+        ws.add_table(table)
+        chart = BarChart()
+        chart.title = "Units by region"
+        chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5), titles_from_data=True)
+        chart.set_categories(Reference(ws, min_col=1, min_row=2, max_row=5))
+        ws.add_chart(chart, "D2")
+        self.add(base + "/table_and_chart.xlsx", xlsx_bytes(wb), age_days=83, note="a structured table and a bar chart", case="M-006")
+        self.case("M-006", expected=workbook, matrix_expects="Extract structure if supported", **scope,
+                  notes="the table's cells are extracted as cells; the table as a structure is not recorded")
+        self.case("M-007", expected=workbook, matrix_expects="Detect/index", **scope, notes="the chart is not recorded")
+        self.case("M-007")["paths"].append(base.replace("/", "\\") + "\\table_and_chart.xlsx")
+
+        # M-009 -- a comment.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws["A1"] = "A cell with a comment on it."
+        ws["A1"].comment = Comment("The " + marker(base + "/comments.xlsx") + " lives in this comment.", "p2_build_acceptance_corpus")
+        self.add(base + "/comments.xlsx", xlsx_bytes(wb), age_days=84, note="marker in a cell comment", case="M-009")
+        self.case("M-009", expected=dict(workbook, marker_indexed=False), matrix_expects="Extract/index", **scope,
+                  notes="comments are not extracted: the marker in the comment is not found")
+
+        # M-010 -- hyperlinks: the cell text is read, the destination is not.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Links"
+        ws["A1"] = "the policy document"
+        ws["A1"].hyperlink = "https://example.invalid/policies/hyperlink-target-marker.pdf"
+        ws["A2"] = "the shared drive copy"
+        ws["A2"].hyperlink = "file:///S:/Finance/hyperlink%20target%20marker.xlsx"
+        self.add(base + "/hyperlinks.xlsx", xlsx_bytes(wb), age_days=85, note="two hyperlinks; the marker is in the destinations only", case="M-010")
+        self.case("M-010", expected=dict(workbook, marker_indexed=False), matrix_expects="Extract/index destinations", **scope,
+                  notes="the link text is extracted as cell text; the destinations are not")
+
+        # M-015 -- custom document properties.
+        wb = Workbook()
+        wb.active.title = "Data"
+        wb.active.append(["The cells say nothing; the properties do."])
+        wb.custom_doc_props.append(StringProperty(name="Department", value="Finance"))
+        wb.custom_doc_props.append(StringProperty(name="Note", value="The " + marker(base + "/custom_properties.xlsx") + " is a custom property."))
+        self.add(base + "/custom_properties.xlsx", xlsx_bytes(wb), age_days=86, note="marker in a custom document property", case="M-015")
+        self.case("M-015", expected=dict(workbook, marker_indexed=False), matrix_expects="Extract if supported", **scope,
+                  notes="custom properties are not read: the analyzer records the core properties only")
+
+        # N-002 -- the macro-enabled container with no macro in it (Tika's).
+        self.case("N-002", construction="sample", expected=dict(present, **{"extracted_content.status": "extracted"}),
+                  matrix_expects="Distinguish macro-enabled container from actual content", classification="SCOPE",
+                  notes="Tika's .dotm, .xltm, .potm and .pptm carry no VBA project (olevba: no macros); the program does not "
+                        "look, so it cannot tell them from the ones that do")
+        self.case("N-002")["paths"].extend("Samples\\third_party\\apache_tika\\macros\\" + n
+                                          for n in ("testDOTM.dotm", "testEXCEL_macro_enabled_template.xltm", "testPPT.potm", "testPPT.pptm"))
+
+    def _excel_made(self, name: str, source: bytes, source_name: str, password: str | None = None) -> bytes | None:
+        """A file only Excel can make, made once and kept in
+        Research\\Samples\\excel_made\\ (so later builds are byte-identical
+        and need no Excel). None when it is not there and Excel is not."""
+        if self.samples is None:
+            return None
+        made = self.samples / "excel_made" / name
+        if made.is_file():
+            return made.read_bytes()
+        if not excel_available():
+            self.skipped.append("%s: Excel is not available to make it" % name)
+            return None
+        work = self.samples / "excel_made" / "excel_work"
+        work.mkdir(parents=True, exist_ok=True)
+        src = work / source_name
+        src.write_bytes(source)
+        try:
+            data = excel_saved(src, name, password)
+        except Exception as exc:                                       # noqa: BLE001
+            self.skipped.append("%s: Excel refused (%s)" % (name, str(exc)[:120]))
+            return None
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        made.write_bytes(data)
+        return data
+
+    def _protection(self):
+        """15_Protection: matrix section O -- passwords to open (built here,
+        by Excel; and the samples), structure and sheet protection."""
+        base = "15_Protection"
+        present = {"file_state.state": "present"}
+        from openpyxl import Workbook
+        from openpyxl.workbook.protection import WorkbookProtection
+
+        # O-001 -- a workbook Excel saved with a password to open, from a workbook this builder wrote.
+        wb = Workbook()
+        wb.active.title = "Secret"
+        wb.active.append(["Nothing reads this without the password, and nothing tries."])
+        plain = xlsx_bytes(wb)
+        made = self._excel_made("password_to_open.xlsx", plain, "plain_for_password.xlsx", password="corpus")
+        if made is not None:
+            self.add(base + "/password_to_open.xlsx", made, age_days=87, expect_analyzer_failure=True,
+                     note="Excel-encrypted workbook; the password is 'corpus' and nothing supplies it", case="O-001")
+            self.case("O-001", construction="G/sample",
+                      notes="password_to_open.xlsx: made by Excel from a workbook this builder wrote (SaveAs Password:=), kept "
+                            "in Research\\Samples\\excel_made\\; the password is 'corpus' and nothing in the program supplies one")
+
+        # O-002 -- structure protection; and the sheet-protected sample is O-003.
+        wb = Workbook()
+        wb.active.title = "Locked structure"
+        wb.active.append(["Sheets cannot be added or removed without the password; reading is not protected."])
+        wb.security = WorkbookProtection(workbookPassword="corpus", lockStructure=True)
+        self.add(base + "/structure_protected.xlsx", xlsx_bytes(wb), age_days=88, note="workbook structure protection", case="O-002")
+        self.case("O-002", construction="G", expected=dict(present, **{"analyzer.office.status": "analyzed", "extracted_content.status": "extracted"}),
+                  notes="protection of editing is not protection of reading: analyzed and extracted like any workbook")
+
+    def _templates(self):
+        """16_Templates: matrix section P, and the Word rows of Y. A
+        document's template is a relationship in settings.xml; the program
+        reads the document and never the relationship."""
+        base = "16_Templates"
+        present = {"file_state.state": "present"}
+        document = dict(present, **{"analyzer.office.status": "analyzed", "extracted_content.status": "extracted"})
+        scope = dict(classification="SCOPE", construction="G")
+        root = plain_path(ext_path(self.root))
+
+        # P-001 / P-002 -- styles: the ordinary document, and one with a custom style.
+        self.case("P-001", construction="G", expected=document, notes="Documents\\quarterly_report.docx, ordinary styles")
+        self.case("P-001")["paths"].append("Documents\\quarterly_report.docx")
+        from docx import Document
+        from docx.enum.style import WD_STYLE_TYPE
+        doc = Document()
+        style = doc.styles.add_style("Corporate Body", WD_STYLE_TYPE.PARAGRAPH)
+        style.base_style = doc.styles["Normal"]
+        style.font.name = "Georgia"
+        doc.add_paragraph("A paragraph in a custom style named Corporate Body.", style=style)
+        doc.add_paragraph("A paragraph in Normal.")
+        stamp = NOW.replace(tzinfo=None)
+        doc.core_properties.created = doc.core_properties.modified = stamp
+        buf = io.BytesIO()
+        doc.save(buf)
+        self.add(base + "/custom_style.docx", normalize_ooxml(buf.getvalue()), age_days=89, note="a custom paragraph style", case="P-002")
+        self.case("P-002", expected=document, matrix_expects="Detect/index styles where supported", **scope,
+                  notes="the text is read; the style names are not recorded")
+
+        # P-003 / P-004 / P-005 / P-007 / Y-032 / Y-033 -- documents attached to templates.
+        self.add(base + "/templates/corporate.dotx", make_dotx(["The corporate template. Its body is boilerplate."]), age_days=90,
+                 note="a Word template (.dotx), the target of based_on_dotx.docx")
+        template_uri = "file:///" + (root + "\\" + base.replace("/", "\\") + "\\templates\\corporate.dotx").replace("\\", "/").replace(" ", "%20")
+        self.add(base + "/based_on_dotx.docx", attach_template(make_docx(["A document based on corporate.dotx, which exists."]), template_uri),
+                 age_days=90, note="settings.xml attachedTemplate -> templates\\corporate.dotx", case="P-003")
+        self.case("P-003", expected=document, matrix_expects="Detect template relationship if observable", **scope,
+                  notes="the document and its template are both inventoried; the attachedTemplate relationship is not recorded")
+        self.add(base + "/based_on_missing.docx", attach_template(make_docx(["A document based on a template that is not there."]),
+                                                                  "file:///C:/Templates/retired_2019.dotx"),
+                 age_days=91, note="attachedTemplate -> a path that does not exist", case="P-005")
+        self.case("P-005", expected=document, matrix_expects="Document remains inventoryable; dependency reported", **scope,
+                  notes="inventoried and read like any document; the missing template is not reported because the relationship is not read")
+        dotm = "Samples\\third_party\\apache_tika\\macros\\testDOTM.dotm"
+        dotm_uri = "file:///" + (root + "\\" + dotm).replace("\\", "/")
+        self.add(base + "/based_on_dotm.docx", attach_template(make_docx(["A document based on a macro-enabled template."]), dotm_uri),
+                 age_days=92, note="attachedTemplate -> Tika's testDOTM.dotm", case="P-004")
+        for cid, note in (("P-004", "the template is macro-enabled (.dotm)"), ("P-007", "the template could carry macros; none runs"),
+                          ("Y-033", "a document/template relationship that could carry automation")):
+            self.case(cid, expected=document, matrix_expects="Detect template/macro relationship", **scope,
+                      notes=note + "; the relationship is not recorded and nothing executes")
+            if cid != "P-004":
+                self.case(cid)["paths"].append(base.replace("/", "\\") + "\\based_on_dotm.docx")
+        self.case("Y-032", construction="sample", expected=dict(present, **{"extracted_content.status": "extracted"}),
+                  matrix_expects="Detect macro-capable template", classification="SCOPE",
+                  notes="Tika's testDOTM.dotm: a macro-enabled template (with no macro in it); read as a document, its nature not recorded")
+        self.case("Y-032")["paths"].append(dotm)
+
+        # Y-047 -- the misleading names of 07_File_Types; Y-048 / Y-050 -- document metadata against filesystem metadata.
+        self.case("Y-047", construction="G", expected=present,
+                  notes="G-008 and G-009: the filename is preserved and the bytes decide what is read (also A-021)")
+        self.case("Y-047")["paths"].extend(self.case("A-021")["paths"])
+        doc = Document()
+        doc.add_paragraph("A document whose own metadata disagrees with the filesystem's.")
+        doc.core_properties.author = "Priya Example"
+        doc.core_properties.last_modified_by = "Finance Department"
+        doc.core_properties.created = datetime(2015, 3, 4, 9, 0, 0)
+        doc.core_properties.modified = datetime(2016, 5, 6, 10, 0, 0)
+        doc.core_properties.category = "Board papers"
+        doc.core_properties.keywords = "confidential; personnel"
+        buf = io.BytesIO()
+        doc.save(buf)
+        self.add(base + "/metadata_contradicts.docx", normalize_ooxml(buf.getvalue(), keep_dates=True), age_days=93,
+                 created=datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc),
+                 note="core.xml says created 2015, modified 2016, author Priya; the filesystem says 2026", case="Y-048")
+        self.case("Y-048", construction="G",
+                  expected=dict(document, created_utc="2026-01-02T12:00:00Z",
+                                **{"analyzer.office.detail": {"Author": "Priya Example", "Created": "2015-03-04 09:00:00+00:00"}}),
+                  notes="both are preserved: the document's dates and author in the analyzer's detail, the filesystem's in file_state")
+        self.case("Y-050", construction="G", expected=document, classification="SCOPE",
+                  matrix_expects="Extraction policy must distinguish content from potentially sensitive metadata",
+                  notes="author, category and keywords are metadata columns, not extracted text; the two live in different tables, "
+                        "which is the distinction the matrix asks for. No policy beyond that exists")
+        self.case("Y-050")["paths"].append(base.replace("/", "\\") + "\\metadata_contradicts.docx")
+
+        # Y-049 -- hidden text, and tracked changes: both read.
+        doc = Document()
+        run = doc.add_paragraph().add_run("Visible text, then a hidden run: ")
+        hidden = doc.add_paragraph().add_run("the " + marker(base + "/hidden_text.docx") + " is formatted hidden.")
+        hidden.font.hidden = True
+        stamp = NOW.replace(tzinfo=None)
+        doc.core_properties.created = doc.core_properties.modified = stamp
+        buf = io.BytesIO()
+        doc.save(buf)
+        self.add(base + "/hidden_text.docx", normalize_ooxml(buf.getvalue()), age_days=94, note="marker in a hidden run (w:vanish)", case="Y-049")
+        tracked = make_docx(["A paragraph with a tracked deletion after it."])
+        document_xml = zipfile.ZipFile(io.BytesIO(tracked)).read("word/document.xml")
+        deletion = ('<w:p><w:del w:id="1" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>the %s was deleted with '
+                    'track changes on</w:delText></w:r></w:del></w:p>' % marker(base + "/tracked_changes.docx")).encode("utf-8")
+        document_xml = document_xml.replace(b"</w:body>", deletion + b"</w:body>", 1) if b"<w:sectPr" not in document_xml else \
+            document_xml.replace(b"<w:sectPr", deletion + b"<w:sectPr", 1)
+        self.add(base + "/tracked_changes.docx", rewrite_ooxml(tracked, {"word/document.xml": document_xml}), age_days=94,
+                 note="marker in a tracked deletion (w:del/w:delText)", case="Y-049b")
+        self.case("Y-049", construction="G", expected=dict(document, marker_indexed=True), classification="SCOPE",
+                  matrix_expects="Extract according to defined scope; don't assume visible content is all",
+                  notes="hidden runs (w:vanish) are read like any other run: the marker is found. The scope decision is 'what "
+                        "the document's runs say', made explicit here")
+        self.case("Y-049b", condition="Document contains deleted text under track changes", construction="G",
+                  expected=dict(document, marker_indexed=False), classification="SCOPE",
+                  matrix_expects="Extract according to defined scope",
+                  notes="deleted text (w:delText) is not a run of the document and is not read: the marker is not found. "
+                        "The other half of the Y-049 decision")
+
+    def _document_relationships(self):
+        """17_Document_Relationships: matrix section Q -- workbooks reaching
+        into other workbooks. The relationship lives in
+        xl/externalLinks; the program reads the cells and never the link."""
+        base = "17_Document_Relationships"
+        present = {"file_state.state": "present"}
+        workbook = dict(present, **{"analyzer.office.status": "analyzed", "extracted_content.status": "extracted"})
+        scope = dict(classification="SCOPE", construction="G")
+        root = plain_path(ext_path(self.root))
+
+        def uri(relpath):
+            return "file:///" + (root + "\\" + relpath.replace("/", "\\")).replace("\\", "/").replace(" ", "%20")
+
+        cells = [["local value", "=[1]Sheet1!A1"], ["the formula in B1 reads the other workbook", ""]]
+        self.add(base + "/source_rates.xlsx", make_xlsx([["rate", 0.15], ["the workbook others refer to", ""]]), age_days=95,
+                 note="the workbook the links point at", case="Q-001")
+        self.add(base + "/refers_to_existing.xlsx", make_xlsx_external(cells, [(uri(base + "/source_rates.xlsx"), "0.15")]),
+                 age_days=95, note="externalLink -> source_rates.xlsx (exists)", case="Q-001")
+        self.case("Q-001", expected=workbook, matrix_expects="Record dependency", **scope,
+                  notes="both workbooks are inventoried and read; the link between them is not recorded (also M-011)")
+        self.case("M-011", expected=workbook, matrix_expects="Detect relationship", **scope, notes="the workbooks of Q-001")
+        self.case("M-011")["paths"].extend(self.case("Q-001")["paths"])
+        self.add(base + "/refers_to_missing.xlsx", make_xlsx_external(cells, [("file:///C:/Finance/2019/rates_old.xlsx", "0.12")]),
+                 age_days=96, note="externalLink -> a workbook that does not exist", case="Q-002")
+        for cid in ("Q-002", "Y-028"):
+            self.case(cid, expected=workbook, matrix_expects="Record missing target, not scanner failure", **scope,
+                      notes="the cached value is read like any cell; the broken link is not reported because no link is read. "
+                            "The scan does not fail")
+            if cid != "Q-002":
+                self.case(cid)["paths"].append(base.replace("/", "\\") + "\\refers_to_missing.xlsx")
+        self.add(base + "/moved/source_rates_moved.xlsx", make_xlsx([["rate", 0.15], ["moved here after the link was made", ""]]), age_days=97, case="Q-003")
+        self.add(base + "/refers_to_moved.xlsx", make_xlsx_external(cells, [(uri(base + "/source_rates_moved.xlsx"), "0.15")]),
+                 age_days=97, note="externalLink -> a path the target has since left", case="Q-003")
+        self.case("Q-003", expected=workbook, matrix_expects="Relationship may be broken; report", **scope)
+        self.add(base + "/refers_to_renamed.xlsx", make_xlsx_external(cells, [(uri(base + "/source_rates_v1.xlsx"), "0.15")]),
+                 age_days=97, note="externalLink -> the target's old name (it is source_rates.xlsx now)", case="Q-004")
+        self.case("Q-004", expected=workbook, matrix_expects="Report broken/stale reference", **scope)
+        self.add(base + "/refers_to_cloud.xlsx",
+                 make_xlsx_external(cells, [("https://example-my.sharepoint.invalid/personal/finance/Documents/rates.xlsx", "0.15")]),
+                 age_days=98, note="externalLink -> a SharePoint address", case="Q-007")
+        self.case("Q-007", expected=workbook, matrix_expects="Record external dependency", **scope, notes="nothing is fetched")
+        for i in (1, 2, 3):
+            self.add(base + "/shared_source/report_%d.xlsx" % i, make_xlsx_external(cells, [(uri(base + "/source_rates.xlsx"), "0.15")]),
+                     age_days=99, note="one of three workbooks reading source_rates.xlsx", case="Q-008")
+        self.case("Q-008", expected=dict(workbook, row_count=3), matrix_expects="Represent many-to-one relationship", **scope)
+        chain = base + "/chain"
+        self.add(chain + "/c.xlsx", make_xlsx([["the end of the chain", 1]]), age_days=100, case="Q-009")
+        self.add(chain + "/b.xlsx", make_xlsx_external(cells, [(uri(chain + "/c.xlsx"), "1")]), age_days=100, case="Q-009")
+        self.add(chain + "/a.xlsx", make_xlsx_external(cells, [(uri(chain + "/b.xlsx"), "1")]), age_days=100, case="Q-009")
+        self.case("Q-009", expected=dict(workbook, row_count=3), matrix_expects="Traverse/represent without uncontrolled recursion", **scope,
+                  notes="a -> b -> c; nothing follows a link, so nothing can recurse")
+        cycle = base + "/cycle"
+        self.add(cycle + "/x.xlsx", make_xlsx_external(cells, [(uri(cycle + "/y.xlsx"), "1")]), age_days=101, case="Q-010")
+        self.add(cycle + "/y.xlsx", make_xlsx_external(cells, [(uri(cycle + "/x.xlsx"), "1")]), age_days=101, case="Q-010")
+        self.case("Q-010", expected=dict(workbook, row_count=2), matrix_expects="Detect cycle; never hang", **scope,
+                  notes="x -> y -> x; the run completes because no link is followed")
+
+        # M-012 / Y-029 -- a DDE link (Tika's), a data connection with no local source.
+        dde = "Samples\\third_party\\apache_tika\\templates_links\\testDdeLink.xlsx"
+        dde_expected = dict(present, **{"analyzer.office.status": "error", "extracted_content.status": "extracted"})
+        for cid, note in (("M-012", "a DDE data connection"), ("Y-029", "a data connection whose source is not a local file")):
+            self.case(cid, construction="sample", expected=dde_expected, classification="SCOPE", matrix_expects="Detect external dependency",
+                      notes="Tika's testDdeLink.xlsx: " + note + "; not recorded, never activated. openpyxl cannot open it (a DDE link has "
+                            "no relationship part, and the library insists on one), so the analyzer errors; the extractor reads the "
+                            "cells from the XML and finds the text")
+            self.case(cid)["paths"].append(dde)
+        # Y-034 -- external-link behaviour that would need the user's say-so: the OPF documents of Q-006, and Tika's INCLUDETEXT field.
+        self.case("Y-034", construction="sample", expected=dict(present, **{"extracted_content.status": "extracted"}), classification="SCOPE",
+                  matrix_expects="Record relationship; don't activate it",
+                  notes="OPF's externalLink.doc/.pdf and Tika's testInstrLink.docx (a field that would pull in another file): read as "
+                        "documents, nothing activated, the relationship not recorded")
+        self.case("Y-034")["paths"].extend(self.case("Q-006")["paths"] + ["Samples\\third_party\\apache_tika\\templates_links\\testInstrLink.docx"])
+
+    def _embedded_objects(self):
+        """18_Embedded_Objects: matrix section R, and Y-031/Y-055 -- real
+        containers from Tika (Excel's OLEObjects.Add refused every file
+        under automation here, and Word automation was not approved), and
+        the archive-versus-standalone duplicate."""
+        present = {"file_state.state": "present"}
+        document = dict(present, **{"analyzer.office.status": "analyzed", "extracted_content.status": "extracted"})
+        scope = dict(classification="SCOPE", construction="sample", matrix_expects="Detect containment")
+        tika = "Samples\\third_party\\apache_tika\\embedded\\"
+        self.case("R-001", expected=document, **scope,
+                  notes="Tika's testWORD_embeded.docx: an Excel worksheet, a PowerPoint deck and a Word 97-2003 document under "
+                        "word/embeddings/; the carrier is read, the embedded objects are not listed or read")
+        self.case("R-001")["paths"].append(tika + "testWORD_embeded.docx")
+        self.case("R-002", expected=document, **scope,
+                  notes="Tika's testExcel_embeddedPDF.xlsx (xl/embeddings/oleObject1.bin holds the PDF) and its .xls: the "
+                        "workbook is read, the PDF inside is not")
+        self.case("R-002")["paths"].extend([tika + "testExcel_embeddedPDF.xlsx", tika + "testExcel_embeddedPDF.xls"])
+        self.case("M-014", expected=document, **scope,
+                  notes="Tika's testEXCEL_embeded.xlsx: two Word documents and a PowerPoint deck under xl/embeddings/")
+        self.case("M-014")["paths"].append(tika + "testEXCEL_embeded.xlsx")
+        self.case("R-005", expected=document, **dict(scope, matrix_expects="Outer document remains inventoryable"),
+                  notes="Tika's test_recursive_embedded_npe.docx, an embedding that crashed Tika's parser: the outer document is "
+                        "inventoried and read; nothing opens the embedding")
+        self.case("R-005")["paths"].append(tika + "test_recursive_embedded_npe.docx")
+        self.case("Y-031", expected=document, **dict(scope, matrix_expects="Detect embedded executable/document object without execution"),
+                  notes="Tika's test_recursive_embedded.docx (a document inside a document inside a document), testWORD_embedded_pdf.docx, "
+                        "testWORD_EMFAndAttachments.docx: read as documents; nothing inside is opened or executed")
+        self.case("Y-031")["paths"].extend([tika + "test_recursive_embedded.docx", tika + "testWORD_embedded_pdf.docx",
+                                           tika + "testWORD_EMFAndAttachments.docx"])
+        self.case("R-003")["paths"].extend([tika + "testPPT_embeddedMP3.pptx"])
+        self.case("R-003")["notes"] += "; Tika's testPPT_embeddedMP3.pptx (ppt/media/media1.mp3)"
+        self.case("R-004")["paths"].append(tika + "test_embedded_zip.pptx")
+        self.case("R-004")["notes"] += "; Tika's test_embedded_zip.pptx (a zip as an OLE package)"
+        # Y-055 -- the same bytes standalone and inside an archive.
+        base = "18_Embedded_Objects"
+        standalone = b"The same memo, once on its own and once inside a zip.\n"
+        self.add(base + "/memo.txt", standalone, age_days=102, case="Y-055")
+        self.add(base + "/memo_archive.zip", make_zip([("memo.txt", standalone)]), age_days=102, case="Y-055")
+        self.case("Y-055", construction="G", expected=dict(present, row_count=2, not_grouped=True), classification="SCOPE",
+                  matrix_expects="Keep container relationship separate from filesystem duplicate",
+                  notes="the standalone file and the archive are two rows with different hashes; the member inside the archive is "
+                        "listed by the archive analyzer and is not a duplicate candidate. Kept separate by construction")
+
+    def _automation_and_organisation(self):
+        """20_Automation (T), 21_Corporate_Organization (U), 22_Security_Boundaries
+        (V-002, V-006): scripts that reference other scripts, folder
+        structures an organisation leaves behind, and files that name
+        resources the program must never touch."""
+        present = {"file_state.state": "present"}
+        text = dict(present, **{"extracted_content.status": "extracted"})
+        # T-002 / T-003 -- a batch file that calls a PowerShell script, which dot-sources another.
+        auto = "20_Automation"
+        self.add(auto + "/deploy.bat", ("@echo off\r\nrem %s\r\npowershell -NoProfile -ExecutionPolicy Bypass -File helper.ps1\r\n"
+                                        "call cleanup.cmd\r\n" % marker(auto + "/deploy.bat")).encode("ascii"), age_days=103, case="T-003")
+        self.add(auto + "/helper.ps1", b". .\\common.ps1\r\nWrite-Host 'helper: nothing here runs during an inventory'\r\n", age_days=103, case="T-002")
+        self.add(auto + "/common.ps1", b"function Get-Nothing { 'nothing' }\r\n", age_days=103, case="T-002")
+        self.add(auto + "/cleanup.cmd", b"@echo off\r\necho cleanup: never executed by the inventory\r\n", age_days=103)
+        self.case("T-002", construction="G", expected=text, classification="SCOPE", matrix_expects="Detect/reference if applicable; never execute",
+                  notes="scripts are read as source code, so the reference text ('common.ps1') is indexed; the dependency is not recorded and nothing runs")
+        self.case("T-003", construction="G", expected=dict(text, marker_indexed=True), classification="SCOPE", matrix_expects="Record as related file",
+                  notes="deploy.bat names helper.ps1 and cleanup.cmd; all are inventoried and read, none is run, the relation is not recorded")
+        # U -- an organisation's folders: departments, personal folders, a former employee, a migration (whole and partial).
+        org = "21_Corporate_Organization"
+        for dept in ("Finance", "HR", "IT"):
+            self.add(org + "/Departments/%s/%s_overview.txt" % (dept, dept.lower()), ("%s department overview\n" % dept).encode(), age_days=104, case="U-001")
+        self.case("U-001", construction="G", expected=dict(present, row_count=3), notes="department folders: inventoried like any folders")
+        for user in ("alice", "bob"):
+            self.add(org + "/Users/%s/notes.txt" % user, ("%s's own notes\n" % user).encode(), age_days=105, case="U-003")
+        self.case("U-003", construction="G", expected=dict(present, row_count=2), classification="SCOPE",
+                  matrix_expects="Preserve ownership/path context",
+                  notes="the path context is the row's path; NTFS ownership is not recorded")
+        self.add(org + "/Archive/Former Staff/jdoe (left 2019)/handover.txt", b"handover notes from 2019\n", age_days=2600, case="U-004")
+        self.case("U-004", construction="G", expected=present, notes="inventoried without assuming the files are obsolete; the age report will list it")
+        finance = self.case("U-001")["paths"][0]
+        migrated = b"Finance department overview\n"
+        self.add(org + "/Migrated/Finance/finance_overview.txt", migrated, age_days=30, case="U-006")
+        self.case("U-006", construction="G", expected=dict(present, duplicate_group_members=2),
+                  notes="Migrated\\Finance is a copy of Departments\\Finance: the two are one duplicate group; the newer copy is the migration")
+        self.case("U-006")["paths"].append(finance)
+        self.add(org + "/Migrated/HR/hr_overview_part1.txt", b"HR overview, first half only\n", age_days=30, case="U-007")
+        self.case("U-007", construction="G", expected=present, classification="SCOPE", matrix_expects="Report missing/inaccessible components",
+                  notes="a migration that copied one of two files: nothing marks it partial, because nothing knows what the whole was")
+        self.case("U-011", construction="sample", expected=present, notes="the WordPerfect samples: obsolete formats, inventoried normally")
+        self.case("U-011")["paths"].extend(self.case("SAMPLE-WPD")["paths"] + self.case("SAMPLE-WPD-42")["paths"])
+        # V-002 / V-006 -- resources behind authentication, and a file that holds a credential.
+        sec = "22_Security_Boundaries"
+        self.add(sec + "/intranet_login.url", b"[InternetShortcut]\r\nURL=https://intranet.example.invalid/login?next=/finance\r\n", age_days=106, case="V-002")
+        self.case("V-002", construction="S", expected=dict(present, **{"analyzer.status": "none", "extracted_content.status": "none"}),
+                  notes="a shortcut to a login page: inventoried as a file; nothing is fetched, no credential is asked for")
+        self.add(sec + "/db_connection.ini", ("[database]\nserver=db.example.invalid\nuser=reporting\npassword=hunter2\n; %s\n"
+                                              % marker(sec + "/db_connection.ini")).encode(), age_days=106, case="V-006")
+        self.case("V-006", construction="S", expected=dict(text, marker_indexed=True), classification="SCOPE",
+                  matrix_expects="Never discover/store credentials",
+                  notes="a configuration file holding a password is extracted like any text and its words are indexed, the password "
+                        "among them. The program does not look for credentials; it also does not look away from them")
+
+    def _registrations(self):
+        """Matrix rows that existing artefacts already embody, registered
+        against them so the coverage accounting counts what is there."""
+        present = {"file_state.state": "present"}
+
+        def alias(cid, source_ids, *, notes, classification=None, matrix_expects=None, expected=None, construction="G"):
+            paths = []
+            for sid in source_ids:
+                paths.extend(p for p in self.case(sid)["paths"] if p not in paths)
+            self.case(cid, construction=construction, expected=expected or present, notes=notes,
+                      classification=classification, matrix_expects=matrix_expects)["paths"].extend(paths)
+
+        alias("D-001", ["M-001", "P-001"], notes="ordinary readable files, the normal case: Documents\\budget_model.xlsx and quarterly_report.docx",
+              expected=dict(present, **{"analyzer.office.status": "analyzed", "extracted_content.status": "extracted"}))
+        alias("W-001", ["F-006", "F-007", "F-010"], notes="NTFS-specific features in 06_Metadata: compression, sparse files, alternate data streams",
+              classification="SCOPE", matrix_expects="Record according to platform")
+        alias("W-004", ["A-012"], notes="the NFC/NFD pair of A-012: both names preserved as they are")
+        alias("E-012", ["O-001", "O-001-LEGACY", "O-001-ODF", "E-011-PDF-OPEN"], construction="sample",
+              expected=dict(present, **{"extracted_content.status": "error"}),
+              notes="the encrypted samples: each is recorded as an extraction error that says password-protected; nothing tries a password")
+        alias("V-003", ["E-012"], construction="sample", expected=dict(present, **{"extracted_content.status": "error"}),
+              notes="the same encrypted files as E-012: protection recorded as the reason reading stopped, never bypassed")
+        alias("N-003", ["N-001"], construction="sample", expected=dict(present, **{"extracted_content.status": ["extracted", "empty"]}),
+              classification="SCOPE", matrix_expects="Detect/index where safe",
+              notes="Tika's macro files carry VBA modules (olevba: Dirty, Embolden); the modules are not listed or indexed")
+        for cid, what in (("N-010", "a macro that would act outside the document"), ("V-007", "a macro attempting an external action"),
+                          ("T-001", "VBA automation")):
+            alias(cid, ["N-001"], construction="sample",
+                  expected=dict(present, **{"extracted_content.status": ["extracted", "empty"], "no_office_automation_in_program": True}),
+                  notes=what + ": the program never starts Office or evaluates VBA (asserted by reading the program's own source for COM "
+                               "automation), so a macro of any intent cannot run during an inventory. Tika's macros are harmless "
+                               "(a comment, a bold toggle); the assertion is about the program, not the macro")
+
+    def _parked(self):
+        registered = set(self.cases)
+        declined = {d["id"] for d in self.not_constructed}
+        for ids, reason in self.PARKED:
+            for case_id in ids:
+                if case_id in self.matrix and case_id not in registered and case_id not in declined:
+                    self.decline(case_id, reason)
 
     def _documents(self):
         """Extractable text carrying unique marker phrases for FTS."""
@@ -1453,8 +2182,9 @@ class Corpus:
                                  ".erf", ".iiq", ".nrw", ".sr2", ".srf")):
             self.add("Raw/shot" + ext, make_raw_tiff("CorpusCam", "Model " + ext[1:].upper(),
                                                      "2024:05:%02d 08:00:00" % (i + 1)), age_days=500 + i)
-        for ext in (".orf", ".rw2", ".raf", ".x3f", ".cr3", ".raw", ".mrw"):
-            self.skipped.append("Raw/shot%s: not TIFF-based; needs a real camera file" % ext)
+        if not (self.samples and (self.samples / "third_party" / "raw_pixls_us").is_dir()):
+            for ext in (".orf", ".rw2", ".raf", ".x3f", ".cr3", ".raw", ".mrw"):
+                self.skipped.append("Raw/shot%s: not TIFF-based; needs a real camera file (Samples/third_party/raw_pixls_us)" % ext)
 
     def _media(self):
         """One audio file and one video file in every format the analyzers name."""
@@ -1491,8 +2221,182 @@ class Corpus:
             for path in sorted(self.samples.iterdir()):
                 if path.suffix.lower() in (".wpd", ".one", ".pst", ".orf", ".rw2", ".raf", ".x3f", ".cr3", ".raw", ".mrw") and path.is_file():
                     self.add("Samples/" + path.name, path.read_bytes(), age_days=2000, note="third-party sample from " + str(self.samples))
+            self._third_party()
         else:
             self.skipped.append("Samples/: no samples folder (WordPerfect, OneNote and non-TIFF RAW need real files)")
+
+    def _third_party(self):
+        """Research\\Samples\\third_party\\<source>\\...: real files from named
+        sources (PROVENANCE.json beside them carries origin, commit, licence
+        and SHA-256 per file), copied in whole. The matrix conditions they
+        embody are registered by folder and by name, one case per outcome,
+        so every case asserts one thing about every path it lists; a
+        source's READMEs and licence files stay behind -- they are
+        provenance, not test material."""
+        root = self.samples / "third_party"
+        if not root.is_dir():
+            return
+        skip_names = {"readme.md", "license", "license.txt", "license.md", "provenance.json"}
+        present = {"file_state.state": "present"}
+        read = dict(present, **{"extracted_content.status": "extracted"})
+        read_or_blank = dict(present, **{"extracted_content.status": ["extracted", "empty"]})
+        unread = dict(present, **{"extracted_content.status": "error"})
+        registered: dict[str, dict] = {}     # case id -> kwargs for self.case()
+
+        def note_case(case_id, relative, **kwargs):
+            registered.setdefault(case_id, kwargs)
+            self.case(case_id)["paths"].append(relative)
+
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name.lower() in skip_names:
+                continue
+            rel = path.relative_to(root)
+            source, inner = rel.parts[0], "/".join(rel.parts[1:])
+            relpath = "Samples/third_party/%s/%s" % (source, inner)
+            self.add(relpath, path.read_bytes(), age_days=1500 + int(hashlib.sha256(str(rel).encode()).hexdigest()[:8], 16) % 900,
+                     note="third-party sample: %s (see Research\\Samples\\third_party\\PROVENANCE.json)" % source)
+            relative = relpath.replace("/", "\\")
+            name, ext = path.name.lower(), path.suffix.lower()
+            tika = source == "apache_tika"
+            opf = source == "openpreserve_format-corpus"
+            # -- the readers that had never met a real file (handoff 2.4)
+            if tika and inner.startswith("wordperfect/") and ext == ".doc":
+                note_case("SAMPLE-WPD-42", relative, condition="A WordPerfect 4.2 document named .doc (Tika)", construction="sample",
+                          expected=dict(unread, **{"analyzer.office.status": "error"}), classification="SCOPE",
+                          matrix_expects="the text of the document",
+                          notes="WordPerfect 4.2 wrote no signature; named .doc the bytes are neither OLE2 nor RTF and the sniff "
+                                "calls them binary. Recognising 4.2 by its control codes alone is not attempted")
+            elif tika and inner.startswith("wordperfect/"):
+                note_case("SAMPLE-WPD", relative, condition="WordPerfect documents the reader had never met (Tika)", construction="sample",
+                          expected=read,
+                          notes="testWordPerfect.wpd (WP 6+) and two WP 5.x .wp files. The first real files found two reader "
+                                "defects (2026-09-13): 0xF0-0xFF read as variable groups stepped off the end of the WP6 file "
+                                "after eight characters, and the 5.x attribute codes read as two bytes swallowed the first "
+                                "letter of every bold word; .wp was not a named extension. All three fixed against these files")
+            elif tika and inner.startswith("onenote/") and "fuzz" in name:
+                note_case("SAMPLE-ONE-FUZZ", relative, condition="Fuzzed OneNote files (Tika): malformed parser input", construction="sample",
+                          expected=read, notes="Y-024 for the OneNote reader: the text scan reads the printable runs that survive")
+            elif tika and inner.startswith("onenote/"):
+                note_case("SAMPLE-ONE", relative, condition="OneNote sections the reader had never met (Tika)", construction="sample",
+                          expected=read, notes="2007 and 2016 formats, Office 365 exports, one with an embedded Word document, one in Chinese")
+            elif source == "raw_pixls_us":
+                note_case("SAMPLE-RAW", relative, condition="Camera RAW formats the analyzer had never met (raw.pixls.us, CC0)",
+                          construction="sample",
+                          expected=dict(present, **{"analyzer.raw_image.status": "analyzed",
+                                                    "analyzer.raw_image.has_fields": ["CameraMake", "CameraModel", "DateTimeOriginal"]}),
+                          notes=".orf .rw2 .raf .x3f .cr3 .mrw .raw -- one camera each. Against these files (2026-09-15) exifread "
+                                "recognised only the TIFF- and JPEG-based three; RAF, MRW, CR3 and X3F wrap their EXIF in a "
+                                "container it does not know and came back 'analyzed' with every field empty. The analyzer now "
+                                "lifts the embedded TIFF or JPEG out of those four containers; all seven name their camera")
+            # -- macros (matrix N), protection (O), and the PDF horrors
+            elif tika and inner.startswith("macros/"):
+                note_case("N-001", relative, construction="sample", expected=read_or_blank,
+                          notes="Tika's macro-enabled Word, Excel, PowerPoint and ODF documents: read as documents, the VBA "
+                                "or Basic never touched (the two ODF files carry only a macro and no text, so they read empty). "
+                                "VBA presence is not recorded -- Phase 3, per the matrix")
+            elif tika and name == "testaccess2_encrypted.accdb":
+                note_case("O-001-ACCDB", relative, condition="Encrypted Access database (Tika)", construction="sample",
+                          expected=dict(present, **{"analyzer.status": "none", "extracted_content.status": "none"}),
+                          classification="SCOPE", matrix_expects="recognised as an encrypted database",
+                          notes="nothing reads an Access database, encrypted or not; inventoried and left alone")
+            elif tika and inner.startswith("protected/") and ext in (".xlsx", ".docx", ".pptx") and name != "protectedsheets.xlsx":
+                note_case("O-001", relative, construction="sample",
+                          expected=dict(unread, **{"analyzer.office.status": "error"}),
+                          notes="password to open, Office Open XML: the bytes are an OLE2 container holding EncryptionInfo and "
+                                "EncryptedPackage streams. Against these files (2026-09-15) the analyzer said 'not a zip file' "
+                                "and the extractor 'OLE container without a document inside'; both now say password-protected. "
+                                "No password is ever tried")
+            elif tika and inner.startswith("protected/") and ext in (".xls", ".doc", ".ppt") and "drm" not in name:
+                note_case("O-001-LEGACY", relative, condition="Password to open, Office 97-2003 (Tika)", construction="sample",
+                          expected=dict(unread, **{"analyzer.office.status": "analyzed"}),
+                          notes="the OLE2 summary streams stay readable, so the analyzer records title, author and dates; the "
+                                "document stream is encrypted and the extractor says so. No password is ever tried")
+            elif tika and name == "testodtencrypted.odt":
+                note_case("O-001-ODF", relative, condition="Password to open, OpenDocument (Tika)", construction="sample",
+                          expected=unread,
+                          notes="content.xml is ciphertext described in the manifest; the extractor names it (it said "
+                                "'not well-formed' before 2026-09-15). No password is ever tried")
+            elif tika and name == "protectedsheets.xlsx":
+                note_case("O-003", relative, construction="sample", expected=dict(read, **{"analyzer.office.status": "analyzed"}),
+                          notes="sheet protection: editing is protected, reading is not")
+            elif tika and "drm" in name:
+                note_case("O-006", relative, construction="sample", expected=dict(read, **{"analyzer.office.status": "analyzed"}),
+                          notes="a rights-managed Word 97-2003 document whose text is nonetheless in the clear; read like any other")
+            elif opf and name == "encryption_openpassword.pdf" or source == "py-pdf_sample-files" and "password" in name:
+                note_case("E-011-PDF-OPEN", relative, condition="PDFs needing a password to open (OPF, py-pdf)", construction="sample",
+                          expected=dict(unread, **{"analyzer.pdf.status": "error"}),
+                          notes="Against these files (2026-09-15) the extraction was recorded 'extracted' with no artifact and no "
+                                "count: pdfminer raises an exception with an empty message, and an empty error text read as "
+                                "success. The engine now records a message-less exception as the failure it is. No password is tried")
+            elif opf and name.startswith("encryption_"):
+                note_case("E-011-PDF-OWNER", relative, condition="PDFs with owner-password restrictions: no copy, no print, no text access (OPF)",
+                          construction="sample", expected=dict(read, **{"analyzer.pdf.status": "analyzed"}),
+                          notes="restrictions are flags for viewers; the bytes decrypt with the empty user password and are read. "
+                                "The 'no text access' flag is not honoured -- a deliberate reading of a file the owner can open")
+            elif opf and name == "javascript.pdf":
+                note_case("Y-035", relative, construction="sample", expected=dict(read_or_blank, **{"analyzer.pdf.status": "analyzed"}),
+                          notes="a PDF carrying JavaScript: read, never run (nothing in the program evaluates PDF actions)")
+            elif opf and path.name in ("corruptionOneByteMissing.pdf", "veraPDFHiResWrongObjectID.pdf",
+                                       "pdf-17-header18.pdf", "veraPDFHiResChangedHeight.pdf"):
+                note_case("Y-024-PDF", relative, condition="Malformed PDFs (OPF): a byte missing, a wrong object id, a header at byte 18, a wrong height",
+                          construction="sample", expected=dict(read_or_blank, **{"analyzer.pdf.status": "analyzed"}),
+                          notes="pypdf and PDFium both tolerate these; the two veraPDF files are picture-only and read empty")
+            elif opf and "attachment" in name:
+                note_case("R-004", relative, construction="sample", expected=dict(read, **{"analyzer.status": "analyzed"}),
+                          notes="PDFs and a Word file carrying file attachments: the carrier is read, the attachment is not "
+                                "listed or opened -- scope, Phase 3")
+            elif opf and "embedded_video" in name:
+                note_case("R-003", relative, construction="sample", expected=dict(read, **{"analyzer.status": "analyzed"}),
+                          notes="documents with embedded video: the text is read, the media is not recorded")
+            elif opf and "externalLink" in path.name:
+                note_case("Q-006", relative, construction="sample", expected=dict(read, **{"analyzer.status": "analyzed"}),
+                          notes="documents with external links; never activated, not recorded")
+            elif path.name == "unreadablemetadata.pdf":
+                note_case("SAMPLE-PDF-META", relative, condition="A PDF whose metadata pypdf cannot read (py-pdf/sample-files)", construction="sample",
+                          expected=dict(read, **{"analyzer.pdf.status": "error"}),
+                          notes="the analyzer (pypdf) fails on /Pages; the extractor (PDFium) reads every word. Two readers, "
+                                "two verdicts, both recorded")
+            elif opf and path.name in ("text_only.doc", "webCapture.doc"):
+                note_case("SAMPLE-DOC-OPF", relative, condition="Word 97-2003 documents (OPF)", construction="sample",
+                          expected=dict(read, **{"analyzer.office.status": "analyzed"}))
+            elif opf:
+                note_case("SAMPLE-PDF-OPF", relative, condition="PDFs of many constructions (OPF): fonts not embedded, PDF/A, signed, JPEG 2000, web capture",
+                          construction="sample", expected=dict(read_or_blank, **{"analyzer.pdf.status": "analyzed"}),
+                          notes="balloon_a1b_jp2k.pdf and veraPDFHiRes.pdf are pictures and read empty")
+            elif source == "mathiasbynens_small" and ext in (".mp4", ".webm", ".avi", ".wmv", ".wav"):
+                note_case("SAMPLE-SMALLEST-MEDIA", relative, condition="The smallest valid media files ffprobe accepts (mathiasbynens/small, CC0)",
+                          construction="sample", expected=dict(present, **{"analyzer.status": "analyzed"}))
+            elif source == "mathiasbynens_small" and name in ("flashvideo.flv", "mp3.mp3", "gif.gif", "webp.webp", "pdf.pdf"):
+                note_case("SAMPLE-SMALLEST-REFUSED", relative, condition="The smallest valid files the libraries refuse (mathiasbynens/small, CC0)",
+                          construction="sample", expected=dict(present, **{"analyzer.status": "error"}), classification="SCOPE",
+                          matrix_expects="analyzed",
+                          notes="a 1x1 GIF with no image data, a WebP with no frame, an MP3 of one frame, an FLV of a header, a PDF "
+                                "of one empty page: Pillow, ffprobe and pypdf refuse them; the inventory does not")
+            elif source == "mathiasbynens_small":
+                note_case("SAMPLE-SMALLEST", relative, condition="The smallest valid file of each format (mathiasbynens/small, CC0)",
+                          construction="sample", expected=dict(present, **{"hash_status": ["size_unique", "unique_by_hash", "confirmed_duplicate"]}),
+                          notes="formats the program names and had never met, and formats nothing names: every one is inventoried and hashed")
+            elif source == "py-pdf_sample-files":
+                note_case("SAMPLE-PDF", relative, condition="Real PDFs of many shapes (py-pdf/sample-files, CC-BY-SA-4.0)",
+                          construction="sample", expected=dict(read_or_blank, **{"analyzer.pdf.status": "analyzed"}),
+                          notes="PDF/A, Arabic, outlines, rotated and cropped pages, inline images, forms, overlays; the picture-only "
+                                "ones (ImageMagick's, the grayscale and CMYK images) read empty")
+            elif source == "jonasclaes_test-data" and ext in (".odt", ".pdf"):
+                note_case("SAMPLE-ODT-PDF", relative, condition="The same short text as OpenDocument and as PDF, four languages (jonasclaes/test-data)",
+                          construction="sample", expected=read)
+            elif ext in (".mp4", ".webm"):
+                note_case("SAMPLE-VIDEO", relative, condition="Short video clips (Big Buck Bunny; ffmpeg.wasm test data)",
+                          construction="sample", expected=dict(present, **{"analyzer.video.status": "analyzed"}))
+            elif ext == ".png":
+                note_case("SAMPLE-PNG", relative, condition="Generated PNG gradients and a square (jonasclaes; ffmpeg.wasm)",
+                          construction="sample", expected=dict(present, **{"analyzer.image.status": "analyzed",
+                                                                            "extracted_content.status": "skipped"}),
+                          notes="pictures that do not look like documents are skipped by the OCR gate, not failed")
+            else:
+                note_case("SAMPLE-MISC", relative, condition="Source, configuration and font files that came with the samples",
+                          construction="sample", expected=present)
+        for case_id, kwargs in registered.items():
+            self.case(case_id, **kwargs)
 
     def _malformed(self):
         """Deliberate analyzer failures, so the quality reports have rows."""
@@ -1617,6 +2521,14 @@ class Corpus:
         # A-014 / Y-009 / Y-053 (case-only names in a case-sensitive directory)
         # live in Hostile\: the engine folds the pair into one row, which
         # changes the project's totals -- see HostileCorpus._h_naming.
+
+        # A-018 -- legal here, illegal elsewhere: 120 CJK characters are 120 UTF-16
+        # units (NTFS allows 255) and 360 bytes of UTF-8 (ext4 and APFS allow 255).
+        cjk = "\u6587\u4ef6\u540d" * 40 + ".txt"
+        assert len(cjk) == 124 and len(cjk.encode("utf-8")) == 364
+        self.add("01_Naming/" + cjk, "a name too long in bytes for Linux and macOS, fine on NTFS\n".encode("utf-8"), age_days=30, case="A-018")
+        self.case("A-018", construction="G", expected=dict(present, file_name_length=124),
+                  notes="inventoried according to the filesystem it is on: 124 characters, 364 bytes of UTF-8; a copy to ext4 or APFS would fail")
 
         # A-015 -- punctuation-only differences, and (B-002) the same bytes four times.
         same = b"The same bytes under four names that differ only in punctuation.\n"
@@ -1750,6 +2662,13 @@ class Corpus:
         for a, b in (("a", "b"), ("b", "c"), ("c", "a")):
             self.add(base + "/cycle/cycle_%s.lnk" % a, shortcut(base + "/cycle/cycle_%s.lnk" % a, base + "/cycle/cycle_%s.lnk" % b), age_days=40, case="C-010")
         self.case("C-010", expected=dict(lnk, row_count=3), construction="G", notes="a -> b -> c -> a")
+        # C-005 / C-006 / C-007 -- targets off this volume: a share, a removable drive, a cloud address.
+        self.add(base + "/to_share.lnk", make_lnk("\\\\fileserver.example.invalid\\finance\\ledger.xlsx", "", False), age_days=41, case="C-005")
+        self.case("C-005", expected=lnk, **dict(scope, notes="a UNC target; nothing resolves it, so no network is touched"))
+        self.add(base + "/to_removable.lnk", make_lnk("E:\\Backups\\2019\\photos", "", True), age_days=41, case="C-006")
+        self.case("C-006", expected=lnk, **dict(scope, notes="a drive letter that is not mounted; nothing resolves it"))
+        self.add(base + "/to_cloud.lnk", make_lnk("C:\\Users\\tom\\OneDrive\\Shared\\policy.docx", "", False), age_days=41, case="C-007")
+        self.case("C-007", expected=lnk, **dict(scope, notes="a OneDrive path; nothing resolves it, so nothing could hydrate (rule 2)"))
         self.case("X-003", expected=dict(lnk, row_count=57), construction="G", condition="Shortcut -> shortcut -> circular link",
                   notes="the chain, the self-reference, the long chain and the cycle together; the run completes")
         for cid in ("C-003", "C-008", "C-009", "C-010"):
@@ -2193,6 +3112,7 @@ class Corpus:
             })
 
         cutoff = NOW - timedelta(days=5 * 365)
+        built = {f["relative_path"] for f in self.files}      # a marker counts only for a file that was made
         return {
             "generator": "p2_build_acceptance_corpus.py",
             "seed": SEED,
@@ -2218,7 +3138,7 @@ class Corpus:
             ],
             "fts_markers": {
                 k.replace("/", "\\"): {"phrase": v[0], "expected_indexed": v[1]}
-                for k, v in MARKERS.items()
+                for k, v in MARKERS.items() if "!" in k or k.replace("/", "\\") in built   # '!member' phrases stay
             },
             "expected_analyzer_failures": sorted(
                 f["relative_path"] for f in self.files if f["expect_analyzer_failure"]),
@@ -2353,7 +3273,7 @@ class HostileCorpus(Corpus):
             self.link_folders.append(relative)
         else:
             self.files.append({"relative_path": relative, "size_bytes": 0, "sha256": None,
-                               "extension": Path(relpath).suffix.lower(), "modified_utc": None, "age_days": 0,
+                               "extension": dotnet_extension(Path(relpath).name), "modified_utc": None, "age_days": 0,
                                "note": note or ("symbolic link to " + str(target)), "expect_analyzer_failure": False,
                                "symlink_target": str(target)})
             self.symlinks.append({"relative_path": relative, "target": str(target)})
@@ -2405,6 +3325,10 @@ class HostileCorpus(Corpus):
                 self.case(twin, construction="G", classification="DEFECT", expected={"row_count": 1},
                           matrix_expects="two rows", notes="the same two files as A-014")
                 self.case(twin)["paths"].extend(self.case("A-014")["paths"])
+            self.case("W-003", construction="G", classification="DEFECT", expected={"row_count": 1},
+                      matrix_expects="Preserve actual semantics",
+                      notes="a case-sensitive directory on NTFS (fsutil setCaseSensitiveInfo): the semantics are not preserved -- A-014")
+            self.case("W-003")["paths"].extend(self.case("A-014")["paths"])
         else:
             for case_id in ("A-014", "Y-009", "Y-053"):
                 self.decline(case_id, "the case-sensitivity flag could not be set on this volume")
@@ -2455,6 +3379,9 @@ class HostileCorpus(Corpus):
             self.case(twin)["paths"].extend(self.case("Y-001")["paths"])
         self.case("C-016", construction="G", expected={"same_physical_object": True}, notes="multiple paths to one object: the hard links of Y-001 (junctions to one folder are in 03_Links)")
         self.case("C-016")["paths"].extend(self.case("Y-001")["paths"])
+        self.case("Y-011", construction="G", expected={"same_physical_object": True},
+                  notes="the three names of Y-001 are one file ID: the program keys duplicates by physical object, not by path")
+        self.case("Y-011")["paths"].extend(self.case("Y-001")["paths"])
 
     def _h_links(self):
         """03_Links, the hostile half: symbolic links and junctions -- what
@@ -2491,6 +3418,10 @@ class HostileCorpus(Corpus):
             self.case("C-013b", construction="G", condition="Broken symbolic link to a file: the hash stage",
                       expected={"is_reparse_point": 1, "hash.error_kind": "FILE MISSING"})
             self.case("C-013b")["paths"].append("03_Links\\broken_file_link.txt")
+            self.case("Y-004", construction="G", expected={"is_reparse_point": 1, "reparse_tag": 0xA000000C},
+                      notes="a symbolic link is a reparse point that is not a junction (tag IO_REPARSE_TAG_SYMLINK): recorded with its tag, "
+                            "classified as a link, not assumed to be a directory")
+            self.case("Y-004")["paths"].append("03_Links\\broken_file_link.txt")
             self.add_symlink("03_Links/link_out_of_root.md", plain_path(ext_path(self.root.parent / "README.md")), case="Z-001b")
             self.case("Z-001b", construction="G", condition="File symbolic link whose target is outside the root", classification="SCOPE",
                       expected=dict(present, is_reparse_point=1, size_bytes=0),
@@ -2538,6 +3469,21 @@ class HostileCorpus(Corpus):
         self.case("D-003")["paths"].append("04_Access\\denied_folder")
         self.case("V-001", construction="G", expected={"file_observation.status": "inaccessible"}, notes="the protected directory of D-003")
         self.case("V-001")["paths"].append("04_Access\\denied_folder")
+        # D-005 -- what a system-protected file looks like from here: System and Hidden, and unreadable.
+        self.add("04_Access/system_protected.dat", b"the shape of a system file: attributes and a denial\n", age_days=44,
+                 attributes=FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN, case="D-005")
+        self.deny("04_Access/system_protected.dat", "(R)")
+        self.case("D-005", construction="G", expected=dict(present, attributes_has=["System", "Hidden"], **{"hash.error_kind": "ACCESS DENIED"}),
+                  setup=["attrib +S +H", "icacls <file> /deny <user>:(R)"], teardown=["icacls <file> /reset"],
+                  notes="listed with its attributes; unreadable, and recorded so. A real pagefile.sys lives outside any corpus root")
+        # D-008 / F-011 -- the denied folder's files inherit its ACL; the ACL itself is not recorded.
+        self.case("D-008", construction="G", expected={"file_observation.status": "inaccessible"},
+                  notes="the files under denied_folder inherit the denial: the folder is the inaccessible row, they have none (D-003)")
+        self.case("D-008")["paths"].append("04_Access\\denied_folder")
+        self.case("F-011", construction="G", expected={"hash.error_kind": "ACCESS DENIED"}, classification="SCOPE",
+                  matrix_expects="Graceful metadata handling",
+                  notes="read_denied.txt: the denial is recorded as the reason the hash failed; the ACL and owner themselves are not recorded")
+        self.case("F-011")["paths"].append("04_Access\\read_denied.txt")
 
     def _h_extreme(self):
         """08_Extreme_Structures, the hostile half: size and count."""

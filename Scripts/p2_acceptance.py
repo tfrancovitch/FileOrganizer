@@ -40,6 +40,10 @@ RESULTS: list[tuple[str, bool, str]] = []
 TRUTH_PATH: Path | None = None       # set by main(); CASE_RESULTS.json is written beside it
 
 
+# A check name can carry any filename in the corpus; the console may be cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 def check(name, ok, detail=""):
     RESULTS.append((name, bool(ok), detail))
     print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  -- {detail}" if detail and not ok else ""))

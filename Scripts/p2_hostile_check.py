@@ -47,6 +47,10 @@ APP_ROOT = Path(r"C:\FileOrganizerTesting\FileOrganizer-Phase1-RC-B6.1")
 RESULTS: list[tuple[str, bool, str]] = []
 
 
+# A check name can carry any filename in the corpus; the console may be cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 def check(name, ok, detail=""):
     RESULTS.append((name, bool(ok), detail))
     print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  -- {detail}" if detail and not ok else ""))
