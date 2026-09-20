@@ -16,10 +16,11 @@ B7.1 fixes what the P2 stress test — the first project with two source
 roots, the test corpus beside the real OneDrive corpus — found: the second
 root's ingest marked every file of the first root missing, so every later
 pass ran over half the project while every report said COMPLETED. Fixing
-that uncovered eleven more, from a duplicate stage that always said "no
-applicable files" to re-scans that exported three-row CSVs and a time
-estimate thirteen times the run. `CHANGELOG-B7.1.md` lists them; they are
-defects 33–44 in `..\PROJECT_PLAN.md` §4.
+that uncovered twelve more, from a duplicate stage that always said "no
+applicable files" to re-scans that exported three-row CSVs, a time
+estimate thirteen times the run and a New Project form that hid the folders
+it had added. `CHANGELOG-B7.1.md` lists them; they are defects 33–45 in
+`..\PROJECT_PLAN.md` §4.
 
 ## B7 — Phase 2, entering adversarial testing
 

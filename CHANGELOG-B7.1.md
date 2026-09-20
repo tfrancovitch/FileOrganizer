@@ -13,7 +13,7 @@ are compared as words, not as the spelling B7.1 changed (see 42).
 
 ## Fixed
 
-Twelve defects, numbered 33–44 in `PROJECT_PLAN.md` §4.
+Thirteen defects, numbered 33–45 in `PROJECT_PLAN.md` §4.
 
 - **A two-root project lost its first root at the Pre-Scan** (33). The
   coordinator walks the roots one at a time into one `ScanStatistics`
@@ -91,13 +91,19 @@ Twelve defects, numbered 33–44 in `PROJECT_PLAN.md` §4.
   work streams inside the walk — now carries the time it took. Scan rows no
   longer inherit another root's counts, notes or duration; a root's
   `was_scanned` is its own.
+- **New Project's folder list was drawn behind its own row** (45): the list
+  was a child of the form packed `in_` a sibling row created after it, and
+  Tk stacks the later sibling above — so every Add landed in a list nobody
+  could see, and Add looked like it had wiped the path and added nothing.
+  The list is a child of the row it sits in, and a line under it says how
+  many folders will be inventoried.
 
 ## Verification
 
 On the final code: `b6_regression` 63 checks (19 new, marked B7.1; the
 two-root one reproduces the stress-test failure in miniature against the
 pre-fix ingestor), `p2_mutation_check` 37/37, `p2_hostile_check` 109/109 with
-`--rebuild`, `p2_dashboard_check` 195 (all passed), `p2_acceptance` 709/709
+`--rebuild`, `p2_dashboard_check` 196 (all passed; one new, which adds two folders through the real form), `p2_acceptance` 709/709
 against a `P2Accept` rebuilt from scratch by B7.1. The stress project,
 re-created and then scanned and fingerprinted again: 52,200 rows, both roots
 in every pass, 52,177 hashed, the 23 designed hostile errors, drift +0 / +0.

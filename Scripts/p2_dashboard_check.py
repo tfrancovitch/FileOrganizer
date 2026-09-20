@@ -916,6 +916,32 @@ def test_gui_views(project_dir: Path):
         check("Open Project shows the projects panel", "Open Project" in _texts(app.content))
         app.show_new_panel(); app.update()
         check("New Project shows the form", any("Create project" in t for t in _texts(app.content)))
+        # B7.1 (defect 45): the list of added folders was a child of the
+        # form packed `in_` a sibling row created after it, which sat
+        # above it in the stacking order -- every Add landed in a list
+        # nobody could see. Add two folders through the real widgets: the
+        # list must hold both, the entry must be cleared, the count must
+        # say two, and the list must be a child of the row it shares with
+        # its Remove button (a sibling packed `in_` is what was wrong).
+        import tkinter as tk
+        def _walk(w):
+            yield w
+            for c in w.winfo_children():
+                yield from _walk(c)
+        form = list(_walk(app.content))
+        entry = next(w for w in form if isinstance(w, tk.ttk.Entry))
+        folders = next(w for w in form if isinstance(w, tk.Listbox))
+        add = next(w for w in form if isinstance(w, tk.ttk.Button) and w.cget("text") == "Add")
+        remove = next(w for w in form if isinstance(w, tk.ttk.Button) and w.cget("text") == "Remove")
+        for folder in (str(project_dir.parent), str(project_dir)):
+            entry.delete(0, "end"); entry.insert(0, folder); add.invoke(); app.update()
+        listed = [folders.get(i) for i in range(folders.size())]
+        check("New Project: Add puts the folder in a visible list and says how many",
+              len(listed) == 2 and entry.get() == "" and folders.winfo_ismapped()
+              and folders.master is remove.master
+              and any("2 folders will be inventoried" in t for t in _texts(app.content)),
+              f"listed={listed} entry={entry.get()!r} mapped={folders.winfo_ismapped()} "
+              f"list parent={folders.master} remove parent={remove.master}")
         app.show_options(); app.update()
         check("Options page asks for a project when none is open", any("Open a project" in t for t in _texts(app.content)))
 

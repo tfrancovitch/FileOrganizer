@@ -456,7 +456,19 @@ class Phase2App(tk.Tk):
         path_var=tk.StringVar()
         prow=ttk.Frame(new); prow.pack(fill="x",pady=4)
         ttk.Entry(prow,textvariable=path_var).pack(side="left",fill="x",expand=True)
-        roots=tk.Listbox(new,height=4)
+        # B7.1 -- the list of added folders is a CHILD of the row it sits
+        # in. It used to be a child of `new` packed `in_` this row, and
+        # the row, created later, sat above it in the stacking order: the
+        # list was there and took every Add, and the row's background hid
+        # it -- so Add looked like it had wiped the path and added nothing.
+        lrow=ttk.Frame(new)
+        roots=tk.Listbox(lrow,height=4,exportselection=False)
+        count_var=tk.StringVar()
+        def refresh_count():
+            n=roots.size()
+            count_var.set("No folder added yet -- Browse, then Add." if n==0 else
+                          "1 folder will be inventoried." if n==1 else
+                          f"{n} folders will be inventoried, as one project.")
         def browse():
             folder=filedialog.askdirectory(title="Select a folder to inventory",parent=self)
             if folder: path_var.set(os.path.normpath(folder))
@@ -468,14 +480,16 @@ class Phase2App(tk.Tk):
             if os.path.normcase(os.path.normpath(folder)) in [os.path.normcase(os.path.normpath(roots.get(i))) for i in range(roots.size())]:
                 messagebox.showwarning("Already added",folder,parent=self); return
             roots.insert("end",os.path.normpath(folder)); path_var.set("")
+            roots.see("end"); refresh_count()
         def remove():
             sel=roots.curselection()
-            if sel: roots.delete(sel[0])
+            if sel: roots.delete(sel[0]); refresh_count()
         ttk.Button(prow,text="Browse...",command=browse).pack(side="left",padx=(6,0))
         ttk.Button(prow,text="Add",command=add).pack(side="left",padx=(6,0))
-        lrow=ttk.Frame(new); lrow.pack(fill="x")
-        roots.pack(in_=lrow,side="left",fill="x",expand=True)
+        lrow.pack(fill="x")
+        roots.pack(side="left",fill="x",expand=True)
         ttk.Button(lrow,text="Remove",command=remove).pack(side="left",padx=(6,0),anchor="n")
+        ttk.Label(new,textvariable=count_var).pack(anchor="w",pady=(4,0)); refresh_count()
         ttk.Label(new,text="Add a second folder only if you want one project to cover both.",foreground="#666").pack(anchor="w",pady=(2,8))
         ttk.Label(new,text="Project name (blank to auto-name):").pack(anchor="w")
         name_var=tk.StringVar(); ttk.Entry(new,textvariable=name_var,width=50).pack(anchor="w",pady=4)
