@@ -25,6 +25,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from . import capability as cap
+from Phase3 import review as review_view
 from .runner import (RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, ANALYSIS,
                      INDEX_TEXT, load_settings)
 
@@ -67,7 +68,7 @@ def show_hub(app):
     grid.columnconfigure(2, weight=1)
     row = [0]
 
-    def line(label, value, action=None, status=None, note=None, bold=False, link=None, again=None):
+    def line(label, value, action=None, status=None, note=None, bold=False, link=None, again=None, view=False):
         """One line: [button | status word] label value. `link` makes the
         label clickable -- a bucket name opens the Files page on that bucket.
 
@@ -78,8 +79,9 @@ def show_hub(app):
         link belongs to is never in doubt (the user's rule for this page).
         """
         if action:
-            # A run needs the project under Projects\; a view ("Show which") does not.
-            enabled = can_run or action[0] == "Show which"
+            # A run needs the project under Projects\; a view ("Show which",
+            # the Decide pages) does not.
+            enabled = can_run or view or action[0] == "Show which"
             ttk.Button(grid, text=action[0], width=18, command=action[1],
                        state="normal" if enabled else "disabled").grid(row=row[0], column=0, sticky="w", pady=2, padx=(0, 12))
         elif again and can_run:
@@ -168,6 +170,35 @@ def show_hub(app):
     line("Duplicates", dup_text, dup_action,
          status=("COMPLETE" if dup is not None and dup.state == cap.AVAILABLE else "PARTIAL" if dup is not None and dup.state == cap.PARTIAL else ""),
          note=dup.detail if dup is not None and dup.state == cap.PARTIAL else None, bold=True)
+
+    # -- decide (Phase 3) ----------------------------------------------------
+    # Once there are groups there is something to decide. The numbers are
+    # derived from the decision record every time the page draws: nothing
+    # about the current keeper set is stored as truth.
+    if summary["groups"]:
+        heading("Decide")
+        try:
+            d = review_view.decision_summary(app.conn)
+        except Exception as exc:                                # noqa: BLE001
+            d = None
+            line("Duplicate decisions", f"unavailable: {exc}")
+        if d is not None:
+            text = f"{d['reviewed']:,} of {d['groups']:,} groups reviewed"
+            if d["resolved"]:
+                text += f", {d['resolved']:,} resolved"
+            if d["deferred"]:
+                text += f", {d['deferred']:,} deferred"
+            if d["conflicts"]:
+                text += f", {d['conflicts']:,} with conflicts"
+            text += (f"   {_human_bytes(d['plan_eligible_reclaim_bytes'])} plan-eligible reclaim"
+                     f" of {_human_bytes(d['potential_reclaim_bytes'])} potential")
+            line("Duplicate decisions", text, action=("Review duplicates", app.show_decide), view=True, bold=True,
+                 note=(f"{d['orphaned_decisions']} decision(s) refer to files no longer in a duplicate group."
+                       if d["orphaned_decisions"] else None))
+            policies = review_view.store_for(app).policies()
+            ptext = ("; ".join(f"{p['label']}: {p['scope_text']}" for p in policies[:4])
+                     + (f"; and {len(policies) - 4} more" if len(policies) > 4 else "")) if policies else "none -- protect a backup root before marking anything redundant"
+            line("Policies", ptext, action=("Policies...", lambda: review_view.PoliciesDialog(app, review_view.store_for(app), app.show_hub)), view=True)
 
     # -- files by type -----------------------------------------------------
     pending = [b for b in summary["buckets"] if b["files"] and b["action"]]

@@ -56,10 +56,10 @@ for path in (DATABASE, HERE):
 #: ever validated on 3.11+. Deliberately NOT raised to whatever
 #: the development machine happens to run.
 MINIMUM_PYTHON = (3, 11)
-#: The current build requires schema 8 (Phase 2's projections and FTS map
-#: on top of migration 007's current-state projection). Kept equal to
+#: The current build requires schema 9 (Phase 3's decision records on top
+#: of Phase 2's projections and FTS map). Kept equal to
 #: fo_db.APP_SCHEMA_VERSION; the check failed on every machine while it said 7.
-REQUIRED_SCHEMA_VERSION = 8
+REQUIRED_SCHEMA_VERSION = 9
 
 #: import name -> (pip name, what stops working without it)
 OPTIONAL_PACKAGES = {
@@ -84,7 +84,10 @@ OPTIONAL_PACKAGES = {
 RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    "fo_hash_records", "fo_analyzer_engine",
                    "fo_analyzer_records", "fo_exports", "fo_project",
-                   "fo_estimates", "fo_extractors", "fo_email", "fo_pst", "fo_ocr", "win_meta")
+                   "fo_estimates", "fo_extractors", "fo_email", "fo_pst", "fo_ocr", "win_meta",
+                   # Phase 2 (the window and its core) and Phase 3 (decisions)
+                   "Phase2.core", "Phase2.query", "Phase2.capability",
+                   "Phase3.registry", "Phase3.resolve", "Phase3.store", "Phase3.review")
 
 
 class Report(object):

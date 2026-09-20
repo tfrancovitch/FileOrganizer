@@ -1,0 +1,255 @@
+{
+  "schema": "fileorganizer.p3.r11-manifest/1",
+  "files": [
+    {
+      "path": "Fixtures/F01_Keeper_Protected_Hardlink/README.md",
+      "bytes": 338,
+      "sha256": "de3658f0f261d19174b1518e7f81d1f9823f5a8b7b9c54e8c724fb30edb65a82"
+    },
+    {
+      "path": "Fixtures/F01_Keeper_Protected_Hardlink/SCENARIO.json",
+      "bytes": 225,
+      "sha256": "87036a410ad1d36dedd7cca67c85d70dcf6304935f5de2d6ebc1127006a69a77"
+    },
+    {
+      "path": "Fixtures/F01_Keeper_Protected_Hardlink/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "2034e7ad7161469430255cbcf4b91f96308e72513a3b287b9b6f868738263fd8"
+    },
+    {
+      "path": "Fixtures/F02_Multiple_Intentional_Keepers/README.md",
+      "bytes": 339,
+      "sha256": "74194425f8dea0392700a097bce25632393f83be13fb5e5c536664a3c173abe2"
+    },
+    {
+      "path": "Fixtures/F02_Multiple_Intentional_Keepers/SCENARIO.json",
+      "bytes": 226,
+      "sha256": "722e12f41d40bc5977a55c351f4b303d485c80cb4c6be24b54acfb033c1fb64b"
+    },
+    {
+      "path": "Fixtures/F02_Multiple_Intentional_Keepers/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "73f6e88eb53de6c43451025509dc4a47dfdde64c1a0a68ff13c6b6449d04359b"
+    },
+    {
+      "path": "Fixtures/F03_Folder_Priority_Exception/README.md",
+      "bytes": 313,
+      "sha256": "d8cc5acd50d1974c38c4982ed9654920d42cbd81d152ee6aef963beb056678c6"
+    },
+    {
+      "path": "Fixtures/F03_Folder_Priority_Exception/SCENARIO.json",
+      "bytes": 200,
+      "sha256": "7c6565087d3da7bbf9ab869bbca194768d11950379dd583341a78ecb6be38453"
+    },
+    {
+      "path": "Fixtures/F03_Folder_Priority_Exception/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "435c6eaaa3f7dfcb7b64135dfafd0df799f435a03ca5ca0e2c640e8ad7fca1c9"
+    },
+    {
+      "path": "Fixtures/F04_Frozen_Bulk_Query/README.md",
+      "bytes": 312,
+      "sha256": "3de1ff206c7390ea8467270c8975b442b2ff536de1743b64f65308fc9e93973d"
+    },
+    {
+      "path": "Fixtures/F04_Frozen_Bulk_Query/SCENARIO.json",
+      "bytes": 199,
+      "sha256": "b23b8ff554cbc262413c10b412d77ce533ca654996b848e309f04b38a09e5183"
+    },
+    {
+      "path": "Fixtures/F04_Frozen_Bulk_Query/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "13e765101482baa36909971bbe4fbc1ca266e1951b8cc6b009329efe98b43c7a"
+    },
+    {
+      "path": "Fixtures/F05_Dynamic_Policy_Future_Match/README.md",
+      "bytes": 341,
+      "sha256": "de5032a2d20378e4ee71eda19b93d3ccb48a21348dc4f1f8d9fb367ce946d5cc"
+    },
+    {
+      "path": "Fixtures/F05_Dynamic_Policy_Future_Match/SCENARIO.json",
+      "bytes": 228,
+      "sha256": "ba6fec5d057fcc878c1b036d71cd6e0c9761208716c7bed854e390d248db48bc"
+    },
+    {
+      "path": "Fixtures/F05_Dynamic_Policy_Future_Match/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "a93497e13ccea4ee8dc9d8c63383bc9f3d713f702c779e45dca2ab18c980dce3"
+    },
+    {
+      "path": "Fixtures/F06_Visual_Nontransitivity/README.md",
+      "bytes": 299,
+      "sha256": "086989d4bc54ccbdeb91bf0cbdfd99cb56a19a23adf5b22562863d3769cf2a65"
+    },
+    {
+      "path": "Fixtures/F06_Visual_Nontransitivity/SCENARIO.json",
+      "bytes": 186,
+      "sha256": "1e70a2e13de2e84618387fea9ee65289ffcbc04521baf9ed504df8d8e79146ae"
+    },
+    {
+      "path": "Fixtures/F06_Visual_Nontransitivity/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "d84d0fb7b4925a15803384076f32e761141691f03ab68899d5fc4a1d5c45060b"
+    },
+    {
+      "path": "Fixtures/F07_Related_Variant/README.md",
+      "bytes": 303,
+      "sha256": "c1340884e92543d331680246264f075d8335616e0be0bde6a64c5b3b465784a9"
+    },
+    {
+      "path": "Fixtures/F07_Related_Variant/SCENARIO.json",
+      "bytes": 190,
+      "sha256": "a724f0504a1e3505f32965dcf8baa1925e58d775f1a9e41e48969b578bdd27f8"
+    },
+    {
+      "path": "Fixtures/F07_Related_Variant/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "be535d4b9b931a1abcdef7cdbc0bbf1a83756d49fb693e21182bb3b3e53907eb"
+    },
+    {
+      "path": "Fixtures/F08_Deferred_vs_Blocked/README.md",
+      "bytes": 324,
+      "sha256": "820fbd050942cf0cb3599825e973f5b9fde8f4b0d6dc6ba15f1e803b32288d38"
+    },
+    {
+      "path": "Fixtures/F08_Deferred_vs_Blocked/SCENARIO.json",
+      "bytes": 211,
+      "sha256": "3ebe3002d76f11fe8b548a47a4eb563976581f9c1b73b199e91a118eef00e02a"
+    },
+    {
+      "path": "Fixtures/F08_Deferred_vs_Blocked/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "d4e45ca39fd4628734fe965ac0a58b9ecc777e6d5ed20d9d8405e86296162b2f"
+    },
+    {
+      "path": "Fixtures/F09_Supersession_Undo_Reapply/README.md",
+      "bytes": 308,
+      "sha256": "bdc71df3c9fcbb4533ded2dd9670facb998cbedf0a962cb4d077e6c9451bb38c"
+    },
+    {
+      "path": "Fixtures/F09_Supersession_Undo_Reapply/SCENARIO.json",
+      "bytes": 195,
+      "sha256": "ad81a627e5b1097218b227ef1e45aa320472c049d1faa6d720d6f81baa32932e"
+    },
+    {
+      "path": "Fixtures/F09_Supersession_Undo_Reapply/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "c421a54cf71cec778965b2827fcf0c0b96d79706f6e578f9342cfdc5d01f5f4c"
+    },
+    {
+      "path": "Fixtures/F10_Revalidation/README.md",
+      "bytes": 325,
+      "sha256": "b13cc4841498a9a2bd849909e60a103a412ed88f8a993a141b5aa74a49e610bd"
+    },
+    {
+      "path": "Fixtures/F10_Revalidation/SCENARIO.json",
+      "bytes": 212,
+      "sha256": "e1114be0d11a775f522fd5e5601973da0dc7efc64bda8f29a708dfe7bc3630af"
+    },
+    {
+      "path": "Fixtures/F10_Revalidation/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "a81a689ddf9d1718c20555ceb311f62dea78714e51fff7fa60e6803957bbc4f9"
+    },
+    {
+      "path": "Fixtures/F11_Plan_Drift/README.md",
+      "bytes": 317,
+      "sha256": "f22d30800a1ba81a932529b1a35623315c7d72838fd4963271bbe8b712b228ac"
+    },
+    {
+      "path": "Fixtures/F11_Plan_Drift/SCENARIO.json",
+      "bytes": 204,
+      "sha256": "c2fb8f04b2f844928c1901a02c9b2200a0638ce7ebe30c0890da7f5076f55a05"
+    },
+    {
+      "path": "Fixtures/F11_Plan_Drift/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "2dceb6f97762291863c6f85b42eb7d6fdbc89bbeb7466d3583f26d0ee06a7ff8"
+    },
+    {
+      "path": "Fixtures/F12_Hard_Precondition_Unknown/README.md",
+      "bytes": 315,
+      "sha256": "1810cc1d9365cfab3f4a5ddb0aaca356d12602e036da113cdcd37372f06bd4f9"
+    },
+    {
+      "path": "Fixtures/F12_Hard_Precondition_Unknown/SCENARIO.json",
+      "bytes": 202,
+      "sha256": "86079703a05bc79381c76d1326f9ab2c828a4e15d0604c9721897495951a4aa8"
+    },
+    {
+      "path": "Fixtures/F12_Hard_Precondition_Unknown/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "0de3ec34a2cccad663609a711c163669d150aac9a3e0a919250afc859ddd0f63"
+    },
+    {
+      "path": "Fixtures/F13_Metadata_Desired_Unsupported/README.md",
+      "bytes": 333,
+      "sha256": "7eb762afb2cd7d5a58d1bd780ccb9bd83c73fa955c90a6f06bee2a1ce16b3ee8"
+    },
+    {
+      "path": "Fixtures/F13_Metadata_Desired_Unsupported/SCENARIO.json",
+      "bytes": 220,
+      "sha256": "ccc62c4c671aef331266ab34d3320f7150e674470b2e1670173939131acbdb26"
+    },
+    {
+      "path": "Fixtures/F13_Metadata_Desired_Unsupported/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "14e2d8b4c9289a3b07f5a8a45e3e295348ac56573b5bf3fc0384974d333d9e9e"
+    },
+    {
+      "path": "Fixtures/F14_Metadata_Integrity_Blockers/README.md",
+      "bytes": 319,
+      "sha256": "b88f827b9a000d45d59cf852f0255a1300ab3944a20c1cb1de0603302e902d0f"
+    },
+    {
+      "path": "Fixtures/F14_Metadata_Integrity_Blockers/SCENARIO.json",
+      "bytes": 206,
+      "sha256": "dad56e7ab5d42178ff288aa5ddce0b641b6a85213f2f65d489f73912961895d2"
+    },
+    {
+      "path": "Fixtures/F14_Metadata_Integrity_Blockers/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "744d04d8e70758897ea3268099712c603e32436be6245653ca7b406f5cd62905"
+    },
+    {
+      "path": "Fixtures/F15_Projection_Rebuild/README.md",
+      "bytes": 337,
+      "sha256": "b08899ce1ffc1a50062dd4374d183dfbd5f81b2a05002167527b42521f9bc7e1"
+    },
+    {
+      "path": "Fixtures/F15_Projection_Rebuild/SCENARIO.json",
+      "bytes": 224,
+      "sha256": "9fb5028a207db4b32af1c0a72d85778b9d1cca97a13d948bb55cebe0cab232b2"
+    },
+    {
+      "path": "Fixtures/F15_Projection_Rebuild/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "206127880e307f185878af9a03e46504a0c8f86e138ded6ffafe8b83bd2a6aa2"
+    },
+    {
+      "path": "QUERY_EXAMPLES.md",
+      "bytes": 541,
+      "sha256": "962caf9f8c0276acb7c3cf02416eee5bb872db8e4157d49cf3a0f81c676fbd60"
+    },
+    {
+      "path": "README.md",
+      "bytes": 561,
+      "sha256": "827fe5bbc36c18eeff00704f2d73230e4f91ef6febbb9ddecde456f41c823e64"
+    },
+    {
+      "path": "Run-P3.R11-Fixture-Validation.bat",
+      "bytes": 62,
+      "sha256": "8188f59c87c4e3b99413b43f935c613a4c24b14944e613496ab169678dec09bb"
+    },
+    {
+      "path": "VALIDATION_RESULTS.json",
+      "bytes": 8329,
+      "sha256": "0cc5938eda299486885672b64b3b7dbb51c913a343a60f2ba03ca1b088b9bd99"
+    },
+    {
+      "path": "validate_fixtures.py",
+      "bytes": 8002,
+      "sha256": "2f4807783f24de99fde3db327059d69c3f28a3aa8221764eaa77c21bbc9b033e"
+    }
+  ]
+}

@@ -39,6 +39,7 @@ from .saved import SavedQueryStore
 from . import VERSION
 from . import hub as hub_view
 from .runner import RunRequest, PRESCAN, run_blocking, app_root_for
+from Phase3 import review as review_view
 
 #: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -185,6 +186,10 @@ class Phase2App(tk.Tk):
         self.filter_labels=[]                      # a name per filter, when one is known
         #: (stop_event, worker thread) while a run owns the window; else None.
         self.active_run=None
+        # Phase 3: one session id for every decision this window records;
+        # the store itself is built on the current connection when needed.
+        import uuid
+        self.p3_session_id="session:"+str(uuid.uuid4()); self.p3_store=None
 
         self.title(f"The File Organizer {VERSION}")
         enable_fault_log(self.app_root)
@@ -247,7 +252,7 @@ class Phase2App(tk.Tk):
         self.nav_sep=ttk.Separator(nav); self.nav_sep.pack(fill="x",pady=10)
         self.nav_buttons=[]
         for label,cmd in [
-            ("Project",self.show_hub),("Files",self.show_files),("Reports",self.show_reports),
+            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Reports",self.show_reports),
             ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history)]:
             b=ttk.Button(nav,text=label,style="Nav.TButton",command=cmd); b.pack(fill="x",pady=2)
             self.nav_buttons.append(b)
@@ -322,7 +327,7 @@ class Phase2App(tk.Tk):
         if self.conn is not None:
             try: self.conn.close()
             except Exception: pass
-        self.conn=None; self.store=None; self.fts=None; self.engine=None
+        self.conn=None; self.store=None; self.fts=None; self.engine=None; self.p3_store=None
 
     def close_project(self):
         """Leave the open project. Callers confirm first (see _confirm_leave)."""
@@ -542,6 +547,11 @@ class Phase2App(tk.Tk):
         """The project summary -- the landing view for an open project."""
         if self.conn is None: self.show_welcome(); return
         hub_view.show_hub(self)
+
+    def show_decide(self, content_id=None, file_path_id=None):
+        """Phase 3's Exact-Duplicate Review, inside this window (Phase3.review)."""
+        if self.conn is None: self.show_welcome(); return
+        review_view.show_review(self, content_id=content_id, file_path_id=file_path_id)
 
     def clear(self):
         # A scrolling list binds the mouse wheel for the whole window while
@@ -927,6 +937,10 @@ class Phase2App(tk.Tk):
             ttk.Label(f,text=str(v),wraplength=200,justify="left").pack(side="left",fill="x")
         ttk.Separator(self.detail_host).pack(fill="x",pady=8)
         ttk.Button(self.detail_host,text="Metadata Explorer",command=lambda:self.show_metadata(row.get("path.id"),row.get("path.file_name") or "")).pack(anchor="w")
+        # Phase 3: a file that has byte-identical copies can be taken straight
+        # to its group on the Decide page (wording provisional -- P3 UI-1).
+        if row.get("path.id") is not None and review_view.group_for_file(self.conn,row["path.id"]) is not None:
+            ttk.Button(self.detail_host,text="Review this duplicate group",command=lambda:self.show_decide(file_path_id=row["path.id"])).pack(anchor="w",pady=(4,0))
         ttk.Label(self.detail_host,text="Shown from stored project evidence.\nThe source file is not reopened.",foreground="#666",justify="left").pack(anchor="w",pady=10)
 
     def show_metadata(self,file_path_id,file_name=""):

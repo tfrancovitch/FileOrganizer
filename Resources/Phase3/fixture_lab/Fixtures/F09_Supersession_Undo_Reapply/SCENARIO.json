@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F09_Supersession_Undo_Reapply",
+  "title": "Decision Supersession / Undo / Reapply",
+  "purpose": "Append-only intent history keeps all choices while current state changes."
+}

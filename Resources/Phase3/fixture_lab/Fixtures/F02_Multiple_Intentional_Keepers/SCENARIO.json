@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F02_Multiple_Intentional_Keepers",
+  "title": "Multiple Intentional Keepers / Keep All",
+  "purpose": "Multiple retained exact duplicates are a normal resolved state and need not create a reclaim action."
+}

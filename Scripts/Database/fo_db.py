@@ -4,7 +4,7 @@ fo_db.py
 ===================================================================
 PRODUCTION CODE
 The File Organizer -- B6.1 (A-F Reconciliation)
-Module version: 1.5.0   Schema version: 7
+Module version: 1.6.0   Schema version: 9
 ====================================================================
 
 The one and only module that opens the project SQLite database.
@@ -81,6 +81,15 @@ produced exactly as in Alpha, and no downstream script reads the
 database. Regenerating the exports from it is R6; making it the source
 of truth is R7.
 
+CHANGED IN B8 (PHASE 3, BUILDS 1-2)
+-----------------------------------
+APP_SCHEMA_VERSION is 9, so migration 009 (p3_operation, p3_decision,
+p3_decision_withdrawal, p3_policy, p3_policy_version) is applied on open.
+An existing B7.x database migrates forward on first open, in one
+transaction, after an automatic pre-migration backup. The tables are
+append-only intent records; Phase3/store.py is the only writer and
+Phase3/resolve.py derives every current answer from them.
+
 CLI
 ---
     python fo_db.py init-project     --project-dir <dir> --name <n> [--source-root <path>]...
@@ -112,8 +121,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.5.0"
-APP_VERSION = "B7.2"
+MODULE_VERSION = "1.6.0"
+APP_VERSION = "B8"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -129,7 +138,12 @@ APP_VERSION = "B7.2"
 #: B6.1 requires schema 7. Migration 006 introduced current-state separation;
 #: migration 007 completes the A-F reconciliation/current projection. See the
 #: two migration files and B5_A-F_RECONCILIATION.md for rationale.
-APP_SCHEMA_VERSION = 8
+#: 8 -> B7 (Phase 2): saved queries, execution records, derived-index
+#:      registry, the current exact-duplicate projection, the FTS map.
+#: 9 -> B8 (Phase 3, Builds 1-2): p3_operation, p3_decision,
+#:      p3_decision_withdrawal, p3_policy, p3_policy_version -- append-only
+#:      intent records; see migrations/009_phase3_decisions.sql.
+APP_SCHEMA_VERSION = 9
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"

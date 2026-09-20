@@ -1,6 +1,10 @@
-# Architecture — The File Organizer, Phase 1, B6.1
+# Architecture — The File Organizer, B8 (Phases 1–2 shipped, Phase 3 begun)
 
 This describes the software as it is. It is not a history of how it got here.
+The body below is Phase 1's architecture as B6.1 left it, still accurate for
+the engines; the **Phase 2** section (the one window, the query core, the
+current-duplicate projection) and the **Phase 3** section (decisions) at the
+end say what B7 and B8 added on top.
 
 ---
 
@@ -9,8 +13,8 @@ This describes the software as it is. It is not a history of how it got here.
 ```
         TheFileOrganizer.bat          finds/installs Python, launches the app
                   |
-             Dashboard.py             Tkinter GUI, screens and stage sequencing
-                  |
+             Dashboard.py             startup checks, then hands off to
+                  |                   Phase2\gui.py -- the one window (B7)
           RunCoordinator.py           runs, stages, events, the DB session
                   |
    +--------------+--------------+------------------+
@@ -20,7 +24,7 @@ This describes the software as it is. It is not a history of how it got here.
    |            engine            |                  |
    +--------------+--------------+------------------+
                   |
-          FileOrganizer.db           SQLite, schema 7 -- AUTHORITATIVE
+          FileOrganizer.db           SQLite, schema 9 -- AUTHORITATIVE
                   |
              fo_exports.py           renders every CSV and report FROM the DB
                   |
@@ -150,9 +154,11 @@ extracted text is reused rather than duplicated by source path.
 
 ## Database
 
-Schema **`user_version = 7`**, created by `fo_db.py` applying migrations
-`001`–`007`. Migration 006 introduced current-state separation; migration 007
-completes the A–F reconciliation/current projection.
+Schema **`user_version = 9`**, created by `fo_db.py` applying migrations
+`001`–`009`. Migration 006 introduced current-state separation; migration 007
+completes the A–F reconciliation/current projection; 008 is Phase 2's core
+(saved queries, retained executions, the derived-index registry, the current
+exact-duplicate projection, the FTS map); 009 is Phase 3's decision record.
 
 | Table group | Holds |
 |---|---|
@@ -163,6 +169,9 @@ completes the A–F reconciliation/current projection.
 | `analyzer`, `analyzer_run`, `analyzer_result` | analyzer outcomes |
 | `archive_member`, `archive_summary`, `extracted_content` | bounded analyzer detail |
 | `scan_path_event` | empty/skipped directory coverage facts |
+| `p2_saved_query`, `p2_saved_query_revision`, `p2_execution_record` | Phase 2: saved questions, retained executions |
+| `p2_derived_index`, `p2_current_duplicate_member`, `p2_current_duplicate_summary`, `p2_fts_text_map` | Phase 2: rebuildable projections and indexes |
+| `p3_operation`, `p3_decision`, `p3_decision_withdrawal`, `p3_policy`, `p3_policy_version` | Phase 3: the append-only decision record |
 
 Analyzer results keep **normalised promoted columns** (title, author,
 dimensions, duration, word count) *plus* the analyzer's own JSON detail. The
@@ -350,3 +359,74 @@ fabricated record.
 
 Both are produced. B5 established that B4.5's outputs were untrustworthy
 in specific ways, not that the equivalence evidence should be discarded.
+
+---
+
+## Phase 2 (B7): the one window and the query core
+
+`Dashboard.py` keeps only the startup checks (stale-run reconciliation,
+`Test-Installation.ps1`, `Install-Dependencies.ps1`) and hands off to
+`Scripts\Phase2\gui.py`, the one window: Open/New Project, the project
+summary (`hub.py`, rendered from `capability.py` — "what can this project
+answer, and which run would change that"), Files, Reports, Saved Queries,
+Evidence, History, Options. Every collection run goes through
+`runner.py` — estimate first, a blocking run screen with Cancel — into the
+same `RunCoordinator`. The analytical side (`query.py`, `reports.py`,
+`saved.py`, `fts.py`, `coverage.py`, `derived.py`) reads stored evidence
+only; no source file is reopened to answer a question. The current
+exact-duplicate projection (`p2_current_duplicate_*`) is rebuilt from
+`file_state` whenever the authoritative evidence changes, and is the only
+place the product reads "current duplicates" from — never `duplicate_group`,
+which is a per-run snapshot.
+
+## Phase 3 (B8): decisions
+
+```
+   Phase 2 evidence (p2_current_duplicate_*, file_state, file_path, content)
+                  |
+        Phase3\evidence.py          loads the model: locations, groups, decisions, policies
+                  |
+        Phase3\resolve.py           the deterministic resolution -- a pure function
+                  |                 (protection > explicit location > explicit group >
+                  |                  folder policy > root policy > project > heuristic > display)
+                  v
+   keeper set / canonical / protected / redundant candidates / conflicts /
+   plan-eligible reclaim  -- DERIVED, never stored
+                  ^
+        Phase3\store.py             the only writer of p3_*: one operation = one transaction
+                  ^
+        Phase3\review.py            the Decide page inside the one window
+```
+
+Four authoritative families, all append-only: **operation** (one user
+action: actor, agent, session, command, time), **decision** (immutable:
+target, kind, typed value validated by `registry.py`, evidence binding by
+reference into Phase 1/2 ids, `supersedes`), **withdrawal** (a row, not a
+flag), **policy + version** (protect / prefer / avoid over a root or a
+folder; a change or a retirement is a new version). The product never
+UPDATEs or DELETEs a p3 row.
+
+What the page shows — keepers, the canonical, the protected set, redundant
+candidates, conflicts, plan-eligible reclaim — is recomputed from those
+tables and Phase 2 evidence every time it draws. Nothing about it is stored;
+a copy of the database gives the same answer (`p3_regression.py` proves it,
+and `p3_fixture_check.py` proves the resolution against the research's
+fixture lab).
+
+The protection gate is in the resolution, not in a dialog: a
+`redundant_location` decision on a location an active `protect_*` policy
+covers has no effect and is reported as a conflict, until an
+`override_protection` decision naming that exact policy version exists for
+that location. The window asks for the override in its own dialog with a
+required reason; the store refuses to record one without the confirmation
+flag, the reason, and a policy that actually covers the location.
+
+Physical identity is Phase 1's (`volume_serial` + `file_index`): a hard-link
+alias is not a separate physical copy, reclaim counts objects whose every
+name is a redundant candidate, and unknown identity means unknown reclaim,
+never a guess. Multiple keepers are a normal resolved state; the canonical is
+optional and always a keeper; no copy is ever labelled the original.
+
+Phase 3 writes nowhere but the project database (and, on request, a journal
+export under the project's `Exports\`). No source file is opened.
+

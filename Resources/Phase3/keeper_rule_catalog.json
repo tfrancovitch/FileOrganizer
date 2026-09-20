@@ -1,0 +1,172 @@
+{
+  "schema": "fileorganizer.p3.keeper-rule-catalog/1",
+  "work_package": "P3.R2",
+  "status": "research_baseline",
+  "principles": {
+    "protection_before_ranking": true,
+    "multiple_keepers_allowed": true,
+    "canonical_optional": true,
+    "canonical_must_be_keeper": true,
+    "ordered_rules_preferred_over_weighted_score": true,
+    "deterministic_tiebreak_is_not_intent": true,
+    "policy_does_not_change_phase2_evidence": true,
+    "hardlink_alias_is_not_physical_copy": true
+  },
+  "resolution_order": [
+    "hard_constraint",
+    "explicit_location_decision",
+    "explicit_group_decision",
+    "folder_policy",
+    "source_root_policy",
+    "project_policy",
+    "optional_heuristic",
+    "display_only_tiebreak"
+  ],
+  "rules": [
+    {
+      "id": "protect_source_root",
+      "class": "hard_constraint",
+      "effect": "protect",
+      "scope": "source_root",
+      "default_initial_support": true,
+      "description": "All current File Locations in the selected Source Root remain ineligible for destructive plan items."
+    },
+    {
+      "id": "protect_folder_subtree",
+      "class": "hard_constraint",
+      "effect": "protect",
+      "scope": "folder_subtree",
+      "default_initial_support": true,
+      "description": "All current File Locations in the folder subtree are protected."
+    },
+    {
+      "id": "explicit_must_keep_location",
+      "class": "hard_constraint",
+      "effect": "require_keep",
+      "scope": "file_location",
+      "default_initial_support": true,
+      "description": "Direct human retention decision for one File Location."
+    },
+    {
+      "id": "explicit_keep_all_group",
+      "class": "explicit_group_decision",
+      "effect": "require_keep_all",
+      "scope": "duplicate_group_version",
+      "default_initial_support": true,
+      "description": "Intentionally retain every current member of the reviewed duplicate group version."
+    },
+    {
+      "id": "explicit_canonical_location",
+      "class": "explicit_location_decision",
+      "effect": "set_canonical",
+      "scope": "duplicate_group_version",
+      "default_initial_support": true,
+      "description": "Select one retained File Location as the organizational canonical representative."
+    },
+    {
+      "id": "minimum_file_locations",
+      "class": "hard_constraint",
+      "effect": "minimum_keep",
+      "scope": "duplicate_group",
+      "default_initial_support": true,
+      "default_value": 1,
+      "description": "A future removal plan must leave at least this many File Locations."
+    },
+    {
+      "id": "minimum_physical_copies",
+      "class": "hard_constraint",
+      "effect": "minimum_physical_keep",
+      "scope": "duplicate_group",
+      "default_initial_support": true,
+      "default_value": 1,
+      "description": "Where physical identity is known, retain at least this many distinct Physical Objects."
+    },
+    {
+      "id": "prefer_folder_subtree",
+      "class": "explicit_priority",
+      "effect": "prefer",
+      "scope": "folder_subtree",
+      "default_initial_support": true,
+      "description": "Locations in this folder subtree outrank lower-priority candidates for canonical/keeper recommendation."
+    },
+    {
+      "id": "avoid_folder_subtree",
+      "class": "explicit_priority",
+      "effect": "avoid",
+      "scope": "folder_subtree",
+      "default_initial_support": true,
+      "description": "Locations in this folder subtree rank below otherwise equivalent candidates."
+    },
+    {
+      "id": "prefer_source_root",
+      "class": "explicit_priority",
+      "effect": "prefer",
+      "scope": "source_root",
+      "default_initial_support": true,
+      "description": "Locations in the selected Source Root outrank lower-priority roots."
+    },
+    {
+      "id": "prefer_oldest_modified",
+      "class": "optional_heuristic",
+      "effect": "prefer",
+      "scope": "candidate",
+      "default_initial_support": false,
+      "default_enabled": false,
+      "description": "Weak user-enabled heuristic only; filesystem mtime does not prove originality."
+    },
+    {
+      "id": "prefer_newest_modified",
+      "class": "optional_heuristic",
+      "effect": "prefer",
+      "scope": "candidate",
+      "default_initial_support": false,
+      "default_enabled": false,
+      "description": "Weak user-enabled heuristic only."
+    },
+    {
+      "id": "prefer_shallower_path",
+      "class": "optional_heuristic",
+      "effect": "prefer",
+      "scope": "candidate",
+      "default_initial_support": false,
+      "default_enabled": false,
+      "description": "Weak organizational heuristic."
+    },
+    {
+      "id": "prefer_shorter_filename",
+      "class": "optional_heuristic",
+      "effect": "prefer",
+      "scope": "candidate",
+      "default_initial_support": false,
+      "default_enabled": false,
+      "description": "Weak filename-cleanliness heuristic."
+    },
+    {
+      "id": "prefer_filename_pattern",
+      "class": "optional_heuristic",
+      "effect": "prefer_or_avoid",
+      "scope": "candidate",
+      "default_initial_support": false,
+      "default_enabled": false,
+      "description": "User-defined pattern such as avoiding names containing copy/temp/backup; requires explicit opt-in."
+    },
+    {
+      "id": "stable_display_order",
+      "class": "display_only_tiebreak",
+      "effect": "order",
+      "scope": "candidate",
+      "default_initial_support": true,
+      "semantic_intent": false,
+      "description": "Provides reproducible presentation only; must never be labeled keeper/original preference."
+    }
+  ],
+  "resolution_states": [
+    "explicit",
+    "policy_unique",
+    "policy_multiple_keepers",
+    "heuristic_unique",
+    "tie",
+    "conflict",
+    "blocked_evidence"
+  ]
+}

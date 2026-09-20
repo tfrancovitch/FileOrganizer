@@ -6,9 +6,27 @@ what is inside them.**
 
 Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
-cloud-only file.
+cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
+keep, as an inspectable record of what should happen. Carrying decisions out is
+a later phase; nothing in B8 changes a file either.
 
 ---
+
+## B8 — Phase 3 begins: duplicate decisions
+
+B8 is the first Phase 3 build (Builds 1–2 of the Phase 3 plan: core
+persistence and exact-duplicate decisions). A project now has a **Decide**
+page: every current exact-duplicate group with what Phase 2 knows about it
+(copies, physical copies, hard-link aliases, size, roots) and what you have
+decided (Keep, Keep all, Set canonical, Mark redundant, Defer). Policies
+protect a source root or folder, or prefer / avoid one for the
+recommendation. Protection is a hard constraint: a protected copy cannot be
+marked redundant until you override the protection in its own dialog, with
+a reason. Every decision is a record; changing your mind is a new record;
+Undo withdraws — nothing is ever deleted, in the project or on disk. The
+project summary shows how much of the duplicate question is decided and how
+much space a plan could count on. `CHANGELOG-B8.md` has the detail;
+`PHASE3_HANDBACK.md` reports against the Phase 3 handoff.
 
 ## B7.2 — the adversarial round closed
 
@@ -96,12 +114,17 @@ a release gate.
   audio, video, text and archives, and extracts document text to disk
 - Stores everything in a project-local SQLite database
 - Exports CSV inventories and readable reports
+- Records your decisions about duplicate copies — keepers, the canonical,
+  redundant candidates, protection — as an append-only, attributable record
+  (Phase 3, from B8)
 
 ## What it deliberately does not do
 
 Deleting duplicates, moving files, renaming, reorganising folders, tagging, and
 AI-assisted sorting are **later phases**. Phase 1 exists so that when those
-arrive, they act on facts that were established carefully.
+arrive, they act on facts that were established carefully; Phase 3 exists so
+that they act on decisions a person made and can inspect first. B8 records
+decisions and never acts on them.
 
 ---
 
@@ -257,6 +280,39 @@ extraction excluded, because extracting and indexing are the slow ones and each
 can be skipped. Each analyzer runs independently — one failing does not stop
 the others, and a bucket with no applicable files is a success, not an error.
 
+### 4a. Decide (from B8)
+
+**Decide** in the side panel, **Review duplicates** on the summary, or
+**Review this duplicate group** in a file's Details pane. The left list is
+every current exact-duplicate group: copies, physical copies (a hard link is
+one physical copy under two names), aliases, size, the potential reclaim
+Phase 2 measured and the reclaim a plan could count on now, roots, status
+and the canonical. Click a heading to sort; **Show** filters by status. The
+right side is the selected group: each copy's status — Protected, Keeper,
+Redundant candidate, Undecided — with what decided it, and the actions:
+
+| Action | What it records |
+|---|---|
+| **Keep** | this copy stays (a hard constraint) |
+| **Keep all** | every copy of the group stays; zero reclaim is a valid answer |
+| **Set canonical** | which copy represents the group — always a keeper, never "the original" |
+| **Mark redundant** | this copy is a candidate for a later removal plan |
+| **Defer** | an explicit "not deciding yet" |
+| **Override protection…** | its own dialog: names the protection rule, needs a reason |
+| **Undo selected** | withdraws a decision; the record stays, marked withdrawn |
+
+**Policies…** protect a source root or a folder (a hard constraint — a
+protected copy cannot be marked redundant until the protection is overridden
+for that copy), or prefer / avoid a root or folder. Preferences only shape
+the recommendation shown as "(policy)"; they never decide for you. Retiring
+a policy is a new version; its history stays. **Export journal…** writes the
+whole decision record as text into the project's `Exports\` folder.
+
+A group's redundant candidates count towards plan-eligible reclaim only when
+the group has no conflict — a redundant mark on a protected copy, a copy that
+is both canonical and redundant, or every copy marked redundant (the product
+never removes the last copy). The page says which.
+
 ### Stopping a run
 
 Cancel is honoured between files, never during one, so nothing is left
@@ -356,6 +412,7 @@ continues. Some system and cloud-only files simply cannot be read.
 | Projects | `Projects\` beside the app |
 | Database | `Projects\<name>\Database\FileOrganizer.db` |
 | Run output | `Projects\<name>\Runs\<timestamp>\` |
+| Decision record | tables `p3_*` in the project database; `Exports\DecisionJournal.txt` when exported |
 | Application log | `Logs\app.log` |
 
 To back up a project, copy its whole folder. To move the app, move the folder —

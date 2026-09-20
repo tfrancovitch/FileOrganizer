@@ -4,7 +4,7 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-19, evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
+**Last updated:** 2026-09-20, late — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2`; `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction
@@ -13,14 +13,20 @@ the user's decision of 2026-09-19**; **the closeout approved the same day** — 
 three real-use sessions judged sufficient; **the adversarial round (P2.13) is
 done** — the P2 stress test of 2026-09-19 (the first two-root project) and the
 Master Matrix corpus found defects 33–51, fixed in B7.1 and B7.2 (2026-09-20);
-one case (A-014) stays by decision; **Phase 3 begins**. The adversarial corpus
+one case (A-014) stays by decision. The adversarial corpus
 is built (`C:\FOTest`: `Corpus\` 853 files, `Hostile\` 10,026, the mutation
-runner) and every suite is green on **B7.2**
-**Build:** **B7.2** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
-project and log records it; `FileOrganizer\CHANGELOG-B7.2.md` (and B7.1, B7);
-tag `phase2-b7.2` on GitHub (`tfrancovitch/FileOrganizer`); the clean install
-`FileOrganizer-Phase2-B7.2\` is byte-identical to it
-**Code source of truth:** `FileOrganizer\` (git), branch `phase2`
+runner) and every suite is green on **B7.2**. **Phase 3 (Decide / Plan) has
+begun**: Builds 1–2 of its seven — the decision record (schema 9), the
+deterministic keeper / canonical / protection resolution, the protection
+override gate, policies, and the Decide page inside the one window — are
+built as **B8** and green on every suite (see §4a)
+**Build:** **B8** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
+project and log records it; `CHANGELOG-B8.md`; branch `phase3` in the git
+repository, checked out as `FileOrganizer-Phase3-B8\` (a worktree — not yet
+tagged; tagging is the user's call after review). B7.2 stays at tag
+`phase2-b7.2`, install `FileOrganizer-Phase2-B7.2\`, untouched
+**Code source of truth:** `FileOrganizer\` (git): branch `phase2` for Phase 2,
+branch `phase3` (worktree `FileOrganizer-Phase3-B8\`) for Phase 3
 
 ---
 
@@ -82,7 +88,7 @@ A nineteenth, adopted 2026-09-10:
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
 | **2** | **Understand** | **Shipped — B7.2. Closeout approved 2026-09-19; the adversarial round (P2.13) closed 2026-09-20 with B7.1 and B7.2 (defects 33–51; A-014 kept by decision)** |
-| 3 | Decide / Plan | **Next** — the handoff follows from the closeout's §7 |
+| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 built (core persistence, exact-duplicate decisions); Builds 3–7 (review routing, bulk/policy, Image Game, plan builder, project metadata) await their handoffs** |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
 | 6 | Local LLMs | Research horizon |
@@ -94,6 +100,46 @@ A nineteenth, adopted 2026-09-10:
 changing embedded metadata is an *action*, so metadata editing is Phase 4, not 3.
 
 ---
+
+## 4a. Where Phase 3 stands — B8, 2026-09-20
+
+The Phase 3 handoff (`C:\FileOrganizerTesting\FileOrganizer-Phase3\`: the
+research synthesis, the build plan, five fixtures of the P3.R11 fixture lab
+and the P3.R2 keeper-rule catalog) asked for Builds 1 and 2 of seven. Both
+are built; `PHASE3_HANDBACK.md` reports against the plan's ten necessities
+item by item and the five fixtures pass/fail. In one paragraph:
+
+Migration 009 adds the four authoritative families as append-only tables —
+`p3_operation` (actor, actor kind, agent kind and version, session, command,
+time), `p3_decision` (immutable; typed value validated by a decision-kind
+registry; evidence binding by reference into Phase 1/2 ids; `supersedes`),
+`p3_decision_withdrawal` (a row, never a flag), `p3_policy` +
+`p3_policy_version`. `Phase3\resolve.py` is the deterministic eight-step
+resolution as a pure function: protection before ranking, explicit location
+decisions, explicit group decisions, folder and root policies (recommendation
+only), the empty project-policy and heuristic slots, display order last. The
+protection gate is in that function: a redundant mark on a protected copy is
+a conflict with no effect until an `override_protection` decision naming
+the exact policy version exists — recorded only through its own dialog,
+with a reason. Everything the Decide page shows is recomputed from the
+record every time; nothing current is stored. The page lives inside the one
+window (side panel **Decide**, the summary's **Review duplicates**, a file's
+**Review this duplicate group**). Zero source-file mutation is asserted by
+`p3_regression.py` (a before/after fingerprint of the corpus and a guard on
+every Python-level write). Suites on B8: `p3_fixture_check` 37/37 (F01, F02,
+F03, F09, F15 all pass), `p3_regression` 141/141, `b6_regression` 73/73,
+`p2_regression` all, `p2_dashboard_check` all, `self_check` ready.
+
+Judgment calls the research left open, all provisional and listed in the
+handback: the working folder and version (`FileOrganizer-Phase3-B8`, B8,
+branch `phase3` from `phase2-b7.2` — the handoff named `phase2-b7` and a
+`TheFileOrganizer-Phase2-B7.2` folder, neither of which matched what exists);
+the words on the screens (Decide, Duplicate decisions, Keep / Keep all / Set
+canonical / Mark redundant / Defer / Override protection…, Review this
+duplicate group); withdrawal does not revive what the withdrawn decision had
+superseded (F09's own shape); a re-apply supersedes the withdrawn row so the
+chain stays whole; `actor_id` is the Windows user name; a group whose only
+status comes from protection counts as unreviewed until a person decides.
 
 ## 4. Where Phase 2 actually stands
 
@@ -381,6 +427,17 @@ The difference between the first two is not thoroughness.
 10. **Extraction and indexing are separately deferrable.** The engine already supports this.
 11. **Logs and journals live on disk, not in the interface** (axiom 19).
 
+### Decisions — 2026-09-20, the Phase 3 handoff
+
+Settled with the project owner before the handoff was written, and treated
+as settled in B8: first-round scope is Builds 1–2 only; the P3.R1/P3.R2
+contradiction is resolved for P3.R2 — protection is a hard constraint, and
+overriding it is its own explicit, confirmed operation; Phase 3 integrates
+into the one window, not a separate program; the research's vocabulary
+(Decision, Plan, Canonical, Keeper, Policy, Review, Protected, Reclaim) is
+adopted as working names, expected to be renamed once real use has happened;
+no copy is ever called the original.
+
 ### Undo, when Phase 4 arrives
 
 Established by research, recorded here so it is not re-derived:
@@ -400,6 +457,20 @@ rather than time-boxed, and it does not exist for network shares.
 ---
 
 ## 6. Next
+
+**Phase 3, what comes after B8** — the remaining five builds of the Phase 3
+plan, each with its own handoff: 3 review routing (queues: conflicts, needs
+revalidation, blocked, deferred as routes; the "orphaned decision" count B8
+already reports is the seed of "needs revalidation"); 4 bulk batch with
+frozen membership and dynamic policy with preview; 5 the Image Game (the
+perceptual hashes are already stored); 6 the plan builder, fingerprint and
+the Phase 4 contract; 7 project / desired source metadata. Before Phase 4,
+the two standing items from PHASE-2-HANDOFF: a cross-process lock, and the
+autocommit connection revisited (Phase 3's store already uses real
+transactions on the window's connection). Cheap follow-ups the handback
+names: per-group re-resolution on the Decide page instead of a full recompute
+per click (0.2 s for 4,000 groups today), and a "Reviewed" status for groups
+whose every copy is protected.
 
 **Done since this list was written**
 - A "what can this project answer?" surface — `Scripts\Phase2\capability.py`, the
@@ -523,8 +594,11 @@ test corpus designed in `C:\FOTest\Research\`.
 C:\FileOrganizerTesting\
   PROJECT_PLAN.md              this document
   STAGE_MAP.md                 what each click actually runs
-  FileOrganizer\               git repository - code source of truth
-  FileOrganizer-Phase1-RC-B6.1\  the running install (BASELINE.md: it is B6.2)
+  FileOrganizer\               git repository - code source of truth (branch phase2 checked out)
+  FileOrganizer-Phase1-RC-B6.1\  the Phase 1 install (BASELINE.md: it is B6.2)
+  FileOrganizer-Phase2-B7.2\   the Phase 2 install, byte-identical to tag phase2-b7.2
+  FileOrganizer-Phase3-B8\     Phase 3 work: git worktree of branch phase3 (B8)
+  FileOrganizer-Phase3\        the Phase 3 handoff package (Builds 1-2)
   Docs\
     Charter\          the phase model, requirements, question catalog, decisions
     Specifications\   query model, information model, report catalog, GUI contract

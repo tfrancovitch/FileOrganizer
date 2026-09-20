@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F01_Keeper_Protected_Hardlink",
+  "title": "Exact Duplicate Keeper + Protected Root + Hard Link",
+  "purpose": "Canonical, Keeper Set, protected copy, physical-copy count, and hard-link alias semantics."
+}

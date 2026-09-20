@@ -269,3 +269,15 @@ Every stage writes to the project database, not to a log folder:
 - `event` — severity, category, file path, error type, whether it was retryable
 
 That is the audit trail, and it is already populated on every run.
+
+---
+
+## Not a run: the Decide page (Phase 3, from B8)
+
+Recording a decision on the Decide page is a point interaction, not a run:
+no estimate, no progress screen, no `run` row. Each click is one
+`p3_operation` row (who, through what, when) with the decision, withdrawal
+or policy-version rows it made, written in one transaction. The audit trail
+for decisions is those tables; **Export journal…** writes them as text into
+the project's `Exports\` folder. Nothing on that page opens or changes a
+source file.
