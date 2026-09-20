@@ -4,16 +4,16 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-15 — build **B7**; Scan again and the other “again” links on the summary; the summary made honest after a re-scan (defects 25–28)
+**Last updated:** 2026-09-19 — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction now
 reads 113 formats including scans by OCR, and awaits the user's decision (the
 estimate is honest about what OCR of a 30 GB picture library and 32 GB of zips
 would cost, and the Options page can leave those out); closeout drafted;
-the adversarial corpus of the Master Matrix is being built (the corpus session’s
-commits: `Corpus 01_Naming` … `The mutation runner`), and **B7** is the build that
-meets it
+the adversarial corpus of the Master Matrix is built (`C:\FOTest`: `Corpus\` 853
+files, `Hostile\` 10,026, the mutation runner; 709 + 109 + 37 checks green), and
+**B7** is the build that meets it
 **Build:** **B7** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
 project and log records it; `FileOrganizer\CHANGELOG-B7.md`
 **Code source of truth:** `FileOrganizer\` (git), branch `phase2`
@@ -144,15 +144,35 @@ query engine being tested.
 | 25 | **The summary said Fingerprints COMPLETE over a stale fingerprint.** The identity counts took `content_id` alone; a file re-observed since it was fingerprinted keeps the old `content_id`, marked stale by `content_observation_id <> current_observation_id` — the rule the query engine, the exports and the duplicate projection already applied. Found the day a re-scan could be started from the window | The capability applies the staleness rule to fingerprints, size-unique proofs and read failures alike; a changed file has “no verdict” and Find My Duplicates / Full Fingerprinting is offered again |
 | 26 | **Extraction was counted as rows, not files.** `extracted_content` keeps a row per attempt, so a second extraction run would have said “16,480 of 8,240 extracted”, and a file re-observed since its extraction still counted as extracted | Counted per present file from its newest attempt against its current observation — extracted, failed, empty, not documents, cloud-only, OCR |
 | 27 | **A vanished file stayed in a bucket's “analysed” count** while leaving its file count (“267 files, 268 analysed” after a re-scan) | Present files only |
+| 29 | **The WordPerfect reader stepped off the end of the first real file it met.** WP6's 0xF0–0xFF codes are fixed-length, closed by their own byte; read as variable groups, `F0 1D 04 F0` gave a size of 61,444 — eight characters of a two-kilobyte document. And WP5's attribute codes are three bytes, not two, so every bold word lost its first letter (Tika's samples) | Both fixed against the three Tika files; `.wp` named as an extension |
+| 30 | **The RAW analyzer came back "analyzed" with every field empty for four containers** — exifread knows TIFF and JPEG; Fujifilm RAF, Minolta MRW, Canon CR3 and Sigma X3F wrap their EXIF where it does not look | The reader lifts the embedded TIFF or JPEG out of each container (RAF header offset, MRW TTW block, CR3 CMT boxes, X3F directory) and hands it to exifread; all seven raw.pixls.us cameras named |
+| 31 | **An encrypted Office document was reported as "not a zip file" / "OLE container without a document inside"**, an encrypted OpenDocument as "not well-formed" | `ole_kind` names the EncryptionInfo/EncryptedPackage pair, `odf_text` the manifest's encryption-data; both readers say password-protected. No password is ever tried |
+| 32 | **A library exception with no message was recorded as success.** pdfminer raises an empty-message exception on a password-protected PDF; the engine stored an empty error text, so `extracted_content.status` read *extracted* with no artifact and no count | A message-less exception records the exception's name and is the failure it is |
 | 28 | **The text index went stale after any run** — its signature was the whole evidence signature (every run, hash and observation) — and the next search rebuilt it in silence, with the summary still saying INDEXED: seconds on a fixture, minutes inside one click on a large project | Signed by the extracted texts alone (which file holds a text is decided at query time); when extraction does run again the summary reads “index out of date” and offers Index text |
 
 Two Phase 1 improvements followed: the allocated-size call is skipped for ordinary
 files (self-validating per volume), and candidate-only identity narrowing is
 available opt-in. **The walk is roughly 2× faster than B6.2.**
 
+### Defects the adversarial corpus found — open, recorded as DEFECT cases
+
+Each is asserted *as it behaves today* so the suites stay green and the case is
+listed under `defects` in `C:\FOTest\CASE_RESULTS*.json`; the check fails the day
+the defect is fixed, which is when the expectation moves.
+
+| Case | Defect | Where |
+|---|---|---|
+| A-014 (= Y-009, Y-053, W-003) | A case-only pair in a case-sensitive directory folds into one row — `file_path` is unique on a lower-cased key — and the surviving row is a chimera: the first file's name with the second's size. The walk counts two | `fo_inventory` ingest; Hostile\01_Naming |
+| C-011 | A file symbolic link is a present row (reparse point, size 0) but the hash stage opens the path, Windows resolves it, and the link is hashed as its target's — so the two are grouped as duplicates | hash engine; Hostile\02_Identity |
+| I-005 | A file rewritten between listing and hashing keeps the listed size beside the new digest; nothing marks the observation stale | hash engine; mutation runner |
+| D-003c | Files under a folder that became unlistable after they were observed are marked *missing*, though the folder still exists and holds them | ingest; mutation runner |
+| E-008b | pypdf raises on a garbage `/CreationDate`, and the whole PDF analysis is an error though the page is fine and extraction reads it | `PDFAnalysis.py`; Corpus\05_Corruption |
+| Y-020c | ESC counts as a control character, so a 3 KB log with 180 colour codes is refused as binary | `fo_extractors.sniff`; Corpus\19_Extraction_Safety |
+| Y-022b | An archive member is decoded with no sniff: 100 KB of random bytes named `.txt` inside a zip became 102,419 characters of "text" | `ContentExtraction._member_text`; Corpus\19_Extraction_Safety |
+
 ### Known limits
 
-- **Text extraction covers 113 formats** — every document, email, OpenDocument, EPUB and Office variant, source and configuration, the documents inside zips, WordPerfect and OneNote (by scanning, unverified), files with no extension, and **pages with no text layer and pictures that look like documents, by OCR** (Windows' engine; every page judged, poor scans flagged for a person). Not covered: non-TIFF camera RAW and anything the OCR gate calls a photograph. Text the product cannot extract is never searchable, **and the search says nothing about it.**
+- **Text extraction covers 114 formats** — every document, email, OpenDocument, EPUB and Office variant, source and configuration, the documents inside zips, WordPerfect (verified on Tika's WP 4.2–6 files; 4.2 named `.doc` is not recognised, it has no signature) and OneNote (its UTF-16 strings, verified on Tika's ten files including three fuzzed), files with no extension, and **pages with no text layer and pictures that look like documents, by OCR** (Windows' engine; every page judged, poor scans flagged for a person). Not covered: anything the OCR gate calls a photograph; hidden state, formulas, names, comments, links, templates, embedded objects and VBA are read through or past, never recorded (the 69 SCOPE cases of the corpus — Phase 3's list). Text the product cannot extract is never searchable, **and the search says nothing about it.**
 - **Analyzer runs cannot be scoped to a file subset** — analyzer keys only.
 - **Upgrading fingerprints re-reads everything** rather than topping up. So does **Fingerprint again** — which is what makes it the one way to catch a file whose bytes changed under the same size and modified time.
 - **A stopped run does not resume.** Everything it did is kept and the hub shows the gap, but running the stage again starts from its first file. The pre-run screen says so.
@@ -265,7 +285,7 @@ to become a full test corpus with one file of every type. All built the same day
 | The formats | 113 in all. OpenDocument from `content.xml`; EPUB in spine order; every Office Open XML variant read raw from the package (also the fallback when a library refuses a `.docx`); fifty-odd source and configuration extensions; zips and 7z two levels deep with caps; WordPerfect (function codes stepped over) and OneNote (its UTF-16 strings) — those two by scanning, and **unverified**, a sample in `C:\FOTest\Samples` goes into the corpus on rebuild |
 | OCR | Windows.Media.Ocr through `winocr` — free, offline, ~0.5 s a page — on PDFium renders of pages with no text layer, and on pictures that pass a document gate. **The quality judgement**: resolution, contrast, focus, speckle, the skew the engine measured, how much of the result reads as words, and ink-with-no-words; a score per page, reasons in plain words, `OcrReview = yes` under 70. Calibrated on a real 103-dpi scan and degraded copies. Columns on the Files page, a summary line with Show which, the Options page's three switches |
 | The PST reader | Verified on Apache Tika's two test mailboxes (downloaded with the user's approval); one defect — embedded messages were not followed — fixed |
-| `C:\FOTest` | `Corpus\` (344 files, 107 extensions: every image, RAW, audio, video, archive and document format the program names, scans clean and poor, a photograph, malformed files), `GROUND_TRUTH.json`, `Samples\` for real third-party files, `README.md`; the user's adversarial Master Matrix in `Research\` is the target its folders map onto |
+| `C:\FOTest` | `Corpus\` (344 files, 107 extensions: every image, RAW, audio, video, archive and document format the program names, scans clean and poor, a photograph, malformed files), `GROUND_TRUTH.json`, `Samples\` for real third-party files, `README.md`; the user's adversarial Master Matrix in `Research\` is the target its folders map onto. **Since grown into the adversarial corpus — see §4's "The adversarial corpus" and `C:\FOTest\README.md`** |
 
 Word 2016 automation hung on every variant save (Excel and PowerPoint did not), so
 the Word variants are derived; the rest of the Office fixtures are genuine and live
@@ -405,6 +425,31 @@ rather than time-boxed, and it does not exist for network shares.
      the review flag; the PST reader verified on real files; the full test
      corpus at `C:\FOTest` ✔
 
+**Done 2026-09-13 → 2026-09-19 — the adversarial corpus of the Master Matrix**
+18. `Corpus_Design_Proposal_v1.0.md` (`C:\FOTest\Research\`): the research
+    reconciled, the matrix's dispositions corrected against this machine, the
+    program's vocabulary mapped, six questions answered by the user ✔
+19. Release 0 into the one builder — 01 Naming, 02 Duplicates, 03 Links, 05
+    Corruption, 06 Metadata, 07 File types, 08 Extreme structures, 19 Extraction
+    safety — `cases` in `GROUND_TRUTH.json`, `p2_cases.py` asserting each in the
+    program's own columns; the CSV export's formula guard (Y-018) ✔
+20. `Hostile\` and `p2_hostile_check.py` — denied ACLs, junction loops, hard
+    and symbolic links, reserved names, the case-sensitive directory, 10,000
+    files, 4 GB sparse, 100,000 members, its own project and a canary ✔
+21. `p2_mutation_check.py` — files created, deleted, renamed, rewritten, held
+    and made unlistable *during* the walk ✔
+22. The third-party samples (Tika, raw.pixls.us, OPF, py-pdf, mathiasbynens,
+    Big Buck Bunny, ffmpeg.wasm, jonasclaes; `PROVENANCE.json`), the readers
+    that had never met a real file fixed against them (defects 29–32) ✔
+23. Release 1 — documents: hidden sheets, formulas with and without cached
+    values, names, comments, hyperlinks, tables, charts, custom properties,
+    a password to open (Excel-made), structure protection, templates,
+    metadata against filesystem dates, hidden and deleted text, external
+    workbook links in eight shapes, embedded objects, automation, an
+    organisation's folders, a credential in a config file ✔
+24. The parked rows declined with their reasons — 289 matrix rows: 199
+    embodied, 90 declined, none untouched; `C:\FOTest\README.md` recomputed ✔
+
 **To close Phase 2** — the user's decision
 12. Extract and index, or not — ~23 min for the documents alone, ~15 h 17 min
     with OCR of the pictures and the zips' scanned batches; the Options page chooses
@@ -427,13 +472,13 @@ rather than time-boxed, and it does not exist for network shares.
 - Does a re-run constitute a new project?
 - Is consumer mode a preference or a separate edition?
 - Does the journal need to be tamper-evident, or merely out of the way?
-- Should text extraction cover more formats? 113 now, OCR included. What remains is samples for WordPerfect, OneNote and the non-TIFF camera RAW formats, and the adversarial corpus of the Master Matrix in `C:\FOTest\Research`.
+- Should text extraction cover more formats? 114 now, OCR included; the samples for WordPerfect, OneNote and the non-TIFF RAW formats are in and the readers verified. What remains is Phase 3's relationship layer (the 69 SCOPE cases) and the seven open defects above.
+- The OneDrive placeholder (L-001/L-002/L-006) only the real corpus can hold: one "Free up space" file the user makes in `TOMMY STUFF`, then Scan again and Fingerprint again — `C:\FOTest\README.md` says how. The builder never touches the user's OneDrive.
 
-**Unpushed:** the `phase2` branch exists only on this machine: 78 commits beyond
-`main` on 2026-09-15, plus the 7 commits of `phase2-loose-ends` (this day’s work,
-already in the install) awaiting `git merge --ff-only phase2-loose-ends` once the
-corpus session has committed its working tree; the corpus session’s own work
-still landing.
+**Unpushed:** the `phase2` branch exists only on this machine: 90 commits beyond
+`main` on 2026-09-19 — `phase2-loose-ends` fast-forwarded in and retired, the
+corpus session's five commits on top; the install is in step (rework16 backup,
+manifest verified).
 
 **Handoffs:** `Docs\Handoffs\PHASE_2_COMPLETION_HANDOFF.md` carries the environment,
 the rules, the decisions already settled, the defects and the traps, for a session
