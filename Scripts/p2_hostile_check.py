@@ -187,7 +187,7 @@ def assert_project(base: Path, project_dir: Path, truth: dict, before: dict):
     check(f"none of the {len(hostile['unobservable'])} files under denied folders has a row", not unobservable, str(unobservable[:3]))
     n_bytes = conn.execute("SELECT COALESCE(SUM(size_bytes),0) FROM file_state WHERE state='present'").fetchone()[0]
     check(f"logical bytes == {hostile['expected_logical_bytes']:,} (the truth's {truth['totals']['logical_bytes']:,} "
-          f"less the bytes of each folded pair's kept name -- the chimera carries the dropped file's size)",
+          f"less the bytes of each folded pair's dropped name -- the kept name keeps its own size)",
           n_bytes == hostile["expected_logical_bytes"], f"got {n_bytes:,}")
 
     section("2. The preliminary report")

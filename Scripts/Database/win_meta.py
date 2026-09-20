@@ -140,13 +140,24 @@ def format_file_attributes(value):
       * every bit named -> the member names, ASCENDING BY VALUE,
         joined with ", ".
 
-      * any bit left over -> the DECIMAL VALUE OF THE WHOLE INPUT, not
-        a partial rendering. This is not a hypothetical: a modern
-        OneDrive placeholder carries FILE_ATTRIBUTE_PINNED (0x80000) or
-        RECALL_ON_DATA_ACCESS (0x400000), and neither exists in the
-        .NET Framework enum, so PowerShell renders the whole number.
-        Reproducing that is what keeps a OneDrive project's exports
-        matching; "improving" it would be a silent divergence.
+      * any bit left over -> (until B7.1) the DECIMAL VALUE OF THE WHOLE
+        INPUT, not a partial rendering. A modern OneDrive file carries
+        FILE_ATTRIBUTE_PINNED (0x80000) or UNPINNED (0x100000), and
+        neither exists in the .NET Framework enum, so PowerShell rendered
+        the whole number: 32,862 of the stress corpus's 41,059 OneDrive
+        files read "524320", and the one that was also Hidden and System
+        read "1572902" -- which the reports' Hidden/System counts, a
+        substring test R6 also used, could not see.
+
+    B7.1 renders the leftover bits too: the four Windows names the .NET
+    enum lacks (Pinned, Unpinned, RecallOnOpen, RecallOnDataAccess),
+    then anything still unnamed as a hex remainder. "524320" becomes
+    "Archive, Pinned"; "1572902" becomes "Hidden, System, Archive,
+    Pinned, Unpinned". Every value .NET could fully name renders exactly
+    as before, so the R5 byte-equivalence on the controlled suite stands;
+    the divergence is confined to rows R6 rendered as a bare number.
+    parse_file_attributes() inverts both spellings, so a row recorded
+    under the old one does not read as changed under the new.
     """
     try:
         value = int(value)
@@ -157,13 +168,72 @@ def format_file_attributes(value):
 
     remaining = value
     names = []
-    for bit, name in _FILE_ATTRIBUTE_MEMBERS:
+    for bit, name in _FILE_ATTRIBUTE_MEMBERS + _WINDOWS_ONLY_ATTRIBUTE_MEMBERS:
         if remaining & bit == bit:
             remaining &= ~bit
             names.append(name)
     if remaining:
-        return str(value)
+        names.append("0x%X" % remaining)
     return ", ".join(names)
+
+
+#: Attribute bits Windows names and the .NET Framework enum does not
+#: (winnt.h). Rendered after the .NET members, ascending by value.
+_WINDOWS_ONLY_ATTRIBUTE_MEMBERS = (
+    (0x00040000, "RecallOnOpen"),
+    (0x00080000, "Pinned"),
+    (0x00100000, "Unpinned"),
+    (0x00400000, "RecallOnDataAccess"),
+)
+
+_ATTRIBUTE_BIT_BY_NAME = {name: bit for bit, name in
+                          _FILE_ATTRIBUTE_MEMBERS + _WINDOWS_ONLY_ATTRIBUTE_MEMBERS}
+
+
+def parse_file_attributes(text):
+    r"""The attribute word behind a rendered string, or None.
+
+    Accepts every spelling this module has ever written: the names
+    ("Hidden, Archive"), the pre-B7.1 bare decimal ("524320"), the
+    B7.1 names-plus-hex-remainder ("Archive, Pinned, 0x1000000") and
+    "0". Anything else -- an unknown name, garbage -- is None, and a
+    caller falls back to comparing the strings.
+    """
+    if text is None:
+        return None
+    text = str(text).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    word = 0
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            return None
+        if part.startswith("0x") or part.startswith("0X"):
+            try:
+                word |= int(part, 16)
+            except ValueError:
+                return None
+            continue
+        bit = _ATTRIBUTE_BIT_BY_NAME.get(part)
+        if bit is None:
+            return None
+        word |= bit
+    return word
+
+
+def attributes_differ(old_text, new_text):
+    """Whether two rendered attribute strings describe different words.
+
+    Compared as words when both parse, so the B7.1 change of spelling is
+    not a change of the file; compared as strings otherwise.
+    """
+    old_word, new_word = parse_file_attributes(old_text), parse_file_attributes(new_text)
+    if old_word is not None and new_word is not None:
+        return old_word != new_word
+    return (old_text or "") != (new_text or "")
 
 
 def has_attribute(value, flag):
@@ -719,6 +789,9 @@ def _short_date_probe():
 # ---------------------------------------------------------------------------
 
 _DRIVE_REMOTE = 4
+#: GetDriveTypeW's answers, in fo_env's words (B7.1: the two must agree).
+_DRIVE_TYPE_WORDS = {2: "Removable", 3: "Fixed", _DRIVE_REMOTE: "Network",
+                     5: "CDROM", 6: "RamDisk"}
 
 
 def drive_type(path):
@@ -744,14 +817,20 @@ def drive_type(path):
     test and GetDriveTypeW answer between them. SSD versus HDD changed
     a displayed word and nothing else.
 
-    So the vocabulary narrows to:
+    So the vocabulary narrows to what GetDriveTypeW itself says:
 
         UNC path or DRIVE_REMOTE   ->  "Network"
+        DRIVE_FIXED / _REMOVABLE / _CDROM / _RAMDISK -> that word
         anything else              ->  "Unknown"
         any failure at all         ->  "Unknown"
 
     "Unknown" is a value R6 already produced whenever its CIM chain
-    failed, so no consumer meets a string it has not seen before.
+    failed, so no consumer meets a string it has not seen before. B7.1
+    stopped collapsing the non-network answers to "Unknown": the same
+    run was recording "Fixed" for the root in run_source_root (fo_env,
+    the same call) while its report said "Target drive type (detected):
+    Unknown". One call, one vocabulary -- fo_env's -- and the estimator
+    still asks only whether the answer is "Network".
 
     This never raises, and it must never be allowed to block a scan --
     R6's rule, preserved. Every path out of here returns a string.
@@ -771,7 +850,7 @@ def drive_type(path):
         # is the whole reason this call is worth making at all.
         root = "%s:\\" % text[0]
         code = int(ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)))
-        return "Network" if code == _DRIVE_REMOTE else "Unknown"
+        return _DRIVE_TYPE_WORDS.get(code, "Unknown")
     except Exception:
         return "Unknown"
 

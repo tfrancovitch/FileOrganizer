@@ -817,26 +817,38 @@ class Exporter(object):
         derived from the path itself, so two machines produce the same
         order from the same tree. file_path_id is the final tiebreaker
         so the sort can never be ambiguous -- see B5-F.F002.
+
+        B7.1 READS THE CURRENT PROJECTION. Under history.mode='changes'
+        an unchanged file receives no observation on a later scan (B6.1),
+        so selecting this scan's observations listed only what had
+        changed: a Scan again of the 52,200-file stress project wrote a
+        three-row PreliminaryInventory.csv beside a report that said
+        52,201 files. file_state is the projection B6.1 built for exactly
+        this -- every location this scan verified, with the metadata the
+        scan refreshed -- and canonical_inventory_rows() already reads
+        it. The observed-only restriction survives as state='present':
+        an inaccessible location still goes to the inaccessible set.
         """
         scans = self.inventory_scan_ids()
         if not scans:
             return iter(())
         placeholders = ",".join("?" * len(scans))
         return self.conn.execute(
-            "SELECT o.file_observation_id, o.legacy_db_id, o.size_bytes, "
-            "       o.created_utc, o.modified_utc, o.accessed_utc, "
-            "       o.created_local_naive, o.modified_local_naive, "
-            "       o.accessed_local_naive, o.utc_offset_minutes, "
-            "       o.timestamp_model, "
-            "       o.attributes, o.is_reparse_point, o.is_offline_or_cloud, "
-            "       o.path_length, o.status, o.error_message, "
+            "SELECT fs.current_observation_id AS file_observation_id, "
+            "       fs.current_legacy_db_id AS legacy_db_id, fs.size_bytes, "
+            "       fs.created_utc, fs.modified_utc, fs.accessed_utc, "
+            "       fs.created_local_naive, fs.modified_local_naive, "
+            "       fs.accessed_local_naive, fs.utc_offset_minutes, "
+            "       fs.timestamp_model, "
+            "       fs.attributes, fs.is_reparse_point, fs.is_offline_or_cloud, "
+            "       fs.path_length, 'observed' AS status, NULL AS error_message, "
             "       fp.file_name, fp.relative_path, fp.depth, "
             "       fp.path_sort_key, fp.file_path_id, "
             "       sr.root_path, sr.root_ordinal "
-            "FROM file_observation o "
-            "JOIN file_path fp ON fp.file_path_id = o.file_path_id "
-            "JOIN source_root sr ON sr.source_root_id = fp.source_root_id "
-            "WHERE o.inventory_scan_id IN (%s) AND o.status = 'observed' "
+            "FROM file_state fs "
+            "JOIN file_path fp ON fp.file_path_id = fs.file_path_id "
+            "JOIN source_root sr ON sr.source_root_id = fs.source_root_id "
+            "WHERE fs.current_scan_id IN (%s) AND fs.state = 'present' "
             "ORDER BY sr.root_ordinal, fp.path_sort_key, fp.file_path_id"
             % placeholders, scans)
 
@@ -963,12 +975,23 @@ class Exporter(object):
         order = ("ORDER BY h.size_group_id, fp.path_sort_key, fp.file_path_id"
                  if candidates_only
                  else "ORDER BY sr.root_ordinal, fp.path_sort_key, fp.file_path_id")
+        # B7.1 -- joined through file_state, not through the observation's
+        # scan. The measurement is keyed on the observation that was
+        # current when the file was hashed; under history.mode='changes'
+        # that observation belongs to whichever scan last saw the file
+        # CHANGE, not to this folder's scan. Requiring it to be one of
+        # this folder's observations (as this did) made a Fingerprint
+        # again after a Scan again export three of 52,177 hashed files.
+        # The scope that means what the artifact means: every measurement
+        # of this hash run whose file this folder's inventory holds as
+        # current, with the metadata of that current projection -- the
+        # same rows and DB_IDs PreliminaryInventory.csv now shows.
         return self.conn.execute(
-            "SELECT o.legacy_db_id, o.size_bytes, "
-            "       o.created_local_naive, o.modified_local_naive, "
-            "       o.accessed_local_naive, "
-            "       o.attributes, o.is_reparse_point, "
-            "       o.is_offline_or_cloud, o.path_length, "
+            "SELECT fs.current_legacy_db_id AS legacy_db_id, fs.size_bytes, "
+            "       fs.created_local_naive, fs.modified_local_naive, "
+            "       fs.accessed_local_naive, "
+            "       fs.attributes, fs.is_reparse_point, "
+            "       fs.is_offline_or_cloud, fs.path_length, "
             "       fp.file_name, fp.relative_path, fp.depth, "
             "       fp.path_sort_key, fp.file_path_id, "
             "       sr.root_path, sr.root_ordinal, "
@@ -976,12 +999,12 @@ class Exporter(object):
             "       h.full_hash, h.alpha_final_status, h.needed_full_hash, "
             "       g.legacy_group_id "
             "FROM hash_measurement h "
-            "JOIN file_observation o ON o.file_observation_id = h.file_observation_id "
-            "JOIN file_path fp ON fp.file_path_id = o.file_path_id "
-            "JOIN source_root sr ON sr.source_root_id = fp.source_root_id "
+            "JOIN file_state fs ON fs.current_observation_id = h.file_observation_id "
+            "JOIN file_path fp ON fp.file_path_id = fs.file_path_id "
+            "JOIN source_root sr ON sr.source_root_id = fs.source_root_id "
             "LEFT JOIN duplicate_member m ON m.hash_measurement_id = h.hash_measurement_id "
             "LEFT JOIN duplicate_group g ON g.duplicate_group_id = m.duplicate_group_id "
-            "WHERE h.duplicate_run_id = ? AND o.inventory_scan_id IN (%s) %s %s"
+            "WHERE h.duplicate_run_id = ? AND fs.current_scan_id IN (%s) %s %s"
             % (placeholders, clause, order),
             [duplicate_run] + scans)
 
@@ -1210,14 +1233,34 @@ class Exporter(object):
             return None, 0
         return path, count
 
-    def export_hash_stage(self, output_dir, include_canonical=True):
-        """Write hash-derived artifacts only; do not regenerate inventory/analyzers."""
+    #: Which hash artifacts each engine mode produces (B7.1).
+    _HASH_ARTIFACTS_BY_MODE = {
+        "selective": ("potential_duplicates", "partial_hash_candidates",
+                      "duplicate_hash_inventory"),
+        "exhaustive": ("full_hash_inventory",),
+    }
+
+    def export_hash_stage(self, output_dir, include_canonical=True, mode=None):
+        r"""Write hash-derived artifacts only; do not regenerate inventory/analyzers.
+
+        `mode` (B7.1) names the pass that just ran, 'selective' or
+        'exhaustive', and only that pass's artifacts are written. Writing
+        all four regardless made a Full Run render PotentialDuplicates.csv
+        from a table the exhaustive pass never fills -- zero rows, so the
+        writer truncated and then removed the file the Pre-Scan had just
+        written. None keeps the old behaviour for callers that export a
+        folder holding both.
+        """
         os.makedirs(str(output_dir), exist_ok=True)
         written, skipped, counts = {}, {}, {}
+        wanted = self._HASH_ARTIFACTS_BY_MODE.get(mode)
         for key, method in (("potential_duplicates", self.potential_duplicates),
                             ("partial_hash_candidates", self.partial_hash_candidates),
                             ("duplicate_hash_inventory", self.duplicate_hash_inventory),
                             ("full_hash_inventory", self.full_hash_inventory)):
+            if wanted is not None and key not in wanted:
+                skipped[key] = "not produced by the %s pass" % mode
+                continue
             artifact=ARTIFACT_BY_KEY[key]
             path,count=self._write_streamed(artifact,output_dir,method())
             if path is None: skipped[key]="no rows for this run"

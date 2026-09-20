@@ -1328,6 +1328,10 @@ class RunCoordinator(object):
             next_db_id = 1
 
         statistics = fo_scan.ScanStatistics()
+        # B7.1 -- the report qualifies top-level folders by root when
+        # there is more than one, so two roots' same-named folders do
+        # not merge and "(root)" says whose root.
+        statistics.root_count = len(roots)
         timestamp_format = win_meta.detect_display_format()
         started = time.monotonic()
 
@@ -1357,11 +1361,16 @@ class RunCoordinator(object):
         fo_scan.write_errors_file(str(errors_path), statistics.errors)
 
         report = fo_scan.build_report(
-            project_name=settings.get("ProjectName"), target_path=root,
+            project_name=settings.get("ProjectName"),
+            # The header names every root, the way the console line does.
+            target_path=(root if len(roots) == 1 else
+                         "%s (+%d more source folder(s): %s)"
+                         % (root, len(roots) - 1, "; ".join(roots[1:]))),
             run_timestamp=run_timestamp,
             generated=fo_scan.generated_stamp_now(), statistics=statistics,
             elapsed_seconds=elapsed, drive_type=drive,
-            timestamp_format=timestamp_format)
+            timestamp_format=timestamp_format,
+            folded_count=persisted.get("folded", 0))
         fo_scan.write_text_lines(str(report_path), report)
 
         fo_scan.update_settings(
@@ -1400,7 +1409,7 @@ class RunCoordinator(object):
         """
         combined = {"status": None, "rows": 0, "inaccessible": 0,
                     "reason": None, "elapsed_sec": 0.0, "warnings": [],
-                    "roots": []}
+                    "roots": [], "folded": 0}
         statuses = []
         cursor = next_db_id
         for root in roots:
@@ -1424,6 +1433,7 @@ class RunCoordinator(object):
                                       "directory_errors": outcome.get("directory_errors", 0)})
             combined["rows"] += outcome.get("rows", 0)
             combined["inaccessible"] += outcome.get("inaccessible", 0)
+            combined["folded"] += outcome.get("folded", 0)
             combined["elapsed_sec"] += outcome.get("elapsed_sec", 0.0)
             combined["warnings"].extend(outcome.get("warnings", []))
             if outcome.get("reason") and not combined["reason"]:
@@ -1589,11 +1599,29 @@ class RunCoordinator(object):
                     # and the STORED counts (B5-E.F044). B4.5 ingested
                     # them separately and had nowhere to put the fact
                     # that it had stopped storing.
+                    #
+                    # B7.1 -- `statistics` is shared by every root of the
+                    # run, because the preliminary report is cumulative,
+                    # so its errors and path events accumulate across
+                    # roots too. Each root's ingest must see only what
+                    # ITS walk added. Handing it the whole list made a
+                    # later root re-ingest an earlier root's directory
+                    # error, adopt that root's scan row, and then -- with
+                    # a projector that had seen none of that root's files
+                    # -- mark every file the earlier root walked as
+                    # missing (P2_Stress_Test, 2026-09-19: all 11,141
+                    # files of the first root vanished from the hash,
+                    # duplicate and analyzer passes). The windows start
+                    # where this root's walk starts and are consulted
+                    # after the generator is exhausted, like `complete`,
+                    # because the walk fills them as it goes.
+                    errors_before = len(statistics.errors)
+                    events_before = len(statistics.path_events)
                     summary = ingestor.ingest_records(
                         records, target_path, timestamp_format,
-                        scan_errors=statistics.errors,
+                        scan_errors=lambda: statistics.errors[errors_before:],
                         root_available=root_available,
-                        path_events=statistics.path_events,
+                        path_events=lambda: statistics.path_events[events_before:],
                         # Consulted after the generator is exhausted, which
                         # is the first moment the walk knows it was stopped.
                         complete=lambda: not statistics.stopped)
@@ -1624,6 +1652,8 @@ class RunCoordinator(object):
                     "changed": summary.get("changed", 0),
                     "unchanged": summary.get("unchanged", 0),
                     "vanished": summary.get("vanished", 0),
+                    # B7.1 -- case-only twins folded into an existing row.
+                    "folded": summary.get("folded", 0),
                     "root_availability": summary.get("root_availability"),
                 })
 
@@ -1710,8 +1740,14 @@ class RunCoordinator(object):
             handle.add_event("info", message, category="inventory")
             if self.run_log:
                 self.run_log.info(message, stage=stage_key)
+            # B7.1 -- the stage's own clock reads ~0 s because persistence
+            # streams inside the walk (B2); the note carries the time it
+            # actually took, so the run summary's "(0.0s)" is not the
+            # last word on it.
             handle.record(0, status=("completed_with_warnings"
-                                     if outcome.get("warnings") else "completed"))
+                                     if outcome.get("warnings") else "completed"),
+                          note="Persisted during the walk, %.1fs."
+                               % outcome.get("elapsed_sec", 0.0))
             return outcome
         except Exception as exc:
             self.app_log.error("Could not record the inventory ingest stage: %s"
@@ -1880,10 +1916,16 @@ class RunCoordinator(object):
                 else:
                     ingestor.ingest_selective_records(outcome)
                 ingestor.finish()
-                fo_exports.Exporter(conn).export_hash_stage(str(inventory_dir))
+                # B7.1 -- only this pass's artifacts: an exhaustive pass
+                # exporting the selective set truncated the Pre-Scan's
+                # PotentialDuplicates.csv to zero rows and removed it.
+                fo_exports.Exporter(conn).export_hash_stage(str(inventory_dir),
+                                                            mode=mode)
 
             self._write_hash_reports(settings, run_folder_name, outcome, mode,
-                                     entries, reports_dir, logs_dir, elapsed)
+                                     entries, reports_dir, logs_dir, elapsed,
+                                     inventory_dir=inventory_dir,
+                                     csv_path=inventory_dir / "PreliminaryInventory.csv")
 
         self._update_hash_settings(settings_path, settings, outcome, mode)
         self._hash_result = {"mode": mode, "elapsed_sec": elapsed,
@@ -1939,7 +1981,8 @@ class RunCoordinator(object):
         self._forward_progress(stage, done, total)
 
     def _write_hash_reports(self, settings, run_folder_name, outcome, mode,
-                            entries, reports_dir, logs_dir, elapsed):
+                            entries, reports_dir, logs_dir, elapsed,
+                            inventory_dir=None, csv_path=None):
         """Render the legacy reports and per-file error logs."""
         project_name = settings.get("ProjectName")
         generated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1953,16 +1996,43 @@ class RunCoordinator(object):
                 fo_hash_reports.potential_duplicates_report(
                     project_name, run_folder_name, generated, outcome,
                     total_bytes, candidate_bytes, elapsed))
+            # B7.1 -- the candidate list itself. Candidates mode persists
+            # nothing (size grouping reads no contents and writes no hash
+            # rows), so the database exporter has nothing to render and
+            # the CSV is rendered from the outcome, as the report above
+            # is. Without it the stage was recorded NO_APPLICABLE_FILES
+            # on every run -- _derive_status looks for this file -- and
+            # the report pointed at a CSV that did not exist. Empty stays
+            # absent: no candidates, no file, which is the R6 contract the
+            # status derivation reads.
+            if inventory_dir is not None:
+                self._write_candidates_csv(outcome, inventory_dir)
             return
 
-        meta_rows = self._hash_meta_rows(outcome)
+        # B7.1 -- the SCAN SUMMARY says "recomputed independently from
+        # <artifact>.csv", so it is: the rows come from the CSV the export
+        # just wrote, and only when that file is absent from the database
+        # (with the label saying so). Reading the database here let a
+        # three-row FullHashInventory.csv sit under a summary of 52,200.
+        artifact_name = ("FullHashInventory.csv" if mode == "exhaustive"
+                         else "DuplicateHashInventory.csv")
+        meta_rows = None
+        if inventory_dir is not None:
+            meta_rows = self._hash_meta_rows_from_csv(
+                Path(inventory_dir) / artifact_name)
+        recomputed_from = artifact_name
+        if meta_rows is None:
+            meta_rows = self._hash_meta_rows(outcome)
+            recomputed_from = "the database; %s was not readable" % artifact_name
 
         if mode == "exhaustive":
             fo_hash_reports.write_report(
                 str(reports_dir / "FullHashInventoryReport.txt"),
                 fo_hash_reports.full_hash_inventory_report(
                     project_name, run_folder_name, generated, outcome,
-                    meta_rows, elapsed, len(entries), total_bytes))
+                    meta_rows, elapsed,
+                    *self._preliminary_totals(csv_path, len(entries), total_bytes),
+                    recomputed_from=recomputed_from))
             fo_hash_reports.write_error_log(
                 str(logs_dir / "errors_fullhashinventory.txt"), outcome.errors,
                 prefix="FULL HASH ERROR")
@@ -1976,10 +2046,125 @@ class RunCoordinator(object):
             str(reports_dir / "DuplicateHashInventoryReport.txt"),
             fo_hash_reports.duplicate_hash_inventory_report(
                 project_name, run_folder_name, generated, outcome, meta_rows,
-                elapsed, len(entries), total_bytes))
+                elapsed, *self._preliminary_totals(csv_path, len(entries), total_bytes),
+                recomputed_from=recomputed_from))
         partial_errors = [e for e in outcome.errors]
         fo_hash_reports.write_error_log(
             str(logs_dir / "errors_partialhash.txt"), partial_errors)
+
+    def _hash_meta_rows_from_csv(self, csv_path):
+        r"""The report's per-file rows, read back from the exported CSV.
+
+        Same shape as _hash_meta_rows() -- size, depth, attributes,
+        path_length, extension, final_status -- so the report cannot
+        tell the two apart, which is the point: what it summarises is
+        the artifact on disk. None when the file is missing or lacks a
+        column, and the caller falls back to the database and says so.
+        """
+        import csv as _csv
+        path = Path(csv_path)
+        if not path.is_file():
+            return None
+        wanted = ("Length", "Depth", "Attributes", "PathLength", "Extension",
+                  "FinalStatus")
+        rows = []
+        try:
+            with open(str(path), "r", encoding="utf-8-sig", newline="") as handle:
+                reader = _csv.reader(handle)
+                header = next(reader, None) or []
+                try:
+                    at = [header.index(name) for name in wanted]
+                except ValueError:
+                    return None
+                for cells in reader:
+                    try:
+                        rows.append({
+                            "size": int(cells[at[0]] or 0),
+                            "depth": int(cells[at[1]] or 0),
+                            "attributes": cells[at[2]] or "",
+                            "path_length": int(cells[at[3]] or 0),
+                            "extension": cells[at[4]] or "",
+                            "final_status": cells[at[5]] or "",
+                        })
+                    except (IndexError, ValueError):
+                        # An error row (a location that could not be hashed)
+                        # has blank metadata; it still counts as a file.
+                        rows.append({"size": 0, "depth": 0, "attributes": "",
+                                     "path_length": 0, "extension": "",
+                                     "final_status": (cells[at[5]]
+                                                      if len(cells) > at[5] else "")})
+        except OSError as exc:
+            self.app_log.warning("Could not read %s for the report: %s"
+                                 % (path.name, exc))
+            return None
+        return rows
+
+    @staticmethod
+    def _write_candidates_csv(outcome, inventory_dir):
+        r"""PotentialDuplicates.csv from the size-candidate outcome.
+
+        The artifact's own dialect and columns (fo_exports.ARTIFACTS), so
+        it is the file R6 wrote; the rows come from the engine's results
+        because nothing about this pass is persisted. Groups are numbered
+        in the engine's rank order and members keep first-appearance
+        order within a group (a stable sort), which is what
+        PotentialDuplicates.ps1 produced. Returns the row count.
+        """
+        artifact = fo_exports.ARTIFACT_BY_KEY["potential_duplicates"]
+        candidates = sorted((r for r in outcome.results if r.size_group_id),
+                            key=lambda r: r.size_group_id)
+        if not candidates:
+            return 0
+        os.makedirs(str(inventory_dir), exist_ok=True)
+
+        def rows():
+            for result in candidates:
+                directory, _sep, name = result.path.rpartition("\\")
+                yield [result.db_id, name, directory, result.path, result.size,
+                       result.size_group_id]
+
+        _written, count = artifact.dialect.write(
+            str(Path(inventory_dir) / artifact.filename), artifact.columns, rows())
+        return count
+
+    def _preliminary_totals(self, csv_path, fallback_count, fallback_bytes):
+        r"""(file count, byte total) of this run's PreliminaryInventory.csv.
+
+        The baseline for the reports' DRIFT CHECK. It used to be handed
+        the engine's own input -- the count and bytes of the entries it
+        had just hashed -- so the check compared the hash pass with
+        itself and read 0 / 0 by construction: on 2026-09-19 it said so
+        while 11,141 files of one root had never reached the engine.
+        The check's label promises the preliminary inventory, so that is
+        what this reads, streamed, from the run folder. If the CSV is not
+        there the report says so rather than pretending: None, None.
+        `fallback_*` are unused and kept only so a caller can see what
+        the old baseline was.
+        """
+        del fallback_count, fallback_bytes
+        if not csv_path or not Path(csv_path).is_file():
+            return None, None
+        import csv as _csv
+        count, total = 0, 0
+        try:
+            with open(str(csv_path), "r", encoding="utf-8-sig", newline="") as handle:
+                reader = _csv.reader(handle)
+                header = next(reader, None) or []
+                try:
+                    length_at = header.index("Length")
+                except ValueError:
+                    return None, None
+                for row in reader:
+                    count += 1
+                    try:
+                        total += int(row[length_at] or 0)
+                    except (IndexError, ValueError):
+                        pass
+        except OSError as exc:
+            self.app_log.warning("Could not read the preliminary inventory "
+                                 "for the drift check: %s" % exc)
+            return None, None
+        return count, total
 
     def _hash_meta_rows(self, outcome):
         r"""Per-file metadata the inventory-shaped reports need.

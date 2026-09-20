@@ -10,6 +10,17 @@ cloud-only file.
 
 ---
 
+## B7.1 — the first fix build of the adversarial round
+
+B7.1 fixes what the P2 stress test — the first project with two source
+roots, the test corpus beside the real OneDrive corpus — found: the second
+root's ingest marked every file of the first root missing, so every later
+pass ran over half the project while every report said COMPLETED. Fixing
+that uncovered eleven more, from a duplicate stage that always said "no
+applicable files" to re-scans that exported three-row CSVs and a time
+estimate thirteen times the run. `CHANGELOG-B7.1.md` lists them; they are
+defects 33–44 in `..\PROJECT_PLAN.md` §4.
+
 ## B7 — Phase 2, entering adversarial testing
 
 B7 is Phase 1 (Observe) and Phase 2 (Understand) as one product with one

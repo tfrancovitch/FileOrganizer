@@ -465,25 +465,44 @@ def _resolution_summary(lines, meta_rows):
         lines.append("  %-24s: %s" % (status, format_count(counts[status])))
 
 
+def _drift_block(lines, total_files, total_bytes, prelim_file_count,
+                 prelim_total_bytes):
+    r"""The hash pass measured against the preliminary inventory.
+
+    `prelim_*` are what PreliminaryInventory.csv holds (the caller reads
+    it); None means it could not be read, and the block says so instead
+    of printing a zero it did not measure. B7.1: until then the caller
+    handed this the hash pass's own totals, and the check compared the
+    pass with itself -- 0 / 0 on a run that had never received one root.
+    """
+    lines.append("DRIFT CHECK (vs. PreliminaryInventory.csv from this same run)")
+    if prelim_file_count is None or prelim_total_bytes is None:
+        lines.append("  PreliminaryInventory.csv was not available, so no comparison was made.")
+        return
+    drift_files = total_files - prelim_file_count
+    drift_bytes = total_bytes - prelim_total_bytes
+    lines.append("  Preliminary inventory : %s files, %d bytes"
+                 % (format_count(prelim_file_count), prelim_total_bytes))
+    lines.append("  File count difference : %+d" % drift_files)
+    lines.append("  Byte count difference : %+d" % drift_bytes)
+    if drift_files != 0 or drift_bytes != 0:
+        lines.append("  ** Non-zero drift -- the hash pass did not receive exactly what the")
+        lines.append("     inventory listed: files changed between the two, or the inventory")
+        lines.append("     folded or lost rows. Compare the two CSVs. **")
+
+
 def duplicate_hash_inventory_report(project_name, run_folder, generated,
                                     outcome, meta_rows, elapsed_seconds,
                                     prelim_file_count=None,
-                                    prelim_total_bytes=None):
+                                    prelim_total_bytes=None,
+                                    recomputed_from="DuplicateHashInventory.csv"):
     lines = _header("DUPLICATE HASH INVENTORY REPORT", project_name,
                     run_folder, generated)
     _stopped_block(lines, outcome)
-    lines.append("SCAN SUMMARY (recomputed independently from DuplicateHashInventory.csv)")
+    lines.append("SCAN SUMMARY (recomputed independently from %s)" % recomputed_from)
     total_files, total_bytes = _inventory_summary_block(lines, meta_rows)
     lines.append("")
-    lines.append("DRIFT CHECK (vs. PreliminaryInventory.csv from this same run)")
-    drift_files = total_files - (prelim_file_count
-                                 if prelim_file_count is not None else total_files)
-    drift_bytes = total_bytes - (prelim_total_bytes
-                                 if prelim_total_bytes is not None else total_bytes)
-    lines.append("  File count difference : %d" % drift_files)
-    lines.append("  Byte count difference : %d" % drift_bytes)
-    if drift_files != 0 or drift_bytes != 0:
-        lines.append("  ** Non-zero drift -- files may have changed since the Preliminary scan **")
+    _drift_block(lines, total_files, total_bytes, prelim_file_count, prelim_total_bytes)
     lines.append("")
     lines.append("DUPLICATE RESOLUTION SUMMARY")
     _resolution_summary(lines, meta_rows)
@@ -523,22 +542,20 @@ def duplicate_hash_inventory_report(project_name, run_folder, generated,
 
 def full_hash_inventory_report(project_name, run_folder, generated, outcome,
                                meta_rows, elapsed_seconds,
-                               prelim_file_count=None, prelim_total_bytes=None):
+                               prelim_file_count=None, prelim_total_bytes=None,
+                               recomputed_from="FullHashInventory.csv"):
     """The Full Run's report. Same shape, different vocabulary -- and the
-    difference is the point: every file here was actually hashed."""
+    difference is the point: every file here was actually hashed.
+
+    `recomputed_from` (B7.1) names what `meta_rows` were read from -- the
+    exported CSV, normally -- so the label is a statement, not a hope."""
     lines = _header("FULL HASH INVENTORY REPORT", project_name, run_folder,
                     generated)
     _stopped_block(lines, outcome)
-    lines.append("SCAN SUMMARY (recomputed independently from FullHashInventory.csv)")
+    lines.append("SCAN SUMMARY (recomputed independently from %s)" % recomputed_from)
     total_files, total_bytes = _inventory_summary_block(lines, meta_rows)
     lines.append("")
-    lines.append("DRIFT CHECK (vs. PreliminaryInventory.csv from this same run)")
-    drift_files = total_files - (prelim_file_count
-                                 if prelim_file_count is not None else total_files)
-    drift_bytes = total_bytes - (prelim_total_bytes
-                                 if prelim_total_bytes is not None else total_bytes)
-    lines.append("  File count difference : %d" % drift_files)
-    lines.append("  Byte count difference : %d" % drift_bytes)
+    _drift_block(lines, total_files, total_bytes, prelim_file_count, prelim_total_bytes)
     lines.append("")
     lines.append("HASH RESOLUTION SUMMARY")
     _resolution_summary(lines, meta_rows)

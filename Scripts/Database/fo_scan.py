@@ -241,6 +241,11 @@ class ScanStatistics(object):
         #: The walk is then INCOMPLETE, and whoever persists it must not
         #: treat unvisited files as gone -- see ingest_records(complete=).
         self.stopped = False
+        #: B7.1 -- how many source roots feed this one statistics object.
+        #: Above one, top-level folders are reported as ROOT\folder, so
+        #: two roots' "Documents" do not merge and "(root)" says whose.
+        #: At one, the report stays line-for-line R6's.
+        self.root_count = 1
         self._order = 0
 
     # -- accumulation --------------------------------------------------
@@ -272,8 +277,11 @@ class ScanStatistics(object):
         self.by_depth[record.depth] = self.by_depth.get(record.depth, 0) + 1
 
         self._bump(self.by_extension, record.extension or "", size)
-        self._bump(self.by_top_level,
-                   win_meta.top_level_folder(record.path, root_path), size)
+        top_level = win_meta.top_level_folder(record.path, root_path)
+        if self.root_count > 1:
+            leaf = os.path.basename(str(root_path).rstrip("\\/")) or str(root_path)
+            top_level = "%s\\%s" % (leaf, top_level)
+        self._bump(self.by_top_level, top_level, size)
 
         name_key = (record.file_name or "").lower()
         self.by_file_name[name_key] = self.by_file_name.get(name_key, 0) + 1
@@ -678,7 +686,7 @@ def format_number(value):
 
 def build_report(project_name, target_path, run_timestamp, generated,
                  statistics, elapsed_seconds, drive_type, timestamp_format,
-                 disk_usage=None):
+                 disk_usage=None, folded_count=0):
     r"""Reproduce PreliminaryReport.txt line for line.
 
     NOT byte-comparable to the accepted artifact, and honestly so: it
@@ -775,6 +783,13 @@ def build_report(project_name, target_path, run_timestamp, generated,
                  % statistics.cloud_placeholder_folder_count)
     lines.append("  Cloud-only / not locally available files  : %d" % statistics.offline_count)
     lines.append("  Files with path length > 260 characters   : %d" % statistics.long_path_count)
+    if folded_count:
+        # B7.1 -- only when it happened, so a report with none is R6's
+        # line for line. The walk counted these files; the database
+        # keys locations case-insensitively and holds one row for each
+        # pair, so the inventory's row count is lower by this much.
+        lines.append("  Case-only twins folded into one row       : %d "
+                     "(see FOLDED_CASE_TWIN events)" % folded_count)
     lines.append("")
 
     lines.append("ERRORS")

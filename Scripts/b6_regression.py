@@ -423,6 +423,132 @@ def test_missing_root_is_not_empty_root():
     conn.close()
 
 
+def test_multi_root_ingest_keeps_earlier_roots():
+    r"""B7.1 -- a later root's ingest must not vanish an earlier root.
+
+    P2_Stress_Test (2026-09-19), the first two-root project: every file
+    under the first root was marked missing during the prescan, and the
+    hash, duplicate and analyzer passes then never saw it. The
+    coordinator walks the roots one at a time into ONE ScanStatistics
+    (the preliminary report is cumulative), so the second root's ingest
+    was handed the first root's directory error and path events; those
+    resolved to the first root, opened its scan row, and vanished-
+    detection -- run over every scan row the ingest had touched, with a
+    projector that had seen none of that root's files -- marked all of
+    them missing.
+
+    Two contracts are exercised against the same fixture, the way the
+    coordinator sequences them: the OLD one (whole lists) proves the
+    ingestor itself no longer declares files missing under a root it
+    did not walk; the NEW one (per-root windows, consulted after the
+    walk) proves each root's errors and events are attributed once, to
+    the root they fell under.
+    """
+    first, second = tempfile.mkdtemp(), tempfile.mkdtemp()
+    for folder, count in ((first, 6), (second, 4)):
+        for i in range(count):
+            with open(os.path.join(folder, "f%d.txt" % i), "w") as handle:
+                handle.write("root file %d" % i)
+    os.makedirs(os.path.join(first, "empty"))     # a path event under root 1
+    denied = os.path.join(first, "denied")         # a directory error under root 1
+
+    def walk(root, cursor, statistics):
+        """The walk, plus the directory error the hostile corpus produces
+        (appended when the generator is exhausted, as the real walker does)."""
+        for record in fo_scan.scan(root, cursor, statistics):
+            yield record
+        if root == first:
+            statistics.errors.append(fo_scan.ScanError(
+                fo_scan.DIRECTORY_ACCESS_ERROR, denied, "Access is denied"))
+
+    def scan_both(windowed):
+        project = os.path.join(tempfile.mkdtemp(), "P")
+        os.makedirs(project)
+        fo_db.init_project(project, "P", source_roots=[first, second])
+        conn, _ = fo_db.open_project(project)
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version) VALUES (1,?,'scan','running',?,'B7.1',8)",
+            ("two-roots-%s" % windowed, fo_state.utc_now()))
+        run_id = cursor.lastrowid
+        conn.commit()
+
+        statistics = fo_scan.ScanStatistics()
+        summaries, next_id = [], 1
+        for root in (first, second):
+            ingestor = fo_inventory_records.RecordIngestor(conn, run_id)
+            errors_before = len(statistics.errors)
+            events_before = len(statistics.path_events)
+            if windowed:
+                errors = lambda: statistics.errors[errors_before:]
+                events = lambda: statistics.path_events[events_before:]
+            else:
+                errors, events = statistics.errors, statistics.path_events
+            summaries.append(ingestor.ingest_records(
+                walk(root, next_id, statistics), root, "MDY",
+                scan_errors=errors, path_events=events,
+                complete=lambda: not statistics.stopped))
+            ingestor.finish()
+            next_id = statistics.file_count + 1
+
+        states = {}
+        for row in conn.execute(
+                "SELECT sr.root_path, fs.state, COUNT(*) AS n FROM file_state fs "
+                "JOIN source_root sr ON sr.source_root_id = fs.source_root_id "
+                "WHERE fs.size_bytes IS NOT NULL GROUP BY 1, 2"):
+            states[(row["root_path"], row["state"])] = row["n"]
+        scans = {row["root_path"]: dict(row) for row in conn.execute(
+            "SELECT sr.root_path, s.observed_count, s.inaccessible_count, "
+            "       s.inaccessible_seen_count, s.vanished_count, s.notes, "
+            "       (SELECT COUNT(*) FROM scan_path_event e "
+            "        WHERE e.inventory_scan_id = s.inventory_scan_id) AS events "
+            "FROM inventory_scan s "
+            "JOIN source_root sr ON sr.source_root_id = s.source_root_id")}
+        conn.close()
+        return summaries, states, scans
+
+    for windowed in (False, True):
+        label = "windowed" if windowed else "whole lists"
+        summaries, states, scans = scan_both(windowed)
+        check("B7.1", "second root's ingest keeps the first root (%s)" % label,
+              states.get((first, "present")) == 6
+              and states.get((first, "missing"), 0) == 0
+              and states.get((second, "present")) == 4
+              and summaries[1]["vanished"] == 0,
+              "first present=%s missing=%s, second present=%s, vanished=%d"
+              % (states.get((first, "present")), states.get((first, "missing"), 0),
+                 states.get((second, "present")), summaries[1]["vanished"]))
+        if not windowed:
+            continue
+        check("B7.1", "each root's scan row keeps its own counts",
+              scans[first]["observed_count"] == 6
+              and scans[second]["observed_count"] == 4
+              and scans[first]["vanished_count"] == 0
+              and scans[second]["vanished_count"] == 0,
+              "observed %s / %s, vanished %s / %s"
+              % (scans[first]["observed_count"], scans[second]["observed_count"],
+                 scans[first]["vanished_count"], scans[second]["vanished_count"]))
+        check("B7.1", "errors and events attributed once, to their root",
+              scans[first]["inaccessible_count"] == 1
+              and scans[first]["inaccessible_seen_count"] == 1
+              and scans[second]["inaccessible_count"] == 0
+              and scans[second]["inaccessible_seen_count"] == 0
+              and summaries[0]["directory_errors"] == 1
+              and summaries[1]["directory_errors"] == 0
+              and scans[first]["events"] == 1 and scans[second]["events"] == 0
+              and not (scans[second]["notes"] or ""),
+              "inaccessible %s/%s seen %s/%s, dir_errors %s/%s, events %s/%s, "
+              "second notes=%r"
+              % (scans[first]["inaccessible_count"], scans[second]["inaccessible_count"],
+                 scans[first]["inaccessible_seen_count"],
+                 scans[second]["inaccessible_seen_count"],
+                 summaries[0]["directory_errors"], summaries[1]["directory_errors"],
+                 scans[first]["events"], scans[second]["events"],
+                 scans[second]["notes"]))
+    shutil.rmtree(first, ignore_errors=True)
+    shutil.rmtree(second, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # F.F001 / F.F002 -- determinism
 # ---------------------------------------------------------------------------
@@ -974,6 +1100,358 @@ def test_schema_version():
 
 
 # ---------------------------------------------------------------------------
+# B7.1 -- what the adversarial round (P2_Stress_Test, 2026-09-19/20) found
+# ---------------------------------------------------------------------------
+
+def _scan_with_directory_error(root, cursor, statistics, denied):
+    """The walk, plus a directory error appended when the generator is
+    exhausted -- the shape the real walker produces for a denied folder."""
+    for record in fo_scan.scan(root, cursor, statistics):
+        yield record
+    statistics.errors.append(fo_scan.ScanError(
+        fo_scan.DIRECTORY_ACCESS_ERROR, denied, "Access is denied"))
+
+
+def test_inaccessible_stays_inaccessible_on_rescan():
+    r"""A denied directory seen on two scans is 'inaccessible' after both.
+
+    The unchanged-row refresh wrote state='present' unconditionally, so
+    the second scan turned the directory into a present, sizeless file
+    that the hash pass then received and reported as an error.
+    """
+    corpus = build_corpus(tempfile.mkdtemp(), files=20)
+    denied = os.path.join(corpus, "denied")
+    conn, _project = new_project(corpus)
+    for label in ("r0", "r1"):
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version) VALUES (1,?,'scan','running',?,'B7.1',8)",
+            (label, fo_state.utc_now()))
+        run_id = cursor.lastrowid
+        conn.commit()
+        statistics = fo_scan.ScanStatistics()
+        ingestor = fo_inventory_records.RecordIngestor(conn, run_id)
+        summary = ingestor.ingest_records(
+            _scan_with_directory_error(corpus, 1, statistics, denied), corpus, "MDY",
+            scan_errors=lambda: statistics.errors, path_events=lambda: statistics.path_events)
+        ingestor.finish()
+        for scan_id in ingestor.scan_ids.values():
+            conn.execute("UPDATE inventory_scan SET status='completed' "
+                         "WHERE inventory_scan_id=?", (scan_id,))
+        conn.commit()
+    row = conn.execute(
+        "SELECT fs.state, fs.size_bytes FROM file_state fs "
+        "JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+        "WHERE fp.file_name='denied'").fetchone()
+    entries = fo_hash_records.load_entries(conn, _latest_scan_ids(conn))
+    fed = [e for e in entries if e.path.endswith("denied")]
+    check("B7.1", "re-scanned denied directory stays inaccessible",
+          row is not None and row["state"] == "inaccessible" and not fed
+          and summary["unchanged"] == 21,
+          "state=%s fed_to_hasher=%d unchanged=%s"
+          % (row["state"] if row else None, len(fed), summary["unchanged"]))
+    conn.close()
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_estimator_samples_by_size():
+    r"""The throughput sample is the largest files, read at most 8 MB each;
+    the per-file cost is measured on the smallest, and calibrate() reports
+    both. Path-ordered sampling of tiny files put a 12-minute Full Run at
+    2 hours 37 minutes."""
+    corpus = tempfile.mkdtemp()
+    with open(os.path.join(corpus, "big.bin"), "wb") as handle:
+        handle.write(os.urandom(1024) * (20 * 1024))            # 20 MB
+    for i in range(30):
+        with open(os.path.join(corpus, "a%02d.txt" % i), "wb") as handle:
+            handle.write(b"x" * (i + 1))
+    conn, _project = new_project(corpus)
+    do_run(conn, corpus, "r0", hash_files=False)
+    scan_ids = _latest_scan_ids(conn)
+
+    big_first = fo_estimates.sample_candidates(conn, scan_ids)
+    small_first = fo_estimates.sample_small_candidates(conn, scan_ids)
+    rate, files_used, bytes_read = fo_estimates.measure_throughput(big_first)
+    per_file, small_used = fo_estimates.measure_per_file(small_first)
+    values = fo_estimates.calibrate(conn, scan_ids, drive_type="Fixed")
+    check("B7.1", "throughput sample is largest-first, capped per file",
+          big_first and big_first[0][1] == 20 * 1024 * 1024
+          and small_first and small_first[0][1] == 1
+          and bytes_read <= fo_estimates.PER_FILE_READ_CAP + 31 * 31
+          and files_used >= 1 and rate and rate > 0,
+          "first=%s bytes_read=%d files=%d"
+          % (big_first[0][1] if big_first else None, bytes_read, files_used))
+    check("B7.1", "per-file cost is measured and floored",
+          per_file is not None and per_file > 0 and small_used == 15
+          and values["_per_file_measured"] is not None
+          and values["_small_files_used"] == 15
+          and values["_per_file_seconds"] >= fo_estimates.DEFAULT_PER_FILE_SECONDS,
+          "measured=%s used=%d per_file=%s"
+          % (per_file, small_used, values["_per_file_seconds"]))
+    conn.close()
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_candidates_csv_and_drift_baseline():
+    r"""PotentialDuplicates.csv is rendered from the outcome (the stage was
+    always NO_APPLICABLE_FILES without it), and the drift baseline is read
+    from PreliminaryInventory.csv rather than from the engine's own input."""
+    import RunCoordinator
+    import fo_hash_engine
+
+    entries = [fo_hash_engine.FileEntry(key=i, db_id=i, path="C:\\r\\f%d.bin" % i,
+                                        size=[5, 5, 9, 5, 7][i]) for i in range(5)]
+    outcome = fo_hash_engine.EngineOutcome("selective", 65536)
+    outcome.results = [fo_hash_engine.HashResult(e) for e in entries]
+    by_key = {r.key: r for r in outcome.results}
+    candidates, group_count = fo_hash_engine.select_size_candidates(entries)
+    for group_id, entry in candidates:
+        by_key[entry.key].size_group_id = group_id
+    out_dir = tempfile.mkdtemp()
+    count = RunCoordinator.RunCoordinator._write_candidates_csv(outcome, out_dir)
+    csv_path = os.path.join(out_dir, "PotentialDuplicates.csv")
+    with open(csv_path, "r", encoding="utf-8-sig") as handle:
+        header = handle.readline().strip()
+    empty = fo_hash_engine.EngineOutcome("selective", 65536)
+    empty.results = []
+    none_written = RunCoordinator.RunCoordinator._write_candidates_csv(
+        empty, os.path.join(out_dir, "none"))
+    check("B7.1", "candidate list written from the outcome; none when empty",
+          count == 3 and group_count == 1 and os.path.isfile(csv_path)
+          and header == '"DB_ID","FileName","Directory","Path","Length","SizeGroupID"'
+          and none_written == 0
+          and not os.path.exists(os.path.join(out_dir, "none", "PotentialDuplicates.csv")),
+          "rows=%d groups=%d header=%s" % (count, group_count, header))
+
+    prelim = os.path.join(out_dir, "PreliminaryInventory.csv")
+    fo_exports.write_inventory_csv(prelim, (
+        [i, "f%d" % i, ".bin", "C:\\r", "C:\\r\\f%d" % i, size, "", "", "",
+         "Archive", "False", "False", 0, 10]
+        for i, size in enumerate([5, 5, 9, 5, 7])))
+    totals = RunCoordinator.RunCoordinator._preliminary_totals(None, prelim, 0, 0)
+    absent = RunCoordinator.RunCoordinator._preliminary_totals(
+        None, os.path.join(out_dir, "missing.csv"), 0, 0)
+    check("B7.1", "drift baseline is the preliminary CSV, or honestly absent",
+          totals == (5, 31) and absent == (None, None),
+          "totals=%s absent=%s" % (totals, absent))
+    shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def test_diagnostic_prefix_stripping_handles_repr():
+    text = ("cannot identify image file '" + "\\" * 4 + "?" + "\\" * 2 + "C:"
+            + "\\" * 2 + "Users" + "\\" * 2 + "a.png'")
+    cleaned = fo_analyzer_engine.normalize_diagnostic_text(text)
+    plain = fo_analyzer_engine.normalize_diagnostic_text(
+        "Package not found at '\\\\?\\C:\\x\\fake.docx'")
+    check("B7.1", "\\\\?\\ stripped from repr()-quoted paths too",
+          cleaned == "cannot identify image file 'C:\\\\Users\\\\a.png'"
+          and plain == "Package not found at 'C:\\x\\fake.docx'",
+          "got %r" % cleaned)
+
+
+def test_drive_type_vocabulary():
+    words = {"Removable", "Fixed", "Network", "CDROM", "RamDisk", "Unknown"}
+    system = os.environ.get("SystemDrive", "C:") + "\\"
+    got = win_meta.drive_type(system)
+    check("B7.1", "drive_type names the drive, not just Network/Unknown",
+          got in words and (sys.platform != "win32" or got != "Unknown"),
+          "%s -> %s" % (system, got))
+
+
+def test_rescan_exports_are_complete():
+    r"""A second scan under history.mode='changes' produces no new observations
+    for unchanged files. The run-folder exports selected by this scan's
+    observations and so listed only what had changed: Scan again wrote a
+    3-row PreliminaryInventory.csv and Fingerprint again a 3-row
+    FullHashInventory.csv for 52,200 files. Both now read the current
+    projection; and an exhaustive pass no longer truncates and removes the
+    Pre-Scan's PotentialDuplicates.csv."""
+    import fo_hash_engine
+    corpus = build_corpus(tempfile.mkdtemp(), files=30, dup_every=10)
+    conn, _project = new_project(corpus)
+
+    def scan_and_hash(folder):
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version, run_folder) VALUES (1,?,'prescan','running',?,'B7.1',8,?)",
+            (folder + "-scan", fo_state.utc_now(), folder))
+        scan_run = cursor.lastrowid
+        ingestor = fo_inventory_records.RecordIngestor(conn, scan_run)
+        ingestor.ingest_records(fo_scan.scan(corpus), corpus, "MDY", scan_errors=[])
+        ingestor.finish()
+        conn.commit()
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version, run_folder) VALUES (1,?,'exhaustive_identity','running',?,'B7.1',8,?)",
+            (folder + "-hash", fo_state.utc_now(), folder))
+        hash_run = cursor.lastrowid
+        hasher = fo_hash_records.HashRecordIngestor(conn, hash_run, partial_hash_bytes=65536)
+        entries = fo_hash_records.load_entries(conn, hasher.bind_scans(corpus))
+        outcome = fo_hash_engine.HashEngine().run_exhaustive(entries)
+        hasher.ingest_exhaustive_records(outcome)
+        hasher.finish()
+        conn.commit()
+        out = tempfile.mkdtemp()
+        with open(os.path.join(out, "PotentialDuplicates.csv"), "w") as handle:
+            handle.write("from the pre-scan")
+        fo_exports.export_run_inventory(conn, scan_run, os.path.join(out, "PreliminaryInventory.csv"))
+        result = fo_exports.Exporter(conn, run_id=hash_run).export_hash_stage(out, mode="exhaustive")
+        with open(os.path.join(out, "PreliminaryInventory.csv"), encoding="utf-8-sig") as handle:
+            inventory_rows = sum(1 for _ in handle) - 1
+        kept = os.path.isfile(os.path.join(out, "PotentialDuplicates.csv"))
+        shutil.rmtree(out, ignore_errors=True)
+        return len(entries), inventory_rows, result["row_counts"].get("full_hash_inventory", 0), kept
+
+    first = scan_and_hash("F1")
+    second = scan_and_hash("F2")
+    check("B7.1", "second-scan exports list the whole inventory",
+          first[:3] == (30, 30, 30) and second[:3] == (30, 30, 30),
+          "first (entries, inventory csv, hash csv)=%s second=%s" % (first[:3], second[:3]))
+    check("B7.1", "exhaustive export leaves the pre-scan's candidate list alone",
+          first[3] and second[3], "kept=%s/%s" % (first[3], second[3]))
+    conn.close()
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_multi_root_report_qualifies_top_level_folders():
+    r"""Two roots that both hold a "Documents" folder and root-level files
+    are reported apart, as ROOT\Documents and ROOT\(root); a single root
+    keeps R6's bare names."""
+    first, second = tempfile.mkdtemp(), tempfile.mkdtemp()
+    for folder in (first, second):
+        os.makedirs(os.path.join(folder, "Documents"))
+        for name in ("Documents\\a.txt", "top.txt"):
+            with open(os.path.join(folder, name), "w") as handle:
+                handle.write("x")
+    shared = fo_scan.ScanStatistics()
+    shared.root_count = 2
+    for root in (first, second):
+        for _record in fo_scan.scan(root, 1, shared):
+            pass
+    single = fo_scan.ScanStatistics()
+    for _record in fo_scan.scan(first, 1, single):
+        pass
+    leaves = [os.path.basename(first), os.path.basename(second)]
+    shown = sorted(entry[0] for entry in shared.by_top_level.values())
+    expected = sorted(["%s\\Documents" % leaf for leaf in leaves]
+                      + ["%s\\(root)" % leaf for leaf in leaves])
+    check("B7.1", "multi-root report keeps same-named top-level folders apart",
+          shown == expected and sorted(e[0] for e in single.by_top_level.values())
+          == ["(root)", "Documents"],
+          "multi=%s single=%s" % (shown, sorted(e[0] for e in single.by_top_level.values())))
+    shutil.rmtree(first, ignore_errors=True)
+    shutil.rmtree(second, ignore_errors=True)
+
+
+def test_attribute_words_render_and_compare():
+    r"""OneDrive's bits render by name, the remainder as hex; every value .NET
+    could name renders as before; and a row recorded under the old bare
+    number does not read as changed under the new spelling."""
+    rendered = [win_meta.format_file_attributes(v)
+                for v in (32, 0x2 | 0x20, 524320, 1572902, 0x20 | 0x1000000, 0)]
+    round_trip = all(win_meta.parse_file_attributes(win_meta.format_file_attributes(v)) == v
+                     for v in (1, 32, 524320, 1572902, 0x20 | 0x1000000, 0x7FFFFF))
+    check("B7.1", "attribute words render by name and round-trip",
+          rendered == ["Archive", "Hidden, Archive", "Archive, Pinned",
+                       "Hidden, System, Archive, Pinned, Unpinned",
+                       "Archive, 0x1000000", "0"]
+          and win_meta.parse_file_attributes("524320") == 524320 and round_trip,
+          "%s" % (rendered,))
+    check("B7.1", "a change of spelling is not a change of the file",
+          not win_meta.attributes_differ("524320", "Archive, Pinned")
+          and win_meta.attributes_differ("Archive", "Hidden, Archive")
+          and win_meta.attributes_differ("odd", "other")
+          and not win_meta.attributes_differ("odd", "odd"),
+          "")
+
+
+def test_case_twin_folds_stably_and_visibly():
+    r"""Two records whose names differ only by case (a case-sensitive directory,
+    A-014) resolve to one row. The first keeps the row; the second is
+    counted as folded and recorded as a FOLDED_CASE_TWIN event; and a
+    re-scan reports nothing modified, where the row used to flip between
+    the twins on every scan."""
+    corpus = build_corpus(tempfile.mkdtemp(), files=3)
+    conn, _project = new_project(corpus)
+
+    def with_twin(root, cursor, statistics):
+        for record in fo_scan.scan(root, cursor, statistics):
+            yield record
+            if record.file_name == "f0001.bin":
+                fields = record.as_dict()
+                fields.update(file_name="F0001.BIN", legacy_db_id=record.legacy_db_id + 1000,
+                              path=record.path[:-len("f0001.bin")] + "F0001.BIN",
+                              size_bytes=(record.size_bytes or 0) + 7)
+                yield fo_scan.InventoryRecord(**fields)
+
+    summaries, events = [], []
+    for label in ("r0", "r1"):
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version) VALUES (1,?,'scan','running',?,'B7.1',8)",
+            (label, fo_state.utc_now()))
+        run_id = cursor.lastrowid
+        conn.commit()
+        statistics = fo_scan.ScanStatistics()
+        ingestor = fo_inventory_records.RecordIngestor(conn, run_id)
+        summaries.append(ingestor.ingest_records(
+            with_twin(corpus, 1, statistics), corpus, "MDY", scan_errors=[]))
+        ingestor.finish()
+        for scan_id in ingestor.scan_ids.values():
+            conn.execute("UPDATE inventory_scan SET status='completed' "
+                         "WHERE inventory_scan_id=?", (scan_id,))
+        conn.commit()
+        events.append(conn.execute(
+            "SELECT COUNT(*) FROM event WHERE run_id=? AND error_type='FOLDED_CASE_TWIN'",
+            (run_id,)).fetchone()[0])
+    rows = conn.execute("SELECT COUNT(*) FROM file_state").fetchone()[0]
+    kept = conn.execute(
+        "SELECT fp.file_name, fs.size_bytes, o.size_bytes FROM file_state fs "
+        "JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
+        "JOIN file_observation o ON o.file_observation_id=fs.current_observation_id "
+        "WHERE lower(fp.file_name)='f0001.bin'").fetchone()
+    on_disk = os.path.getsize(os.path.join(corpus, "d01", "f0001.bin"))
+    check("B7.1", "case-only twin folds into the first record's row, visibly",
+          rows == 3 and kept[:] == ("f0001.bin", on_disk, on_disk)
+          and [s["folded"] for s in summaries] == [1, 1] and events == [1, 1]
+          and any("folded" in w for w in ingestor.warnings),
+          "rows=%d kept=%s folded=%s events=%s" % (rows, kept[:] if kept else None,
+                                                    [s["folded"] for s in summaries], events))
+    check("B7.1", "a re-scan of the folded pair reports nothing modified",
+          summaries[1]["changed"] == 0 and summaries[1]["unchanged"] == 3,
+          "changed=%s unchanged=%s" % (summaries[1]["changed"], summaries[1]["unchanged"]))
+    conn.close()
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+def test_run_finalized_flag():
+    r"""Migration 006's anti-false-completion flag is finally written: 1 for a
+    terminal status the process reached, 0 for a pause and for a run a later
+    launch reconciled."""
+    import fo_runs
+    corpus = tempfile.mkdtemp()
+    conn, _project = new_project(corpus)
+    ids = []
+    for label in ("done", "paused", "died"):
+        cursor = conn.execute(
+            "INSERT INTO run (project_id, run_uid, run_kind, status, started_utc,"
+            " app_version, schema_version) VALUES (1,?,'scan','running',?,'B7.1',8)",
+            (label, fo_state.utc_now()))
+        ids.append(cursor.lastrowid)
+    fo_runs.finish_run(conn, ids[0], "completed_with_warnings")
+    fo_runs.finish_run(conn, ids[1], "paused")
+    fo_runs.finish_run(conn, ids[2], "interrupted", notes="reconciled", finalized=False)
+    conn.commit()
+    flags = [conn.execute("SELECT status, finalized FROM run WHERE run_id=?",
+                          (i,)).fetchone()[:] for i in ids]
+    check("B7.1", "run.finalized written with the terminal status",
+          flags == [("completed_with_warnings", 1), ("paused", 0), ("interrupted", 0)],
+          "%s" % (flags,))
+    conn.close()
+    shutil.rmtree(corpus, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -1019,7 +1497,21 @@ def main():
     print(" Integrity and state (B5-H constraints)")
     test_change_and_vanish_detection()
     test_missing_root_is_not_empty_root()
+    test_multi_root_ingest_keeps_earlier_roots()
     test_inaccessible_cap_is_recorded()
+    print()
+
+    print(" B7.1 -- the adversarial round")
+    test_inaccessible_stays_inaccessible_on_rescan()
+    test_estimator_samples_by_size()
+    test_candidates_csv_and_drift_baseline()
+    test_diagnostic_prefix_stripping_handles_repr()
+    test_drive_type_vocabulary()
+    test_rescan_exports_are_complete()
+    test_multi_root_report_qualifies_top_level_folders()
+    test_attribute_words_render_and_compare()
+    test_case_twin_folds_stably_and_visibly()
+    test_run_finalized_flag()
     print()
 
     print(" Scalability (B5-E)")

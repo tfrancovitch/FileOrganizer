@@ -111,6 +111,9 @@ def openable_path(path):
 #: of a library must not carry either of them.
 EXTENDED_PREFIX = "\\\\?\\"
 EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
+#: The same two prefixes as repr() writes them (every backslash doubled).
+EXTENDED_PREFIX_ESCAPED = "\\\\\\\\?\\\\"
+EXTENDED_UNC_PREFIX_ESCAPED = "\\\\\\\\?\\\\UNC\\\\"
 
 
 def normalize_diagnostic_text(text):
@@ -151,13 +154,22 @@ def normalize_diagnostic_text(text):
 
     Text containing no extended prefix is returned unchanged, including
     text that merely contains a question mark or a backslash.
+
+    B7.1: a library that quotes the path through repr() -- Pillow's
+    "cannot identify image file '\\\\?\\C:\\...'" -- doubles every
+    backslash, and stripping the plain prefix from that left the
+    unreadable '\\\C:\\...'. The escaped spellings are removed first,
+    UNC before plain for the same reason as below.
     """
     if not text:
         return text
     text = str(text)
     if EXTENDED_PREFIX not in text:
         return text
-    return text.replace(EXTENDED_UNC_PREFIX, "\\\\").replace(EXTENDED_PREFIX, "")
+    return (text.replace(EXTENDED_UNC_PREFIX_ESCAPED, "\\\\\\\\")
+                .replace(EXTENDED_PREFIX_ESCAPED, "")
+                .replace(EXTENDED_UNC_PREFIX, "\\\\")
+                .replace(EXTENDED_PREFIX, ""))
 
 
 class AnalyzerEngineError(Exception):

@@ -3243,9 +3243,11 @@ class HostileCorpus(Corpus):
 
     def fold(self, *, kept: str, dropped: str):
         """Record that the engine is known to keep one row for two files:
-        the `kept` name survives carrying the `dropped` file's observation
-        (A-014's chimera), so the engine's totals lack the kept file's bytes
-        and one row."""
+        the `kept` name survives with its own observation and the `dropped`
+        file is recorded as folded (a FOLDED_CASE_TWIN event), so the
+        engine's totals lack the dropped file's bytes and one row.
+        (Until B7.1 the row was a chimera -- the kept name carrying the
+        dropped file's size -- and the totals lacked the kept file's bytes.)"""
         self.folded.append({"kept": kept, "dropped": dropped})
 
     def add_hardlink(self, relpath: str, of: str, *, case: str | None = None):
@@ -3307,9 +3309,12 @@ class HostileCorpus(Corpus):
         # A-014 / Y-009 / Y-053 -- case-only names in a case-sensitive directory.
         # Found 2026-09-13: the walk yields both files (its count and byte
         # total say so) but the ingest keys a path by its lower-cased name,
-        # so the second folds into the first -- and the surviving row is a
-        # chimera: the first file's name with the second file's size. The
-        # summary then disagrees with the walk's own count.
+        # so the second folds into the first. Until B7.1 the surviving row
+        # was a chimera -- the first file's name with the second file's
+        # size, flipping between the two on every scan; since B7.1 the
+        # first record keeps the row and the second is recorded as a
+        # FOLDED_CASE_TWIN event and counted in the report. Still one row
+        # for two files, which is the defect that remains.
         case_dir = self.root / "01_Naming" / "case_sensitive"
         os.makedirs(ext_path(case_dir), exist_ok=True)
         if enable_case_sensitivity(case_dir):
@@ -3319,8 +3324,9 @@ class HostileCorpus(Corpus):
             self.case("A-014", construction="G", classification="DEFECT", matrix_expects="two objects: one row each, both present",
                       expected={"row_count": 1},
                       setup=["icacls <dir> /grant <user>:(F)", "fsutil file setCaseSensitiveInfo <dir> enable"],
-                      notes="the engine keeps one row for the pair (name of the first, size of the second); "
-                            "the walk counts two. file_path is unique on a lower-cased relative_path_key")
+                      notes="the engine keeps one row for the pair (the first file seen; the second is recorded "
+                            "as a FOLDED_CASE_TWIN event and counted in the report); the walk counts two. "
+                            "file_path is unique on a lower-cased relative_path_key")
             for twin in ("Y-009", "Y-053"):
                 self.case(twin, construction="G", classification="DEFECT", expected={"row_count": 1},
                           matrix_expects="two rows", notes="the same two files as A-014")
@@ -3567,7 +3573,7 @@ class HostileCorpus(Corpus):
         sizes = {f["relative_path"]: f["size_bytes"] for f in self.files}
         truth["hostile"] = {
             "expected_present_rows": len(self.files) - len(self.folded),
-            "expected_logical_bytes": truth["totals"]["logical_bytes"] - sum(sizes[f["kept"]] for f in self.folded),
+            "expected_logical_bytes": truth["totals"]["logical_bytes"] - sum(sizes[f["dropped"]] for f in self.folded),
             "folded": sorted(self.folded, key=lambda f: f["kept"]),
             "symlink_conflations": sorted(self.conflations, key=lambda c: c["link"]),
             "unobservable": sorted(f["relative_path"] for f in self.unobservable),

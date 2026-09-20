@@ -76,6 +76,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import win_meta  # noqa: E402
+
 
 #: States a location can be in. See migration 006 for the full note on
 #: why 'unverified' is separate from 'missing'.
@@ -252,6 +254,16 @@ class StateProjector(object):
 
     # -- classification ----------------------------------------------
 
+    def was_seen(self, file_path_id):
+        """Whether this scan has already classified this location (B7.1).
+
+        True for the second of two records that resolve to one row: a
+        case-only twin in a case-sensitive directory. The caller folds
+        it -- the first record owns the row -- instead of letting the
+        second overwrite the first's size and dates.
+        """
+        return file_path_id in self._seen
+
     def classify(self, file_path_id, entry):
         r"""Decide what this observation is. Returns a change_kind or None.
 
@@ -304,7 +316,11 @@ class StateProjector(object):
             size != entry.get("size_bytes")
             or (created or "") != (entry.get("created_utc") or "")
             or (modified or "") != (entry.get("modified_utc") or "")
-            or (attributes or "") != (entry.get("attributes") or "")
+            # B7.1 -- compared as attribute WORDS, not strings: the
+            # rendering of a word changed in B7.1 (OneDrive's bits are
+            # named now), and a change of spelling is not a change of
+            # the file. See win_meta.attributes_differ.
+            or win_meta.attributes_differ(attributes, entry.get("attributes"))
             or _norm_flag(reparse) != _norm_flag(entry.get("is_reparse_point"))
             or _norm_int(reparse_tag) != _norm_int(entry.get("reparse_tag"))
             or _norm_flag(offline) != _norm_flag(entry.get("is_offline_or_cloud"))
@@ -388,6 +404,12 @@ class StateProjector(object):
         metadata/order is not. This is the integration boundary B6 originally
         missed: unchanged files remain current hash/analyzer inputs without
         manufacturing a duplicate history row.
+
+        The state is the row's own (B7.1). "Unchanged" includes a location
+        that was inaccessible last time and is inaccessible again; writing
+        'present' here regardless -- as this did -- turned a re-scanned
+        denied directory into a present file, which the hash and analyzer
+        passes then tried to open.
         """
         if not rows:
             return 0
@@ -405,7 +427,10 @@ class StateProjector(object):
                 r.get("volume_serial"), r.get("file_index"), r.get("hard_link_count"),
                 r.get("allocated_size_bytes"), r.get("created_time_state"),
                 r.get("modified_time_state"), r.get("accessed_time_state"),
-                now, r["file_path_id"]))
+                now,
+                (STATE_INACCESSIBLE if r.get("status") == "inaccessible"
+                 else STATE_PRESENT),
+                r["file_path_id"]))
         self.conn.executemany(
             "UPDATE file_state SET current_scan_id=?, current_run_id=?, "
             "current_legacy_db_id=?, size_bytes=?, created_local_naive=?, "
@@ -414,7 +439,7 @@ class StateProjector(object):
             "attributes=?, is_reparse_point=?, reparse_tag=?, is_offline_or_cloud=?, "
             "depth=?, path_length=?, volume_serial=?, file_index=?, hard_link_count=?, "
             "allocated_size_bytes=?, created_time_state=?, modified_time_state=?, "
-            "accessed_time_state=?, verified_utc=?, state='present' "
+            "accessed_time_state=?, verified_utc=?, state=? "
             "WHERE file_path_id=?", payload)
         return len(payload)
 

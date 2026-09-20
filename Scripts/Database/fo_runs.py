@@ -188,7 +188,25 @@ def heartbeat(conn, run_id, when=None):
                  (when or utc_now(), run_id))
 
 
-def finish_run(conn, run_id, status, ended_utc=None, notes=None):
+#: Statuses a run reaches by ending. 'paused' can resume; 'created' and
+#: 'running' have not ended.
+_TERMINAL_STATUSES = frozenset(
+    ("completed", "completed_with_warnings", "failed", "interrupted", "cancelled"))
+
+
+def finish_run(conn, run_id, status, ended_utc=None, notes=None, finalized=True):
+    r"""Write a run's terminal status, counts and -- B7.1 -- its finalized flag.
+
+    Migration 006 introduced run.finalized as the anti-false-completion
+    flag, "written 1 only inside the same transaction that sets a
+    terminal status", and CHANGELOG-B6 says the same. Nothing wrote it:
+    every run in every project read finalized = 0, and a Phase 2 query
+    on run.finalized was always false. It is written here, in that
+    transaction, for a terminal status the live process reached.
+    `finalized=False` is for reconcile_stale_runs, which closes a run
+    that merely stopped being written to; the flag exists to keep those
+    two apart.
+    """
     if status not in RUN_STATUSES:
         raise ValueError("Unknown run status: %r" % (status,))
     ended = ended_utc or utc_now()
@@ -209,9 +227,10 @@ def finish_run(conn, run_id, status, ended_utc=None, notes=None):
     conn.execute(
         "UPDATE run SET status = ?, ended_utc = ?, duration_ms = ?, heartbeat_utc = ?,"
         "  stage_count = ?, warning_count = ?, error_count = ?,"
-        "  notes = COALESCE(?, notes) WHERE run_id = ?",
+        "  notes = COALESCE(?, notes), finalized = ? WHERE run_id = ?",
         (status, ended, duration_ms, ended,
-         counts["stages"], counts["warns"], counts["errs"], notes, run_id))
+         counts["stages"], counts["warns"], counts["errs"], notes,
+         1 if (finalized and status in _TERMINAL_STATUSES) else 0, run_id))
     return {"status": status, "duration_ms": duration_ms,
             "stage_count": counts["stages"],
             "warning_count": counts["warns"], "error_count": counts["errs"]}
@@ -580,8 +599,11 @@ def reconcile_stale_runs(conn, current_pid=None, stale_seconds=STALE_HEARTBEAT_S
                     "stages_reconciled": [s["stage_key"] for s in stages]},
             continued=False, retryable=True)
 
+        # Closed by a later launch, not by the run itself: the run's
+        # process died, and that is the one case finalized must stay 0.
         finish_run(conn, row["run_id"], "interrupted",
-                   notes="Reconciled on a later launch: %s" % reason)
+                   notes="Reconciled on a later launch: %s" % reason,
+                   finalized=False)
         conn.execute("UPDATE run SET reconciled_utc = ? WHERE run_id = ?",
                      (detected, row["run_id"]))
 

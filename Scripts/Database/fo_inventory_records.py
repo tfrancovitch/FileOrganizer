@@ -87,6 +87,9 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         #: skipped, i.e. this scan's coverage of the root is incomplete --
         #: which is what a share drop or a pulled drive looks like mid-walk.
         self.directory_error_count = 0
+        #: B7.1 -- records folded into a row this scan already held (a
+        #: case-only twin). Counted here, stored as events, reported.
+        self.folded_count = 0
 
     # -- entry point --------------------------------------------------
 
@@ -113,6 +116,12 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         as an unreachable root for the one thing that matters: nothing
         is marked vanished, because an unvisited file is unobserved, not
         absent.
+
+        `scan_errors` and `path_events` may likewise be callables (B7.1),
+        consulted only after the records are consumed: the walk that
+        yields the records is what fills them, and a caller whose
+        statistics span several roots hands over a window rather than
+        the whole list -- see RunCoordinator._scan_and_persist.
         """
         self.ensure_schema()
         started = utc_now()
@@ -125,6 +134,11 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         self.projector = fo_state.StateProjector(self.conn, self.run_id)
         self.projector.prime(primary_root_id)
 
+        # The roots this walk covered: the one it was pointed at, plus
+        # any other it produced observations under (a root nested inside
+        # it). Only these may have files declared missing below.
+        walked_roots = {primary_root_id}
+
         total_rows = 0
         batch = []
         for record in records:
@@ -132,6 +146,7 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
             entry = self._entry_from_record(record, resolver)
             self._scan_for_root(entry["source_root_id"], started)
             self.projector.prime(entry["source_root_id"])
+            walked_roots.add(entry["source_root_id"])
             self.observed[entry["source_root_id"]] = \
                 self.observed.get(entry["source_root_id"], 0) + 1
             batch.append(entry)
@@ -141,6 +156,10 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         if batch:
             self._flush_with_state(batch)
 
+        if callable(scan_errors):
+            scan_errors = scan_errors()
+        if callable(path_events):
+            path_events = path_events()
         inaccessible = self.ingest_scan_errors(scan_errors or [], resolver)
         self.ingest_path_events(path_events or [], resolver)
 
@@ -148,12 +167,22 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
         # available and actually walked TO THE END. See B5-H: absence of
         # evidence is not evidence of absence, and this is the one place
         # in the product that could confuse the two.
+        #
+        # B7.1 -- and ONLY for the roots this walk covered. An error or
+        # a path event resolves to whichever root it fell under and opens
+        # that root's scan row, so it is attributed correctly; but a root
+        # reached only that way was not walked here, and a walk that did
+        # not visit a root has no standing to declare its files missing.
+        # Iterating every scan row this ingest had touched did exactly
+        # that: a later root's ingest, handed an earlier root's directory
+        # error, marked every file of the earlier root missing.
         walked_completely = complete() if callable(complete) else (
             True if complete is None else bool(complete))
         vanished = 0
         if root_available and walked_completely:
-            for root_id, scan_id in list(self.scan_ids.items()):
-                vanished += self.projector.mark_vanished(root_id, scan_id)
+            for root_id in sorted(walked_roots):
+                vanished += self.projector.mark_vanished(
+                    root_id, self.scan_ids[root_id])
             self.conn.commit()
         elif root_available:
             self._warn(
@@ -166,6 +195,12 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
                 "%d observed path(s) did not fall under any registered source "
                 "root and were attributed to %s with their full path retained."
                 % (resolver.unmatched, target_path))
+        if self.folded_count:
+            self._warn(
+                "%d file(s) were folded into an existing row because their names "
+                "differ only by case (a case-sensitive directory); each is listed "
+                "as a FOLDED_CASE_TWIN event, and the inventory has one row fewer "
+                "than the walk counted." % self.folded_count)
 
         availability = "available" if root_available else "missing"
         self.conn.execute(
@@ -189,6 +224,7 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
                 "changed": self.projector.changed_count,
                 "unchanged": self.projector.unchanged_count,
                 "vanished": vanished,
+                "folded": self.folded_count,
                 "history_mode": self.history_mode,
                 "root_availability": availability}
 
@@ -224,6 +260,7 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
 
         to_write = []
         unchanged_rows = []
+        folded = []
 
         for entry in entries:
             identity = (entry["source_root_id"], entry["key"])
@@ -231,6 +268,17 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
             if file_path_id is None:
                 self._warn("Could not resolve a location id for %s; row skipped."
                            % entry["relative_path"][:120])
+                continue
+
+            # B7.1 -- a second record for a row this scan already holds:
+            # a case-only twin in a case-sensitive directory (A-014). The
+            # first record keeps the row; this one is recorded as folded,
+            # not written over it. Until B7.1 the second silently
+            # replaced the first's size and dates, so the row flipped
+            # between the twins on every scan and read as "modified"
+            # each time.
+            if self.projector.was_seen(file_path_id):
+                folded.append((entry, file_path_id))
                 continue
 
             change_kind = self.projector.classify(file_path_id, entry)
@@ -296,6 +344,42 @@ class RecordIngestor(fo_inventory.InventoryIngestor):
 
         if unchanged_rows:
             self.projector.touch_unchanged(unchanged_rows, now)
+        if folded:
+            self._record_folded(folded, now)
+
+    #: How many folded twins are stored as events; the rest are counted.
+    FOLDED_EVENT_CAP = 200
+
+    def _record_folded(self, folded, now):
+        r"""Count the folded records and store each as a run event.
+
+        An event rather than a scan_path_event: that table's key is the
+        location, and the folded record's whole problem is that it has
+        the same key as the row that was kept. The cap keeps a
+        pathological tree from writing an event per file, the way the
+        inaccessible cap does; the count is always complete.
+        """
+        import fo_runs
+        kept = {}
+        for entry, file_path_id in folded:
+            self.folded_count += 1
+            if self.folded_count > self.FOLDED_EVENT_CAP:
+                continue
+            if file_path_id not in kept:
+                row = self.conn.execute(
+                    "SELECT relative_path FROM file_path WHERE file_path_id = ?",
+                    (file_path_id,)).fetchone()
+                kept[file_path_id] = row["relative_path"] if row else "?"
+            message = ("Folded into the row for %s: the two names differ only "
+                       "by case (a case-sensitive directory), and this inventory "
+                       "keys locations case-insensitively. The row describes the "
+                       "first one seen; this file has no row of its own."
+                       % kept[file_path_id])
+            fo_runs.add_event(self.conn, "warning", "inventory", "ingest",
+                              message, run_id=self.run_id,
+                              file_path=entry["relative_path"],
+                              error_type="FOLDED_CASE_TWIN", continued=True,
+                              file_skipped=True, retryable=False)
 
         self.conn.commit()
 

@@ -43,6 +43,19 @@ BEHAVIOUR PRESERVED EXACTLY
   * safety factor 0.4 on a network target, 0.6 otherwise;
   * the same five settings.json fields are written.
 
+WHAT THE SAMPLE IS (B7.1)
+
+The throughput sample is the LARGEST local files, read at most 8 MB
+each, and the per-file cost is measured on the SMALLEST. Until B7.1 the
+sample was the first fifteen files in path order -- on the P2 stress
+corpus 3.3 MB of thumbnails and JSON, where open/close cost dominates
+-- so "throughput" came out at 13 MB/s against a disk that hashed at
+130, and a 12-minute Full Run was estimated at 2 hours 37 minutes. An
+over-estimate is the discipline; an over-estimate by 13x is a number
+nobody can plan with. Files whose allocated size is under half their
+length (sparse, heavily compressed) are left out of the throughput
+sample: they read at memory speed and would flatter the disk.
+
 SOURCE SAFETY
 
 Sampling READS file contents. That is a read and nothing else -- no
@@ -68,6 +81,9 @@ import win_meta                                                 # noqa: E402
 SAMPLE_FILE_COUNT = 15
 SAMPLE_BYTE_CAP = 50 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
+#: B7.1 -- the most read from any one throughput-sample file. Enough to
+#: amortise the open, little enough that the budget spans several files.
+PER_FILE_READ_CAP = 8 * 1024 * 1024
 
 #: Assume real throughput will be slower than the sample suggested.
 #: Network targets get the harsher factor because a quiet moment on a
@@ -116,13 +132,15 @@ def _open_path(path):
 
 
 def measure_throughput(candidates, sample_file_count=SAMPLE_FILE_COUNT,
-                       byte_cap=SAMPLE_BYTE_CAP):
+                       byte_cap=SAMPLE_BYTE_CAP, per_file_cap=PER_FILE_READ_CAP):
     r"""Hash a bounded sample and return (bytes/sec, files used, bytes read).
 
     `candidates` is an iterable of (path, size) already filtered to
-    local, non-empty files. Reading stops at whichever limit comes
-    first, so calibration costs the same whether the project holds
-    thumbnails or disk images.
+    local, non-empty files, largest first. Reading stops at whichever
+    limit comes first, so calibration costs the same whether the
+    project holds thumbnails or disk images -- and (B7.1) no single file
+    is read past `per_file_cap`, so the budget is spent across several
+    files rather than inside the first large one.
     """
     bytes_read = 0
     files_used = 0
@@ -133,13 +151,15 @@ def measure_throughput(candidates, sample_file_count=SAMPLE_FILE_COUNT,
             break
         try:
             digest = hashlib.sha256()
+            remaining = per_file_cap
             with open(_open_path(path), "rb") as handle:
-                while True:
-                    block = handle.read(CHUNK_BYTES)
+                while remaining > 0:
+                    block = handle.read(min(CHUNK_BYTES, remaining))
                     if not block:
                         break
                     digest.update(block)
                     bytes_read += len(block)
+                    remaining -= len(block)
         except Exception:                                       # noqa: BLE001
             # One unreadable sample file must not break calibration.
             continue
@@ -151,36 +171,96 @@ def measure_throughput(candidates, sample_file_count=SAMPLE_FILE_COUNT,
     return bytes_read / elapsed, files_used, bytes_read
 
 
-def sample_candidates(conn, inventory_scan_ids, limit=200):
-    r"""Local, non-empty CURRENT files verified by the selected scans.
+def measure_per_file(candidates, sample_file_count=SAMPLE_FILE_COUNT):
+    r"""Open and read small files whole; return (seconds per file, files used).
 
-    B6.1 reads file_state because unchanged files do not receive duplicate
-    history observations. current_scan_id proves this scan reverified them;
-    current_legacy_db_id provides deterministic within-scan ordering.
+    B7.1. The cost the byte rate cannot see: open, first read, close.
+    `candidates` are (path, size), smallest first, so each read is
+    almost entirely that cost. The median is taken rather than the mean
+    so one file held up by a virus scanner or a cold cache does not set
+    the number for the whole run. (None, 0) when nothing could be read.
     """
-    if not inventory_scan_ids:
-        return []
-    placeholders = ",".join("?" * len(inventory_scan_ids))
-    rows = conn.execute(
+    timings = []
+    for path, _size in candidates:
+        if len(timings) >= sample_file_count:
+            break
+        started = time.perf_counter()
+        try:
+            with open(_open_path(path), "rb") as handle:
+                while handle.read(CHUNK_BYTES):
+                    pass
+        except Exception:                                       # noqa: BLE001
+            continue
+        timings.append(time.perf_counter() - started)
+    if not timings:
+        return None, 0
+    timings.sort()
+    middle = len(timings) // 2
+    median = (timings[middle] if len(timings) % 2
+              else (timings[middle - 1] + timings[middle]) / 2.0)
+    return median, len(timings)
+
+
+def _current_files_sql(placeholders, order_by, extra_where=""):
+    return (
         "SELECT fs.size_bytes, fp.relative_path, sr.root_path "
         "FROM file_state fs "
         "JOIN file_path fp ON fp.file_path_id=fs.file_path_id "
         "JOIN source_root sr ON sr.source_root_id=fs.source_root_id "
         "WHERE fs.current_scan_id IN (%s) AND fs.state='present' "
-        " AND fs.size_bytes>0 AND COALESCE(fs.is_offline_or_cloud,0)=0 "
-        "ORDER BY sr.root_ordinal, fs.current_legacy_db_id, fp.path_sort_key "
-        "LIMIT ?" % placeholders,
-        list(inventory_scan_ids) + [int(limit)]).fetchall()
-    out=[]
+        " AND fs.size_bytes>0 AND COALESCE(fs.is_offline_or_cloud,0)=0 %s"
+        "ORDER BY %s LIMIT ?" % (placeholders, extra_where, order_by))
+
+
+def _rows_to_paths(rows):
+    out = []
     for row in rows:
-        root=(row["root_path"] or "").rstrip("\\")
-        relative=(row["relative_path"] or "").lstrip("\\")
+        root = (row["root_path"] or "").rstrip("\\")
+        relative = (row["relative_path"] or "").lstrip("\\")
         if os.name == "nt":
-            full=(root+"\\"+relative) if relative else root
+            full = (root + "\\" + relative) if relative else root
         else:
-            full=os.path.join(root, relative.replace("\\", os.sep)) if relative else root
+            full = os.path.join(root, relative.replace("\\", os.sep)) if relative else root
         out.append((full, row["size_bytes"] or 0))
     return out
+
+
+def sample_candidates(conn, inventory_scan_ids, limit=200):
+    r"""Local, non-empty CURRENT files verified by the selected scans,
+    LARGEST FIRST -- the throughput sample.
+
+    B6.1 reads file_state because unchanged files do not receive duplicate
+    history observations. current_scan_id proves this scan reverified them.
+
+    B7.1: ordered by size descending rather than by path, so the bytes
+    read measure the disk and not the open/close cost of whichever
+    small files happened to sort first (see the module note). A file
+    whose allocated size is known and under half its length -- sparse,
+    or heavily compressed -- is left out: it reads at memory speed.
+    Ties break on path_sort_key so the sample is deterministic.
+    """
+    if not inventory_scan_ids:
+        return []
+    placeholders = ",".join("?" * len(inventory_scan_ids))
+    rows = conn.execute(
+        _current_files_sql(
+            placeholders, "fs.size_bytes DESC, sr.root_ordinal, fp.path_sort_key",
+            extra_where=("AND (fs.allocated_size_bytes IS NULL "
+                         "     OR fs.allocated_size_bytes * 2 >= fs.size_bytes) ")),
+        list(inventory_scan_ids) + [int(limit)]).fetchall()
+    return _rows_to_paths(rows)
+
+
+def sample_small_candidates(conn, inventory_scan_ids, limit=200):
+    r"""The same population, SMALLEST FIRST -- the per-file cost sample (B7.1)."""
+    if not inventory_scan_ids:
+        return []
+    placeholders = ",".join("?" * len(inventory_scan_ids))
+    rows = conn.execute(
+        _current_files_sql(
+            placeholders, "fs.size_bytes ASC, sr.root_ordinal, fp.path_sort_key"),
+        list(inventory_scan_ids) + [int(limit)]).fetchall()
+    return _rows_to_paths(rows)
 
 
 def _candidate_size_predicate(placeholders):
@@ -305,7 +385,15 @@ def calibrate(conn, inventory_scan_ids, drive_type=None, analyzer_count=0):
     total_bytes, candidate_bytes = inventory_totals(conn, inventory_scan_ids)
     total_files, candidate_files = inventory_file_counts(conn, inventory_scan_ids)
 
-    per_file = DEFAULT_PER_FILE_SECONDS / safety if safety > 0 else DEFAULT_PER_FILE_SECONDS
+    # B7.1 -- the per-file cost is measured on the smallest files rather
+    # than assumed, and never falls below the floor. On a corpus of many
+    # small files this term is the estimate; assuming 0.4 ms for it on a
+    # drive that takes 10 promised a run twenty-five times shorter than
+    # the one that happened.
+    per_file_measured, small_files_used = measure_per_file(
+        sample_small_candidates(conn, inventory_scan_ids))
+    per_file_base = max(DEFAULT_PER_FILE_SECONDS, per_file_measured or 0.0)
+    per_file = per_file_base / safety if safety > 0 else per_file_base
 
     def hashing_seconds(byte_count, file_count):
         by_bytes = byte_count / safe_rate if safe_rate > 0 else 0
@@ -339,6 +427,8 @@ def calibrate(conn, inventory_scan_ids, drive_type=None, analyzer_count=0):
         "_total_files": total_files,
         "_candidate_files": candidate_files,
         "_per_file_seconds": per_file,
+        "_per_file_measured": per_file_measured,
+        "_small_files_used": small_files_used,
         "_duplicate_stages": duplicate_stages,
         "_full_stages": full_stages,
     }
@@ -994,8 +1084,14 @@ def console_summary(values):
     lines.append("  Safety-adjusted     : %.1f MB/s (factor: %s)"
                  % (values["_safe_rate"] / megabyte,
                     values["CalibrationSafetyFactor"]))
-    lines.append("  Per-file overhead   : %.2f ms/file"
-                 % (values.get("_per_file_seconds", 0) * 1000))
+    measured_per_file = values.get("_per_file_measured")
+    if measured_per_file:
+        basis = "measured on %d small file(s), safety-adjusted" % values.get(
+            "_small_files_used", 0)
+    else:
+        basis = "assumed; no small file could be read"
+    lines.append("  Per-file overhead   : %.2f ms/file (%s)"
+                 % (values.get("_per_file_seconds", 0) * 1000, basis))
     lines.append("  Files: %s total, %s size-candidates"
                  % (values.get("_total_files", 0),
                     values.get("_candidate_files", 0)))

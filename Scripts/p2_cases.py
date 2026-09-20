@@ -333,7 +333,12 @@ def _across(conn, truth, key, value, paths, rows, engine=None):
         offenders = []
         for path in sorted(scripts.rglob("*.py")):
             rel = path.relative_to(scripts).as_posix()
-            if rel.startswith(("p2_", "Tests/", "tests/")) or "test" in path.name.lower() or "__pycache__" in rel:
+            # B7.1 -- the suites and the builder are excluded by NAME, and
+            # the backup folders (`_pre_...`, `_B6...`: files a build
+            # replaced) by prefix: a kept copy of the builder is still
+            # the builder, and a replaced file is not the program.
+            if (path.name.startswith("p2_") or rel.startswith(("_", "Tests/", "tests/"))
+                    or "test" in path.name.lower() or "__pycache__" in rel):
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
