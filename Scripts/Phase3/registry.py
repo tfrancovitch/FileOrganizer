@@ -143,6 +143,50 @@ def decision_kind(key):
         raise ValueError(f"unknown decision kind: {key!r}")
 
 
+# -- review events (Build 3) ------------------------------------------------------
+
+EVENT_DEFERRED = "deferred"
+EVENT_BLOCKED = "blocked"
+EVENT_NEEDS_REVALIDATION = "needs_revalidation"
+EVENT_SKIPPED = "skipped"
+EVENT_RESTORED = "restored"
+EVENT_KINDS = (EVENT_DEFERRED, EVENT_BLOCKED, EVENT_NEEDS_REVALIDATION, EVENT_SKIPPED, EVENT_RESTORED)
+
+RETURN_TIME = "time"                        # snooze until a date
+RETURN_EVIDENCE_CHANGE = "evidence_change"  # until the target's evidence changes
+RETURN_SOURCE_AVAILABLE = "source_available"
+RETURN_HASH_CURRENT = "hash_current"
+RETURN_PREVIEW_AVAILABLE = "preview_available"   # Build 5: no previews exist; honoured if recorded, never fires here
+RETURN_MANUAL = "manual"                    # defer indefinitely; only a person restores it
+RETURN_KINDS = (RETURN_TIME, RETURN_EVIDENCE_CHANGE, RETURN_SOURCE_AVAILABLE, RETURN_HASH_CURRENT,
+                RETURN_PREVIEW_AVAILABLE, RETURN_MANUAL)
+
+#: The deferral dispositions a person may choose (synthesis §5), with the
+#: return kind each records. snooze_until_preview_available is Build 5's.
+DEFER_DISPOSITIONS = {
+    "defer_indefinitely": (RETURN_MANUAL, "Defer indefinitely", "Until you restore it."),
+    "snooze_until_date": (RETURN_TIME, "Snooze until a date", "Returns to the queue on that day."),
+    "snooze_until_evidence_change": (RETURN_EVIDENCE_CHANGE, "Snooze until the evidence changes",
+                                     "Returns when a copy is observed again, or one arrives or leaves."),
+    "snooze_until_source_available": (RETURN_SOURCE_AVAILABLE, "Snooze until the source is available",
+                                      "Returns when every root the copies are under is available and scanned."),
+    "snooze_until_hash_current": (RETURN_HASH_CURRENT, "Snooze until fingerprints are current",
+                                  "Returns when every copy's fingerprint rests on its current observation."),
+}
+
+
+def event_kind(key):
+    if key not in EVENT_KINDS:
+        raise ValueError(f"unknown review event kind: {key!r}")
+    return key
+
+
+def return_kind(key):
+    if key is not None and key not in RETURN_KINDS:
+        raise ValueError(f"unknown return kind: {key!r}")
+    return key
+
+
 # -- policies ------------------------------------------------------------------
 
 SOURCE_ROOT = "source_root"

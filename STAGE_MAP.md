@@ -276,8 +276,15 @@ That is the audit trail, and it is already populated on every run.
 
 Recording a decision on the Decide page is a point interaction, not a run:
 no estimate, no progress screen, no `run` row. Each click is one
-`p3_operation` row (who, through what, when) with the decision, withdrawal
-or policy-version rows it made, written in one transaction. The audit trail
-for decisions is those tables; **Export journal…** writes them as text into
-the project's `Exports\` folder. Nothing on that page opens or changes a
-source file.
+`p3_operation` row (who, through what, when) with the decision, withdrawal,
+policy-version or review-event rows it made, written in one transaction.
+The audit trail for decisions is those tables; **Export journal…** writes
+them as text into the project's `Exports\` folder. Nothing on that page
+opens or changes a source file.
+
+One thing does follow a run: when a Pre-Scan, Find My Duplicates or Full
+Fingerprinting run finishes, the Phase 3 routing detector reads the
+evidence the run just changed and records, under a system operation, which
+decisions now rest on moved evidence, which decided targets are blocked,
+and which snoozes have elapsed. It writes rows about routing; it never
+changes a decision, and a failure to write them never fails the run.

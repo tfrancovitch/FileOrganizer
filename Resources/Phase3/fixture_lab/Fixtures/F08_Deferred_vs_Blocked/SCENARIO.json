@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F08_Deferred_vs_Blocked",
+  "title": "Deferred versus Evidence-Blocked",
+  "purpose": "User deferral and system evidence blocker are distinct routing states with different return triggers."
+}

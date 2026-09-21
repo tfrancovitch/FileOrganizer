@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 r"""Phase 3 acceptance against the research fixture lab (P3.R11).
 
-The five synthetic fixtures that test Build 1-2 scope ship under
+The seven synthetic fixtures that test Build 1-3 scope ship under
 Resources\Phase3\fixture_lab\. Each is a SQLite file holding synthetic
 Phase 2 evidence, authoritative Phase 3 records, and an `expected_projection`
 table -- the oracle. The research's own validator computes each oracle with
 per-fixture hand-written logic; this check runs the product's ONE general
-resolution function (Phase3.resolve) over the same rows and diffs the
-result against every oracle key.
+resolution function (Phase3.resolve) and ONE general router (Phase3.routing)
+over the same rows and diffs the result against every oracle key.
 
     F01  Keeper_Protected_Hardlink    canonical + keeper set + protected root +
                                       physical copies vs hard-link aliases, together
     F02  Multiple_Intentional_Keepers multiple keepers is a resolved state; zero reclaim is valid
     F03  Folder_Priority_Exception    a folder preference plus one explicit exception, and
                                       the exception wins
+    F08  Deferred_vs_Blocked          a person's deferral and an evidence blocker are
+                                      different routes with different return triggers (Build 3)
     F09  Supersession_Undo_Reapply    change, withdraw, re-apply: every row survives
+    F10  Revalidation                 the decision stays; a changed observation routes the
+                                      group to Needs Revalidation (Build 3)
     F15  Projection_Rebuild           keeper / canonical / protected / plan readiness
                                       reconstruct from authoritative history alone
 
@@ -36,8 +40,9 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "Database"))
 
-from Phase3.model import Evidence, Location, Group, Decision, PolicyVersion, path_key   # noqa: E402
-from Phase3 import resolve as R                                                          # noqa: E402
+from Phase3.model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, path_key   # noqa: E402
+from Phase3 import resolve as R                                                                       # noqa: E402
+from Phase3 import routing as RT                                                                      # noqa: E402
 
 FIXTURES = SCRIPTS.parent / "Resources" / "Phase3" / "fixture_lab" / "Fixtures"
 RESULTS = []
@@ -78,14 +83,38 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
         for gid, lids in members.items():
             groups[gid] = Group(gid, locations[lids[0]].content_id, tuple(lids), current.get(gid, True))
 
+        ops = {r["operation_id"]: r["occurred_utc"] for r in con.execute("SELECT operation_id, occurred_utc FROM p3_operation")}
         decisions = []
         rows = con.execute("SELECT rowid AS seq, * FROM p3_decision ORDER BY rowid").fetchall()
         for r in rows:
+            value = json.loads(r["value_json"]) if r["value_json"] is not None else None
+            # The lab binds evidence as one observation id ('obs:OBS1'); the
+            # product binds [file_path_id, observation_id] pairs. A canonical
+            # decision's observation is the canonical's; a location's is its own.
+            binding = {}
+            raw = r["evidence_binding"] or ""
+            if raw.startswith("obs:"):
+                obs = raw[4:]
+                if r["target_kind"] == "file_location":
+                    binding = {"file_path_id": r["target_ref"], "observation_id": obs}
+                elif r["decision_kind"] == "canonical_location":
+                    binding = {"members": [{"file_path_id": str(value), "observation_id": obs}]}
             decisions.append(Decision(
                 decision_id=r["decision_id"], target_kind=r["target_kind"], target_ref=r["target_ref"],
-                kind=r["decision_kind"], value=json.loads(r["value_json"]) if r["value_json"] is not None else None,
+                kind=r["decision_kind"], value=value,
                 origin_kind=r["origin_kind"], supersedes=r["supersedes_decision_id"],
-                withdrawn=bool(r["withdrawn"]), operation_id=r["operation_id"], sequence=int(r["seq"])))
+                withdrawn=bool(r["withdrawn"]), operation_id=r["operation_id"], sequence=int(r["seq"]),
+                binding=binding, occurred_utc=ops.get(r["operation_id"], "")))
+
+        events = []
+        for r in con.execute("SELECT rowid AS seq, * FROM p3_review_event ORDER BY rowid"):
+            events.append(ReviewEvent(
+                review_event_id=r["review_event_id"], target_kind=r["target_kind"], target_ref=r["target_ref"],
+                kind=r["event_kind"], return_kind=r["return_kind"], return_condition=r["return_condition"],
+                return_on_utc=r["return_condition"] if r["return_kind"] == "time" else None,
+                occurred_utc=ops.get(r["operation_id"], ""), sequence=int(r["seq"])))
+        # Routing is evaluated at a moment; the lab's moment is its last operation.
+        now = max(ops.values()) if ops else "2026-09-08T12:00:00Z"
 
         policies = []
         for r in con.execute("SELECT * FROM p3_policy_version ORDER BY policy_id, version_no"):
@@ -125,7 +154,7 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
 
         oracle = {r["key"]: json.loads(r["value_json"]) for r in con.execute("SELECT key, value_json FROM expected_projection")}
         history = [(r["decision_id"], r["value_json"], bool(r["withdrawn"])) for r in rows]
-        return Evidence(locations, groups, decisions, policies), oracle, history
+        return Evidence(locations, groups, decisions, policies, events, {}, now), oracle, history
     finally:
         con.close()
 
@@ -169,6 +198,25 @@ def actual_projection(fid: str, ev: Evidence, history) -> dict:
                 "redundant": list(p.redundant_candidates), "conflicts": [c.kind for c in p.conflicts],
                 "review_state": p.review_state, "ready_for_plan": p.ready_for_plan,
                 "plan_item_target": p.plan_eligible_locations[0] if len(p.plan_eligible_locations) == 1 else list(p.plan_eligible_locations)}
+    routing = RT.route_all(ev, proj, ev.now)
+    if fid.startswith("F08"):
+        routes, kinds = {}, {}
+        for lid, route in routing.locations.items():
+            routes[lid] = route.primary
+            if route.primary == RT.DEFERRED and route.deferral is not None:
+                kinds[lid] = route.deferral.return_kind
+            elif route.primary == RT.BLOCKED:
+                opened = route.open_events.get("blocked") or []
+                kinds[lid] = opened[0].return_kind if opened else None
+        return {"routing": routes, "return_kind": kinds}
+    if fid.startswith("F10"):
+        route = routing.groups["G1"]
+        from Phase3.model import active_decisions
+        active = {d.decision_id for d in active_decisions(ev.decisions)}
+        drift = {x.decision_id: x for x in route.drift}
+        return {"decision_preserved": "D1" if "D1" in active and any(d.decision_id == "D1" for d in ev.decisions) else None,
+                "routing": route.primary,
+                "current_applicability": "requires_revalidation" if not drift["D1"].applicable else "applicable"}
     raise KeyError(fid)
 
 
@@ -180,11 +228,17 @@ def _shuffled(ev: Evidence, seed: int) -> Evidence:
     rnd.shuffle(policies)
     locations = dict(rnd.sample(list(ev.locations.items()), len(ev.locations)))
     groups = dict(rnd.sample(list(ev.groups.items()), len(ev.groups)))
-    return Evidence(locations, groups, decisions, policies)
+    # Events keep their order: the record is a sequence (a restore ends what
+    # came before it), and the loader delivers it oldest first.
+    return Evidence(locations, groups, decisions, policies, list(ev.events), dict(ev.roots), ev.now)
 
 
-def _canon(proj: R.ProjectProjection):
-    return json.dumps([p.as_dict() for p in proj.groups] + [list(proj.orphaned_decisions), proj.totals],
+def _canon(proj: R.ProjectProjection, ev=None):
+    routes = []
+    if ev is not None:
+        rt = RT.route_all(ev, proj, ev.now)
+        routes = [r.as_dict() for r in rt.groups.values()] + [r.as_dict() for r in rt.locations.values()] + [rt.counts]
+    return json.dumps([p.as_dict() for p in proj.groups] + [list(proj.orphaned_decisions), proj.totals] + routes,
                       sort_keys=True, default=str)
 
 
@@ -211,10 +265,10 @@ def main() -> int:
         for key, expected in sorted(oracle.items()):
             got = actual.get(key, "<missing>")
             check(f"{key} == {json.dumps(expected)}", got == expected, f"got {json.dumps(got, default=str)}")
-        # The projection is a pure function of history: any row order, twice.
-        base = _canon(R.resolve_all(ev))
-        same = all(_canon(R.resolve_all(_shuffled(ev, seed))) == base for seed in (1, 2, 3))
-        check("identical projection from shuffled rows (3 seeds) and a second run", same and _canon(R.resolve_all(ev)) == base)
+        # The projection and the routes are pure functions of history: any row order, twice.
+        base = _canon(R.resolve_all(ev), ev)
+        same = all(_canon(R.resolve_all(_shuffled(ev, seed)), _shuffled(ev, seed)) == base for seed in (1, 2, 3))
+        check("identical projection and routes from shuffled rows (3 seeds) and a second run", same and _canon(R.resolve_all(ev), ev) == base)
 
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     print(f"\n{'=' * 70}\nP3 FIXTURES: {passed}/{len(RESULTS)} checks passed")

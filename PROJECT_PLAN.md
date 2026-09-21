@@ -4,7 +4,7 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-20, late — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2`; `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
+**Last updated:** 2026-09-20, night — **Phase 3 Build 3 (review routing) built as B9** in `FileOrganizer-Phase3-B9\` on branch `phase3-b9` from the B8 commit; `PHASE3_BUILD3_HANDBACK.md` reports against its handoff. Earlier the same day — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2` (committed as `e44613a`, reviewed, tag `phase3-b8` the owner's); `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction
@@ -15,18 +15,24 @@ done** — the P2 stress test of 2026-09-19 (the first two-root project) and the
 Master Matrix corpus found defects 33–51, fixed in B7.1 and B7.2 (2026-09-20);
 one case (A-014) stays by decision. The adversarial corpus
 is built (`C:\FOTest`: `Corpus\` 853 files, `Hostile\` 10,026, the mutation
-runner) and every suite is green on **B7.2**. **Phase 3 (Decide / Plan) has
-begun**: Builds 1–2 of its seven — the decision record (schema 9), the
+runner) and every suite is green on **B7.2**. **Phase 3 (Decide / Plan) is
+in progress**: Builds 1–2 of its seven — the decision record (schema 9), the
 deterministic keeper / canonical / protection resolution, the protection
-override gate, policies, and the Decide page inside the one window — are
-built as **B8** and green on every suite (see §4a)
-**Build:** **B8** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
-project and log records it; `CHANGELOG-B8.md`; branch `phase3` in the git
-repository, checked out as `FileOrganizer-Phase3-B8\` (a worktree — not yet
-tagged; tagging is the user's call after review). B7.2 stays at tag
-`phase2-b7.2`, install `FileOrganizer-Phase2-B7.2\`, untouched
+override gate, policies, and the Decide page inside the one window — shipped
+as **B8**; Build 3 — review routing: the review-event record (schema 10),
+the routes with their precedence, the revalidation detector, deferrals with
+return triggers, Skip, the lenses — is built as **B9** and green on every
+suite (see §4a)
+**Build:** **B9** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
+project and log records it; `CHANGELOG-B9.md`; branch `phase3-b9` in the git
+repository, checked out as `FileOrganizer-Phase3-B9\` (a worktree — not yet
+committed or tagged; both the user's call after review). B8 is commit
+`e44613a` on branch `phase3` (worktree `FileOrganizer-Phase3-B8\`), awaiting
+its tag `phase3-b8`. B7.2 stays at tag `phase2-b7.2`, install
+`FileOrganizer-Phase2-B7.2\`, untouched
 **Code source of truth:** `FileOrganizer\` (git): branch `phase2` for Phase 2,
-branch `phase3` (worktree `FileOrganizer-Phase3-B8\`) for Phase 3
+branch `phase3` (B8) and `phase3-b9` (Build 3, to fast-forward `phase3` on
+acceptance) for Phase 3
 
 ---
 
@@ -88,7 +94,7 @@ A nineteenth, adopted 2026-09-10:
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
 | **2** | **Understand** | **Shipped — B7.2. Closeout approved 2026-09-19; the adversarial round (P2.13) closed 2026-09-20 with B7.1 and B7.2 (defects 33–51; A-014 kept by decision)** |
-| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 built (core persistence, exact-duplicate decisions); Builds 3–7 (review routing, bulk/policy, Image Game, plan builder, project metadata) await their handoffs** |
+| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 (core persistence, exact-duplicate decisions); B9 (2026-09-20): Build 3 (review routing). Builds 4–7 (bulk/policy, Image Game, plan builder, project metadata) await their handoffs** |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
 | 6 | Local LLMs | Research horizon |
@@ -101,7 +107,35 @@ changing embedded metadata is an *action*, so metadata editing is Phase 4, not 3
 
 ---
 
-## 4a. Where Phase 3 stands — B8, 2026-09-20
+## 4a. Where Phase 3 stands — B8 and B9, 2026-09-20
+
+**B9 — Build 3, review routing** (handoff
+`FileOrganizer-Phase3\phase_3_handoff_build3\`; handback
+`PHASE3_BUILD3_HANDBACK.md`). Migration 010 adds the fifth family,
+`p3_review_event`: a person's deferral with its return trigger, a skip, a
+restore, and what the detector found — under `p3_operation` like every
+other row, the detector's under a system operation (`actor_kind
+system_evidence`). `Phase3\routing.py` gives each group one primary route
+from every condition that applies, in the handoff's recommended precedence
+(adopted unchanged): Conflicts & Exceptions, Needs Revalidation, Blocked by
+Evidence, Deferred / Snoozed, Ready for Plan, Resolved, the queue. Needs
+Revalidation is computed live from B8's evidence bindings and clears when
+the comparison clears; Blocked from Phase 1/2 evidence (identity unknown,
+stale fingerprint, unusable root walk — a completed walk with inaccessible
+folders warns, it does not block); Deferred from open deferral events whose
+trigger — a date, an evidence change, the source back, fingerprints current
+— has not fired. Skip (`s`) is an audit row; Defer (`d`) opens a dialog;
+Restore, Confirm decisions, the lenses, "Currently clear". Suites: fixtures
+46/46 (F08, F10 join the five), `p3_regression` 227/227, every Phase 1/2
+suite green. Judgment calls, all in the handback: the precedence table as
+recommended; a completed-with-warnings walk warns rather than blocks; a
+copy re-examined and found unique by size is current, not stale; the
+detector records blockers only for targets a person has engaged with; the
+advisory policy tie; the Conflicts order by potential reclaim then oldest
+decision; B8's `defer_review` decisions read as manual deferrals and Defer
+no longer records a decision.
+
+**B8 — Builds 1–2.**
 
 The Phase 3 handoff (`C:\FileOrganizerTesting\FileOrganizer-Phase3\`: the
 research synthesis, the build plan, five fixtures of the P3.R11 fixture lab
@@ -458,13 +492,13 @@ rather than time-boxed, and it does not exist for network shares.
 
 ## 6. Next
 
-**Phase 3, what comes after B8** — the remaining five builds of the Phase 3
-plan, each with its own handoff: 3 review routing (queues: conflicts, needs
-revalidation, blocked, deferred as routes; the "orphaned decision" count B8
-already reports is the seed of "needs revalidation"); 4 bulk batch with
-frozen membership and dynamic policy with preview; 5 the Image Game (the
-perceptual hashes are already stored); 6 the plan builder, fingerprint and
-the Phase 4 contract; 7 project / desired source metadata. Before Phase 4,
+**Phase 3, what comes after B9** — the remaining four builds of the Phase 3
+plan, each with its own handoff: 4 bulk batch with frozen membership and
+dynamic policy with preview (frozen queues belong here too); 5 the Image
+Game (the perceptual hashes are already stored; `preview_available` blockers
+and snoozes wait for it); 6 the plan builder, fingerprint and the Phase 4
+contract (the Conflicts order becomes "blocking a current plan first"
+literally); 7 project / desired source metadata. Before Phase 4,
 the two standing items from PHASE-2-HANDOFF: a cross-process lock, and the
 autocommit connection revisited (Phase 3's store already uses real
 transactions on the window's connection). Cheap follow-ups the handback
@@ -597,8 +631,9 @@ C:\FileOrganizerTesting\
   FileOrganizer\               git repository - code source of truth (branch phase2 checked out)
   FileOrganizer-Phase1-RC-B6.1\  the Phase 1 install (BASELINE.md: it is B6.2)
   FileOrganizer-Phase2-B7.2\   the Phase 2 install, byte-identical to tag phase2-b7.2
-  FileOrganizer-Phase3-B8\     Phase 3 work: git worktree of branch phase3 (B8)
-  FileOrganizer-Phase3\        the Phase 3 handoff package (Builds 1-2)
+  FileOrganizer-Phase3-B8\     B8: git worktree of branch phase3 (Builds 1-2, committed e44613a)
+  FileOrganizer-Phase3-B9\     B9: git worktree of branch phase3-b9 (Build 3, uncommitted)
+  FileOrganizer-Phase3\        the Phase 3 handoff packages (Builds 1-2; phase_3_handoff_build3\)
   Docs\
     Charter\          the phase model, requirements, question catalog, decisions
     Specifications\   query model, information model, report catalog, GUI contract

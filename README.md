@@ -12,6 +12,23 @@ a later phase; nothing in B8 changes a file either.
 
 ---
 
+## B9 — Phase 3, Build 3: review routing
+
+B9 tells you where each duplicate group's attention is owed. On the Decide
+page every group's Status is now its route — **Conflict**, **Needs
+revalidation** (a decision's evidence moved since it was made), **Blocked**
+(the evidence cannot support a safe decision yet), **Deferred**, **Ready for
+plan**, **Resolved**, or the ordinary queue — with every condition that
+applies listed beside it, and the **Show** box filters by route or by lens.
+**Defer…** now takes a return trigger (a date, an evidence change, the
+source coming back, fingerprints becoming current); **Skip** (key `s`) is a
+different thing and only records that you passed by; **Restore** brings a
+parked group back; **Confirm decisions** re-records decisions whose evidence
+moved. A detector runs when the page opens and after a scan or fingerprint
+run, recording what it found — it never changes a decision. An empty queue
+says *Currently clear*: new evidence can reopen it. `CHANGELOG-B9.md` has the
+detail; `PHASE3_BUILD3_HANDBACK.md` reports against the Build 3 handoff.
+
 ## B8 — Phase 3 begins: duplicate decisions
 
 B8 is the first Phase 3 build (Builds 1–2 of the Phase 3 plan: core
@@ -286,10 +303,18 @@ the others, and a bucket with no applicable files is a success, not an error.
 **Review this duplicate group** in a file's Details pane. The left list is
 every current exact-duplicate group: copies, physical copies (a hard link is
 one physical copy under two names), aliases, size, the potential reclaim
-Phase 2 measured and the reclaim a plan could count on now, roots, status
-and the canonical. Click a heading to sort; **Show** filters by status. The
-right side is the selected group: each copy's status — Protected, Keeper,
-Redundant candidate, Undecided — with what decided it, and the actions:
+Phase 2 measured and the reclaim a plan could count on now, roots, the
+group's **route** (its Status — see below), the conditions behind it, and
+the canonical. Click a heading to sort. **Show** picks a route — Queue (the
+default: groups awaiting an ordinary decision), Conflicts & Exceptions,
+Needs Revalidation, Blocked by Evidence, Deferred / Snoozed, Ready for Plan,
+Resolved, All — or a lens over the groups: High Reclaim, Cross-Root, Unknown
+Physical Identity, Hard-Link Aliases, Filename Divergence, Extension
+Divergence, Policy Tie. When the Queue is empty the page says *Currently
+clear* — not complete, because a rescan can reopen it. The right side is
+the selected group: each copy's status — Protected, Keeper, Redundant
+candidate, Undecided — with what decided it, the route's explanation in
+file terms, and the actions:
 
 | Action | What it records |
 |---|---|
@@ -297,9 +322,27 @@ Redundant candidate, Undecided — with what decided it, and the actions:
 | **Keep all** | every copy of the group stays; zero reclaim is a valid answer |
 | **Set canonical** | which copy represents the group — always a keeper, never "the original" |
 | **Mark redundant** | this copy is a candidate for a later removal plan |
-| **Defer** | an explicit "not deciding yet" |
+| **Defer…** | "not now", with a return trigger: indefinitely, until a date, until the evidence changes, until the source is available, until fingerprints are current |
+| **Restore** | (on a parked group) back to the queue by hand |
+| **Skip** | key `s`: records that you passed by, changes nothing, moves to the next group |
+| **Confirm decisions** | (when the evidence moved) re-records the drifted decisions on the evidence as it is now |
 | **Override protection…** | its own dialog: names the protection rule, needs a reason |
 | **Undo selected** | withdraws a decision; the record stays, marked withdrawn |
+
+A group's route is derived every time the page draws, from the evidence and
+the record, in this order of precedence: a **Conflict** (a redundant mark on
+a protected copy, a canonical that is no longer a keeper, every copy marked
+redundant, or — as an exception — two policies at one tier that disagree)
+comes first; then **Needs revalidation** — a decision whose copies have been
+observed again since, or whose group gained or lost a member (the decision
+itself is untouched; confirm it, or undo it); then **Blocked** — physical
+identity unknown, a fingerprint that predates the copy's current
+observation, or a root whose latest walk was interrupted or unavailable;
+then **Deferred**; then **Ready for plan** and **Resolved**; otherwise the
+ordinary queue. A detector runs when the page opens and after a Scan again,
+Find My Duplicates or Full Fingerprinting run, and records what it found as
+routing events (never a decision): what changed, what is blocked and why,
+and when a snooze elapsed.
 
 **Policies…** protect a source root or a folder (a hard constraint — a
 protected copy cannot be marked redundant until the protection is overridden
@@ -412,7 +455,7 @@ continues. Some system and cloud-only files simply cannot be read.
 | Projects | `Projects\` beside the app |
 | Database | `Projects\<name>\Database\FileOrganizer.db` |
 | Run output | `Projects\<name>\Runs\<timestamp>\` |
-| Decision record | tables `p3_*` in the project database; `Exports\DecisionJournal.txt` when exported |
+| Decision record | tables `p3_*` in the project database (decisions, policies, review events); `Exports\DecisionJournal.txt` when exported |
 | Application log | `Logs\app.log` |
 
 To back up a project, copy its whole folder. To move the app, move the folder —

@@ -183,13 +183,14 @@ def show_hub(app):
             d = None
             line("Duplicate decisions", f"unavailable: {exc}")
         if d is not None:
+            routes = d.get("routes", {})
             text = f"{d['reviewed']:,} of {d['groups']:,} groups reviewed"
-            if d["resolved"]:
-                text += f", {d['resolved']:,} resolved"
-            if d["deferred"]:
-                text += f", {d['deferred']:,} deferred"
-            if d["conflicts"]:
-                text += f", {d['conflicts']:,} with conflicts"
+            # The routes (B9): where attention is owed, in precedence order.
+            for key, word in (("conflict", "in conflict"), ("needs_revalidation", "need revalidation"),
+                              ("blocked", "blocked by evidence"), ("deferred", "deferred"),
+                              ("ready_for_plan", "ready for a plan"), ("resolved", "resolved")):
+                if routes.get(key):
+                    text += f", {routes[key]:,} {word}"
             text += (f"   {_human_bytes(d['plan_eligible_reclaim_bytes'])} plan-eligible reclaim"
                      f" of {_human_bytes(d['potential_reclaim_bytes'])} potential")
             line("Duplicate decisions", text, action=("Review duplicates", app.show_decide), view=True, bold=True,

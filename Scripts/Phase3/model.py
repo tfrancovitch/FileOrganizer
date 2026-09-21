@@ -37,12 +37,17 @@ class Location:
     location_id: str
     path: str                       # the full path, for display and folder policies
     root_key: str                   # which source root it is under
-    content_id: str
+    content_id: str | None
     physical_id: str | None         # volume + file index when known; hard links share it
     present: bool
     size_bytes: int | None
     observation_id: str | None      # the current observation the evidence rests on
     sort_key: tuple = ()            # display order (root ordinal, path sort key)
+    # Build 3 -- the evidence conditions routing reads. True is the ordinary
+    # case; the loader sets them from file_state / the root's latest scan.
+    hash_current: bool = True       # its fingerprint (identity or verdict) rests on its current observation
+    cloud_only: bool = False        # a placeholder the product never opens
+    in_current_group: bool = True   # a member of a current exact-duplicate group
 
     @property
     def path_key(self) -> str:
@@ -69,6 +74,35 @@ class Decision:
     withdrawn: bool = False
     operation_id: str | None = None
     sequence: int = 0               # recording order; ties in the same class go to the later one
+    binding: dict | None = None     # the evidence binding as recorded (ids only); Build 3 reads it
+    occurred_utc: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewEvent:
+    """One routing event (Build 3): a deferral with its return trigger, a
+    skip, what the detector found stale or blocked, or a restore."""
+    review_event_id: str
+    target_kind: str
+    target_ref: str
+    kind: str                       # deferred | blocked | needs_revalidation | skipped | restored
+    return_kind: str | None = None  # time | evidence_change | source_available | hash_current | preview_available | manual
+    return_condition: str | None = None
+    return_on_utc: str | None = None
+    detail: dict = field(default_factory=dict)
+    refers_to: str | None = None    # a restore names the event it ends
+    occurred_utc: str = ""
+    actor_kind: str = "explicit_human"
+    sequence: int = 0
+
+
+@dataclass(frozen=True)
+class RootCoverage:
+    """What the latest scan says about a source root (Build 3's blockers)."""
+    root_key: str
+    complete: bool = True           # completed, available, nothing inaccessible
+    available: bool = True
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,11 +118,14 @@ class PolicyVersion:
 
 @dataclass
 class Evidence:
-    """Everything the resolver needs, and nothing it may not use."""
-    locations: dict                 # location_id -> Location
+    """Everything the resolver and the router need, and nothing they may not use."""
+    locations: dict                 # location_id -> Location (current members, plus any location a decision or event names)
     groups: dict                    # group_id -> Group
     decisions: list                 # every Decision row, withdrawn and superseded ones included
     policies: list                  # the current version of every policy (active or retired)
+    events: list = field(default_factory=list)      # every ReviewEvent row, oldest first
+    roots: dict = field(default_factory=dict)       # root_key -> RootCoverage
+    now: str = ""                                   # the moment routing is evaluated at (ISO UTC)
 
     def group_of(self, location_id):
         for g in self.groups.values():

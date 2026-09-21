@@ -38,7 +38,7 @@ from .reports import ReportCatalog
 from .saved import SavedQueryStore
 from . import VERSION
 from . import hub as hub_view
-from .runner import RunRequest, PRESCAN, run_blocking, app_root_for
+from .runner import RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, run_blocking, app_root_for
 from Phase3 import review as review_view
 
 #: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
@@ -400,6 +400,10 @@ class Phase2App(tk.Tk):
         if self.project_dir is None:
             self.show_open_panel(); self._announce(request,outcome); return
         self.reopen_connection()
+        # Phase 3: a walk or a fingerprinting pass may have moved the evidence
+        # under a decision. The routing detector records what it finds now,
+        # so the summary and the Decide page say so at once (never raises).
+        if request.kind in (PRESCAN,DUPLICATES,FINGERPRINT): review_view.run_detector(self.conn,review_view.store_for(self))
         self._announce(request,outcome)
         if outcome.ok and request.after=="doors": hub_view.show_doors(self)
         else: self.show_hub()

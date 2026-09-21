@@ -1,4 +1,4 @@
-# Architecture — The File Organizer, B8 (Phases 1–2 shipped, Phase 3 begun)
+# Architecture — The File Organizer, B9 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
@@ -24,7 +24,7 @@ end say what B7 and B8 added on top.
    |            engine            |                  |
    +--------------+--------------+------------------+
                   |
-          FileOrganizer.db           SQLite, schema 9 -- AUTHORITATIVE
+          FileOrganizer.db           SQLite, schema 10 -- AUTHORITATIVE
                   |
              fo_exports.py           renders every CSV and report FROM the DB
                   |
@@ -154,11 +154,12 @@ extracted text is reused rather than duplicated by source path.
 
 ## Database
 
-Schema **`user_version = 9`**, created by `fo_db.py` applying migrations
-`001`–`009`. Migration 006 introduced current-state separation; migration 007
+Schema **`user_version = 10`**, created by `fo_db.py` applying migrations
+`001`–`010`. Migration 006 introduced current-state separation; migration 007
 completes the A–F reconciliation/current projection; 008 is Phase 2's core
 (saved queries, retained executions, the derived-index registry, the current
-exact-duplicate projection, the FTS map); 009 is Phase 3's decision record.
+exact-duplicate projection, the FTS map); 009 is Phase 3's decision record;
+010 its review events.
 
 | Table group | Holds |
 |---|---|
@@ -172,6 +173,7 @@ exact-duplicate projection, the FTS map); 009 is Phase 3's decision record.
 | `p2_saved_query`, `p2_saved_query_revision`, `p2_execution_record` | Phase 2: saved questions, retained executions |
 | `p2_derived_index`, `p2_current_duplicate_member`, `p2_current_duplicate_summary`, `p2_fts_text_map` | Phase 2: rebuildable projections and indexes |
 | `p3_operation`, `p3_decision`, `p3_decision_withdrawal`, `p3_policy`, `p3_policy_version` | Phase 3: the append-only decision record |
+| `p3_review_event` | Phase 3: routing provenance — deferrals with return triggers, skips, what the detector found, restores |
 
 Analyzer results keep **normalised promoted columns** (title, author,
 dimensions, duration, word count) *plus* the analyzer's own JSON detail. The
@@ -392,9 +394,16 @@ which is a per-run snapshot.
                   v
    keeper set / canonical / protected / redundant candidates / conflicts /
    plan-eligible reclaim  -- DERIVED, never stored
+                  |
+        Phase3\routing.py           the routes -- a pure function of the projection, the
+                  |                 review events, root coverage and the moment
+                  v                 (conflict > needs revalidation > blocked > deferred >
+   one primary route per group      ready for plan > resolved > queue)
+   + every condition that applies  -- DERIVED, never stored
                   ^
         Phase3\store.py             the only writer of p3_*: one operation = one transaction
-                  ^
+                  ^                 (decisions, withdrawals, policy versions, review events;
+                  |                  the detector's rows under a system operation)
         Phase3\review.py            the Decide page inside the one window
 ```
 
@@ -429,4 +438,23 @@ optional and always a keeper; no copy is ever labelled the original.
 
 Phase 3 writes nowhere but the project database (and, on request, a journal
 export under the project's `Exports\`). No source file is opened.
+
+### Review routing (B9)
+
+Queues route attention; they do not create truth. `routing.py` gives each
+group one primary route from the conditions that apply, in a fixed
+precedence (conflict, needs revalidation, blocked, deferred, ready for plan,
+resolved, the queue), and reports every condition. The only new authoritative
+family is the review event — a person's deferral with its return trigger, a
+skip, a restore, and what the detector found — under `p3_operation` like
+everything else. Needs Revalidation is computed from B8's evidence bindings
+(a bound observation that is no longer the location's current one; a group
+decision whose bound membership changed) and clears when the comparison
+clears — a new decision, a withdrawal — never by a mark. Blocked is computed
+from Phase 1/2 evidence (physical identity unknown, a stale fingerprint, a
+root whose latest walk is unusable); Deferred from open deferral events
+whose trigger, evaluated live, has not fired. The detector (`reconcile`)
+runs when the Decide page opens and after a scan or fingerprint run, writes
+the provenance rows for what it finds under a system operation
+(`actor_kind = system_evidence`), and never touches a decision.
 

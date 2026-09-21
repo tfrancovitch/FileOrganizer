@@ -26,8 +26,20 @@ What it proves, in order:
      path appeared or vanished, and no Python-level write touched a path
      outside the project folder while Phase 3 ran.
   5. If a display is available: the window's Decide line, the Decide page
-     and every action on it, the Override and Policies dialogs, Undo, the
-     filter and sort, the Files-page jump-in -- headless, no mainloop.
+     and every action on it, the Override, Policies and Defer dialogs, Skip,
+     Restore, Undo, the routes, lenses and sort, the Files-page jump-in, and
+     -- after a rescan moved the evidence -- Needs Revalidation and Confirm
+     decisions; headless, no mainloop.
+  6. Build 3 (B9), on hand-built models: the routing precedence table over
+     every combination of conditions; open/closed review events (a skip
+     never opens; a restore closes what it names); every deferral trigger;
+     drift detection; the three computed blockers and the recorded one;
+     coverage warnings versus unusable roots; the B8 defer_review record as
+     a deferral; the advisory policy tie; the Conflicts order; determinism.
+  7. Build 3 on the real project: the detector is idempotent, writes what
+     changed and nothing else; a snooze that elapsed is restored; a rescan
+     that changes a copy routes the group to Needs Revalidation with the
+     decision untouched; re-recording clears it; Skip versus Defer.
 
 Run:  python Scripts\p3_regression.py
 """
@@ -71,6 +83,7 @@ def section(title):
 from Phase3.model import Evidence, Location, Group, Decision, PolicyVersion, path_key, active_decisions  # noqa: E402
 from Phase3 import resolve as R                                                                            # noqa: E402
 from Phase3 import registry as REG                                                                         # noqa: E402
+from Phase3 import routing as RT                                                                           # noqa: E402
 
 
 def loc(lid, path, root="Primary", content="C1", phys=None, size=1000, present=True, known=True):
@@ -92,6 +105,8 @@ def pol(pvid, kind, scope, effect=None, active=True, policy_id=None):
 def model(locations, decisions=(), policies=()):
     groups = {}
     for l in locations:
+        if l.content_id is None or not l.in_current_group:
+            continue                                    # a location that left its group is loaded, not grouped
         groups.setdefault(l.content_id, []).append(l.location_id)
     return Evidence({l.location_id: l for l in locations},
                     {c: Group(c, c, tuple(ids)) for c, ids in groups.items()},
@@ -99,6 +114,40 @@ def model(locations, decisions=(), policies=()):
 
 
 LOCATION, GROUP = REG.LOCATION, REG.GROUP
+NOW = "2026-09-20T12:00:00Z"
+
+
+def ev_row(eid, kind, target_kind, ref, return_kind=None, condition=None, until=None, detail=None, refers_to=None, when=None):
+    from Phase3.model import ReviewEvent
+    return ReviewEvent(eid, target_kind, ref, kind, return_kind, condition, until, detail or {}, refers_to,
+                       when or f"2026-09-{10 + int(eid[1:]):02d}T00:00:00Z", "explicit_human", int(eid[1:]))
+
+
+def bound(locs, target_kind=LOCATION, content=None):
+    """An evidence binding the way the store records one: ids only."""
+    if target_kind == LOCATION:
+        l = locs[0]
+        return {"file_path_id": l.location_id, "observation_id": l.observation_id, "target_kind": LOCATION,
+                "group": {"members": [{"file_path_id": x.location_id, "observation_id": x.observation_id} for x in locs]}}
+    return {"target_kind": GROUP, "content_id": content or locs[0].content_id,
+            "members": [{"file_path_id": x.location_id, "observation_id": x.observation_id} for x in locs]}
+
+
+def bdec(did, kind, target_kind, ref, value, locs, **kw):
+    """A decision with a real binding to the given locations."""
+    d = dec(did, kind, target_kind, ref, value, **kw)
+    from dataclasses import replace
+    return replace(d, binding=bound(locs, target_kind, ref if target_kind == GROUP else None))
+
+
+def routed(locations, decisions=(), policies=(), events=(), roots=None, now=NOW):
+    """Resolve and route a hand-built model."""
+    ev = model(locations, decisions, policies)
+    ev.events = list(events)
+    ev.roots = roots or {}
+    ev.now = now
+    proj = R.resolve_all(ev)
+    return ev, proj, RT.route_all(ev, proj, now)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +213,7 @@ def test_resolver():
     check("a redundant mark against a protected root has no effect: the copy stays protected",
           g.verdict("C").status == R.PROTECTED and "C" not in g.redundant_candidates)
     check("...and the group carries a conflict, no reclaim, not ready",
-          [c.kind for c in g.conflicts] == ["redundant_protected"] and g.plan_eligible_reclaim_bytes == 0 and not g.ready_for_plan
+          [c.kind for c in g.conflicts] == [R.PROTECTED_VS_REDUNDANT] and g.plan_eligible_reclaim_bytes == 0 and not g.ready_for_plan
           and g.review_state == R.CONFLICT)
     ev = model([A, B, C], [dec("D1", "redundant_location", LOCATION, "C"),
                            dec("D2", "override_protection", LOCATION, "C", {"policy_id": "PPV1", "policy_version_id": "PV1"})], [protect])
@@ -211,10 +260,12 @@ def test_resolver():
     ev = model([A, B, C], [dec("D1", "canonical_location", GROUP, "C1", "B"), dec("D2", "redundant_location", LOCATION, "B")])
     g = R.resolve_group(ev, ev.groups["C1"])
     check("canonical AND redundant on one copy: it stays a keeper and the group is in conflict",
-          g.verdict("B").status == R.KEEPER and [c.kind for c in g.conflicts] == ["canonical_redundant"] and g.plan_eligible_reclaim_bytes == 0)
+          g.verdict("B").status == R.KEEPER and [(c.kind, c.reason) for c in g.conflicts] == [(R.CANONICAL_NO_LONGER_KEEPER, "marked_redundant")]
+          and g.plan_eligible_reclaim_bytes == 0)
     ev = model([A, B, C], [dec("D1", "canonical_location", GROUP, "C1", "Z")])
     g = R.resolve_group(ev, ev.groups["C1"])
-    check("a canonical that is no longer a member is a conflict, not a crash", [c.kind for c in g.conflicts] == ["canonical_not_member"] and g.canonical is None)
+    check("a canonical that is no longer a member is a conflict, not a crash",
+          [(c.kind, c.reason) for c in g.conflicts] == [(R.CANONICAL_NO_LONGER_KEEPER, "left_group")] and g.canonical is None)
     ev = model([A, B, C], [dec("D1", "redundant_location", LOCATION, "A"), dec("D2", "redundant_location", LOCATION, "B"),
                            dec("D3", "redundant_location", LOCATION, "C")])
     g = R.resolve_group(ev, ev.groups["C1"])
@@ -448,15 +499,15 @@ def test_project(tmp: Path):
     check("Find My Duplicates through the worker", out.ok, f"{out.status}: {out.message}")
 
     conn = connect(project_dir, write=True)
-    check("a fresh project lands on schema 9 with the five p3 tables",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 9 and {r[0] for r in conn.execute(
+    check("a fresh project lands on schema 10 with the six p3 tables",
+          conn.execute("PRAGMA user_version").fetchone()[0] == 10 and {r[0] for r in conn.execute(
               "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'p3_%'")} == {
-              "p3_operation", "p3_decision", "p3_decision_withdrawal", "p3_policy", "p3_policy_version"})
+              "p3_operation", "p3_decision", "p3_decision_withdrawal", "p3_policy", "p3_policy_version", "p3_review_event"})
     check("app_meta carries the Phase 3 contracts",
           conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1")
-    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B8', schema 9 everywhere",
-          fo_db.APP_VERSION == "B8" and __import__("Phase2").VERSION == "B8" and fo_db.APP_SCHEMA_VERSION == 9
-          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 9 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 9)
+    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B9', schema 10 everywhere",
+          fo_db.APP_VERSION == "B9" and __import__("Phase2").VERSION == "B9" and fo_db.APP_SCHEMA_VERSION == 10
+          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 10 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 10)
 
     # -- migrating a schema-8 database ---------------------------------------
     old_dir = tmp / "Old8"
@@ -479,9 +530,9 @@ def test_project(tmp: Path):
     c8.close()
     fo_db.write_project_json(paths, "uid-8", "Old8", "2026-01-01T00:00:00Z", "B7.2")
     c9, _ = fo_db.open_project(str(old_dir), app_version=fo_db.APP_VERSION)
-    check("a schema-8 project opens and migrates to 9", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 9)
-    check("migration 009 recorded with this build's version",
-          c9.execute("SELECT app_version FROM schema_migration WHERE version=9").fetchone()[0] == "B8")
+    check("a schema-8 project opens and migrates to 10", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 10)
+    check("migrations 009 and 010 recorded with this build's version",
+          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10) ORDER BY version")] == ["B9", "B9"])
     same = all(c9.execute(f"SELECT * FROM {t}").fetchall() == rows for t, rows in snapshot8.items() if t != "schema_migration")
     check("every pre-existing row is untouched by the migration", same)
     check("a pre-migration backup was made", any(paths.backup_dir and Path(paths.backup_dir).glob("*")))
@@ -527,7 +578,7 @@ def test_project(tmp: Path):
     check("store refuses override of a policy that does not cover the location", refused(lambda: st.record_override(doc.location_id, protect["policy_id"], "why", confirmed=True)))
     check("store refuses override of a preference policy", refused(lambda: st.record_override(doc.location_id, prefer["policy_id"], "why", confirmed=True)))
     check("override cannot be recorded through record_decision", refused(lambda: st.record_decision("override_protection", LOCATION, back.location_id, {"policy_id": "1", "policy_version_id": "1"})))
-    check("nothing was written by the refusals", st.counts() == {"operations": 2, "decisions": 0, "withdrawals": 0, "policy_versions": 2})
+    check("nothing was written by the refusals", st.counts() == {"operations": 2, "decisions": 0, "withdrawals": 0, "policy_versions": 2, "review_events": 0})
 
     d1 = st.record_decision("canonical_location", GROUP, report_group, doc.location_id, rationale="the working copy")
     d2 = st.record_decision("redundant_location", LOCATION, down.location_id)
@@ -545,7 +596,7 @@ def test_project(tmp: Path):
     op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (d1["operation_id"],)).fetchone()
     check("the operation carries actor, actor kind, agent kind and version, session and command ids, time, note",
           op["actor_id"] == "tester" and op["actor_kind"] == "explicit_human" and op["agent_kind"] == "dashboard"
-          and op["agent_version"] == "B8" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
+          and op["agent_version"] == "B9" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
           and op["occurred_utc"].endswith("Z") and op["note"] == "the working copy")
     g = R.resolve_all(E.load_evidence(conn)).group(report_group)
     check("the gate in a real project: the protected backup mark is a conflict; Downloads is eligible only once the conflict clears",
@@ -656,6 +707,367 @@ def test_no_mutation(project_dir, corpus, before, app_root):
     changed = [p for p, v in before["files"].items() if after["files"].get(p) != v]
     check(f"every one of the {len(before['files'])} corpus files has the size, modified time and bytes it was built with", not changed, str(changed[:5]))
     check("no path appeared or vanished under the corpus", after["everything"] == before["everything"])
+
+
+# ---------------------------------------------------------------------------
+# 6. Build 3: routing on hand-built models
+# ---------------------------------------------------------------------------
+
+def test_routing_model():
+    section("6. Routing (Build 3): precedence, events, triggers, drift, blockers")
+    from itertools import combinations
+    order = RT.ROUTE_ORDER
+    check("the routes, in the handoff's recommended precedence", order == (
+        RT.CONFLICT, RT.NEEDS_REVALIDATION, RT.BLOCKED, RT.DEFERRED, RT.READY_FOR_PLAN, RT.RESOLVED, RT.UNRESOLVED))
+    ok = True
+    for n in range(1, len(order) + 1):
+        for subset in combinations(order, n):
+            conds = [RT.Condition(r, "x", "") for r in reversed(subset)]
+            if RT._primary(conds) != min(subset, key=order.index):
+                ok = False
+    check("every combination of conditions (127) resolves to the earliest route in the table", ok)
+    check("no condition at all is the ordinary queue", RT._primary([]) == RT.UNRESOLVED)
+
+    A = loc("A", r"C:\Docs\a.pdf", phys="P1")
+    B = loc("B", r"C:\Downloads\a.pdf", phys="P2")
+    C = loc("C", r"E:\Backup\a.pdf", root="Backup", phys="P3")
+    protect = pol("PV1", "protect_source_root", {"root_key": "Backup", "root_path": "E:\\Backup"})
+
+    # -- end to end: several conditions on one group, peeled off one at a time --
+    drifted = bdec("D1", "canonical_location", GROUP, "C1", "A", [A, B, C])
+    from dataclasses import replace
+    drifted = replace(drifted, binding={**drifted.binding, "members": [{"file_path_id": "A", "observation_id": "obs-OLD"}] + drifted.binding["members"][1:]})
+    redundant_c = bdec("D2", "redundant_location", LOCATION, "C", True, [C, A, B])
+    unknown = loc("U", r"C:\u\a.pdf", phys=None, known=False)
+    deferral = ev_row("E1", "deferred", GROUP, "C1", "time", "until 2099-01-01", "2099-01-01T00:00:00Z")
+    ev, proj, rt = routed([A, B, C, unknown], [drifted, redundant_c], [protect], [deferral])
+    r = rt.groups["C1"]
+    check("conflict + drift + blocker + deferral on one group: primary is Conflict, every condition still reported",
+          r.primary == RT.CONFLICT and r.has(RT.NEEDS_REVALIDATION) and r.has(RT.BLOCKED) and r.has(RT.DEFERRED)
+          and [c.kind for c in r.of(RT.CONFLICT)] == [R.PROTECTED_VS_REDUNDANT], r.as_dict())
+    ev, proj, rt = routed([A, B, C, unknown], [drifted], [protect], [deferral])
+    check("...without the conflict: Needs revalidation", rt.groups["C1"].primary == RT.NEEDS_REVALIDATION)
+    fresh = bdec("D1", "canonical_location", GROUP, "C1", "A", [A, B, C, unknown])
+    ev, proj, rt = routed([A, B, C, unknown], [fresh], [protect], [deferral])
+    check("...with current evidence behind the decision: Blocked (identity unknown)", rt.groups["C1"].primary == RT.BLOCKED
+          and [c.kind for c in rt.groups["C1"].of(RT.BLOCKED)] == [RT.PHYSICAL_IDENTITY_UNKNOWN])
+    fresh3 = bdec("D1", "canonical_location", GROUP, "C1", "A", [A, B, C])
+    ev, proj, rt = routed([A, B, C], [fresh3], [protect], [deferral])
+    check("...with identity known: Deferred", rt.groups["C1"].primary == RT.DEFERRED and rt.groups["C1"].word == "Deferred")
+    ev, proj, rt = routed([A, B, C], [fresh3], [protect], [])
+    check("...with nothing parked: the ordinary queue, In progress", rt.groups["C1"].primary == RT.UNRESOLVED and rt.groups["C1"].word == "In progress")
+    ev, proj, rt = routed([A, B, C], [fresh3, bdec("D2", "redundant_location", LOCATION, "B", True, [B, A, C])], [protect], [])
+    check("...with a redundant mark: Ready for plan", rt.groups["C1"].primary == RT.READY_FOR_PLAN)
+    ev, proj, rt = routed([A, B, C], [bdec("D1", "keep_all_group", GROUP, "C1", True, [A, B, C])], [], [])
+    check("...Keep all: Resolved (nothing to plan) -- not Ready, not the queue", rt.groups["C1"].primary == RT.RESOLVED)
+    ev, proj, rt = routed([A, B, C], [], [], [])
+    check("...untouched: Unreviewed on the ordinary queue", rt.groups["C1"].word == "Unreviewed" and rt.counts[RT.UNRESOLVED] == 1)
+
+    # -- events: open and closed ---------------------------------------------------
+    events = [ev_row("E1", "skipped", GROUP, "C1"), ev_row("E2", "deferred", GROUP, "C1", "manual", "indefinitely"),
+              ev_row("E3", "skipped", GROUP, "C1")]
+    opened = RT.open_events(events)[(GROUP, "C1")]
+    check("a skip never opens anything; the deferral stays open through later skips",
+          [e.review_event_id for e in opened["deferred"]] == ["E2"] and not opened["blocked"] and not opened["needs_revalidation"])
+    events += [ev_row("E4", "deferred", GROUP, "C1", "time", "until 2099", "2099-01-01")]
+    opened = RT.open_events(events)[(GROUP, "C1")]
+    check("a new deferral replaces the open one (the latest speaks)", [e.review_event_id for e in opened["deferred"]] == ["E4"])
+    events += [ev_row("E5", "restored", GROUP, "C1", "manual", "by hand", refers_to="E4")]
+    opened = RT.open_events(events)[(GROUP, "C1")]
+    check("a restore that names the deferral closes it", opened["deferred"] == [])
+    events2 = [ev_row("E1", "deferred", GROUP, "C1", "manual"), ev_row("E2", "blocked", GROUP, "C1", "preview_available", "no preview"),
+               ev_row("E3", "needs_revalidation", GROUP, "C1", "evidence_change", "x"), ev_row("E4", "restored", GROUP, "C1")]
+    opened = RT.open_events(events2)[(GROUP, "C1")]
+    check("a restore with no reference closes everything open on the target", all(v == [] for v in opened.values()))
+    events3 = [ev_row("E1", "deferred", GROUP, "C1", "manual"), ev_row("E2", "deferred", LOCATION, "A", "manual"),
+               ev_row("E3", "restored", LOCATION, "A", refers_to="E2")]
+    opened = RT.open_events(events3)
+    check("a restore on one target leaves another target's deferral open",
+          [e.review_event_id for e in opened[(GROUP, "C1")]["deferred"]] == ["E1"] and opened[(LOCATION, "A")]["deferred"] == [])
+
+    # -- deferral triggers --------------------------------------------------------------
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "time", "until", "2026-09-21T00:00:00Z")])
+    check("snooze until a date: parked while the date is ahead", rt.groups["C1"].primary == RT.DEFERRED and not rt.groups["C1"].deferral_fired)
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "time", "until", "2026-09-19")], now="2026-09-20T12:00:00Z")
+    check("...and back on the queue once it has passed, live, with the reason",
+          rt.groups["C1"].primary == RT.UNRESOLVED and rt.groups["C1"].deferral_fired and "elapsed" in rt.groups["C1"].deferral_fired_why)
+    snap = {"target_kind": GROUP, "content_id": "C1", "members": [{"file_path_id": "A", "observation_id": "obs-A"}, {"file_path_id": "B", "observation_id": "obs-B"}, {"file_path_id": "C", "observation_id": "obs-C"}]}
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "evidence_change", "until changed", detail=snap)])
+    check("snooze until the evidence changes: parked while nothing changed", rt.groups["C1"].primary == RT.DEFERRED)
+    A2 = Location("A", A.path, A.root_key, A.content_id, A.physical_id, True, A.size_bytes, "obs-A2", A.sort_key)
+    ev, proj, rt = routed([A2, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "evidence_change", "until changed", detail=snap)])
+    check("...fires when a copy is observed again", rt.groups["C1"].deferral_fired and "observed again" in rt.groups["C1"].deferral_fired_why)
+    D = loc("D", r"C:\new\a.pdf", phys="P4")
+    ev, proj, rt = routed([A, B, C, D], [], [], [ev_row("E1", "deferred", GROUP, "C1", "evidence_change", "until changed", detail=snap)])
+    check("...fires when a member arrives", rt.groups["C1"].deferral_fired and "new member" in rt.groups["C1"].deferral_fired_why)
+    from Phase3.model import RootCoverage
+    unavailable = {"Backup": RootCoverage("Backup", complete=False, available=False, detail="root unavailable")}
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "source_available", "until back")], roots=unavailable)
+    check("snooze until the source is available: parked while a root is unavailable", not rt.groups["C1"].deferral_fired)
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "source_available", "until back")], roots={})
+    check("...fires once every root is available", rt.groups["C1"].deferral_fired)
+    stale_a = Location("A", A.path, A.root_key, A.content_id, A.physical_id, True, A.size_bytes, A.observation_id, A.sort_key, hash_current=False)
+    ev, proj, rt = routed([stale_a, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "hash_current", "until current")])
+    check("snooze until fingerprints are current: parked while one is stale", not rt.groups["C1"].deferral_fired)
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "hash_current", "until current")])
+    check("...fires once every fingerprint is current", rt.groups["C1"].deferral_fired)
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "deferred", GROUP, "C1", "manual", "indefinitely")], now="2099-01-01T00:00:00Z")
+    check("defer indefinitely never fires by itself", rt.groups["C1"].primary == RT.DEFERRED and not rt.groups["C1"].deferral_fired)
+    ev, proj, rt = routed([A, B, C], [dec("D1", "defer_review", GROUP, "C1")], [], [])
+    check("a B8 defer_review decision routes as a manual deferral", rt.groups["C1"].primary == RT.DEFERRED
+          and rt.groups["C1"].of(RT.DEFERRED)[0].decision_ids == ("D1",))
+
+    # -- drift -------------------------------------------------------------------------
+    d = bdec("D1", "redundant_location", LOCATION, "B", True, [B, A, C])
+    ev, proj, rt = routed([A, B, C], [d])
+    check("a location decision on current evidence has no drift", rt.locations["B"].drift[0].applicable)
+    B2 = Location("B", B.path, B.root_key, B.content_id, B.physical_id, True, B.size_bytes, "obs-B2", B.sort_key)
+    ev, proj, rt = routed([A, B2, C], [d])
+    check("...its observation changed: drift names the copy and both observations",
+          not rt.locations["B"].drift[0].applicable and "observed again" in rt.locations["B"].drift[0].changes[0]
+          and rt.groups["C1"].primary == RT.NEEDS_REVALIDATION)
+    g = bdec("D1", "canonical_location", GROUP, "C1", "A", [A, B, C])
+    ev, proj, rt = routed([A, B], [g])
+    check("a group decision: a member left -> drift; the decision itself is untouched and still active",
+          any("member left" in c for c in rt.groups["C1"].drift[0].changes) and proj.group("C1").canonical == "A")
+    ev, proj, rt = routed([A, B, C, D], [g])
+    check("...a member arrived -> drift", any("new member" in c for c in rt.groups["C1"].drift[0].changes))
+    nobind = dec("D1", "canonical_location", GROUP, "C1", "A")
+    ev, proj, rt = routed([A, B], [nobind])
+    check("a decision with no binding (imported data) cannot drift", rt.groups["C1"].drift[0].applicable)
+    g3 = bdec("D1", "canonical_location", GROUP, "C1", "A", [A, B, C])
+    ev, proj, rt = routed([A, B, C], [g3], [], [ev_row("E1", "needs_revalidation", GROUP, "C1", "evidence_change", "recorded earlier")])
+    check("an open revalidation flag on a target whose decisions rest on current evidence is not a route by itself "
+          "(the live comparison speaks; the detector will restore it)",
+          rt.groups["C1"].primary == RT.UNRESOLVED and not rt.groups["C1"].has(RT.NEEDS_REVALIDATION))
+    ev, proj, rt = routed([A, B2, C], [d], [], [ev_row("E1", "needs_revalidation", LOCATION, "B", "evidence_change", "recorded")])
+    check("...and where live drift exists, the open flag is carried on the condition as provenance",
+          rt.locations["B"].of(RT.NEEDS_REVALIDATION)[0].event_id == "E1")
+
+    # -- blockers ---------------------------------------------------------------------------
+    ev, proj, rt = routed([A, B, unknown], [])
+    check("physical identity unknown on a member blocks the group", rt.groups["C1"].primary == RT.BLOCKED
+          and rt.groups["C1"].of(RT.BLOCKED)[0].kind == RT.PHYSICAL_IDENTITY_UNKNOWN)
+    interrupted = {"Primary": RootCoverage("Primary", complete=False, available=True, detail="latest scan interrupted")}
+    ev, proj, rt = routed([A, B, C], [], [], [], roots=interrupted)
+    check("an interrupted walk of a root blocks its groups", rt.groups["C1"].primary == RT.BLOCKED
+          and rt.groups["C1"].of(RT.BLOCKED)[0].kind == RT.INCOMPLETE_ROOT_COVERAGE)
+    warnings = {"Primary": RootCoverage("Primary", complete=False, available=True, detail="3 inaccessible")}
+    ev, proj, rt = routed([A, B, C], [], [], [], roots=warnings)
+    check("a completed walk with inaccessible folders warns but does not block (one denied folder must not park every group)",
+          rt.groups["C1"].primary == RT.UNRESOLVED and any(c.kind == "coverage_warning" for c in rt.groups["C1"].conditions))
+    ev, proj, rt = routed([A, B, C], [bdec("D1", "redundant_location", LOCATION, "B", True, [B, A, C])], [], [],
+                          roots={"Primary": RootCoverage("Primary", False, False, "root unavailable")})
+    check("an unavailable root blocks", rt.groups["C1"].primary == RT.BLOCKED)
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "blocked", GROUP, "C1", "preview_available", "no preview yet")])
+    check("a recorded blocker of a kind this build cannot compute (a preview) is honoured", rt.groups["C1"].primary == RT.BLOCKED
+          and rt.groups["C1"].of(RT.BLOCKED)[0].kind == RT.RECORDED_BLOCK)
+    ev, proj, rt = routed([A, B, C], [], [], [ev_row("E1", "blocked", GROUP, "C1", "evidence_change", "identity unknown")])
+    check("a recorded blocker of a computable kind is ignored once the live evidence has cleared it", rt.groups["C1"].primary == RT.UNRESOLVED)
+    off = Location("Z", r"C:\gone\a.pdf", "Primary", None, "P9", True, 10, "obs-Z", (), hash_current=False, in_current_group=False)
+    ev, proj, rt = routed([A, B, C, off], [bdec("D1", "redundant_location", LOCATION, "Z", True, [off])], [], [])
+    check("a stale fingerprint on a decided copy that left its group: blocked (stale) and orphaned, never guessed",
+          rt.locations["Z"].primary == RT.BLOCKED and rt.locations["Z"].of(RT.BLOCKED)[0].kind == RT.STALE_CONTENT_HASH
+          and proj.orphaned_decisions == ("D1",))
+
+    # -- conflicts: kinds, severity, order -----------------------------------------------
+    prefer = pol("PV3", "prefer_folder_subtree", {"path": r"C:\Docs"})
+    avoid = pol("PV4", "avoid_folder_subtree", {"path": r"C:\Docs"})
+    ev, proj, rt = routed([A, B, C], [bdec("D1", "redundant_location", LOCATION, "B", True, [B, A, C])], [prefer, avoid], [])
+    g1 = proj.group("C1")
+    check("a prefer and an avoid at one tier: an advisory exception -- routed to Conflicts, eligibility untouched",
+          [(c.kind, c.severity) for c in g1.conflicts] == [(R.SAME_PRECEDENCE_POLICY_TIE, R.ADVISORY)] and g1.ready_for_plan
+          and g1.plan_eligible_reclaim_bytes == 1000 and rt.groups["C1"].primary == RT.CONFLICT)
+    ev, proj, rt = routed([A, B, C], [bdec("D1", "canonical_location", GROUP, "C1", "A", [A, B, C])], [prefer, avoid], [])
+    check("...but not when an explicit canonical makes the recommendation moot", not proj.group("C1").conflicts)
+    big = loc("X1", r"C:\x\1.bin", content="C9", phys="P91", size=5000)
+    big2 = loc("X2", r"C:\x\2.bin", content="C9", phys="P92", size=5000)
+    small = loc("Y1", r"C:\y\1.bin", content="C8", phys="P81", size=10)
+    small2 = loc("Y2", r"E:\Backup\1.bin", root="Backup", content="C8", phys="P82", size=10)
+    ev, proj, rt = routed([A, B, C, big, big2, small, small2],
+                          [bdec("D1", "redundant_location", LOCATION, "C", True, [C, A, B]),
+                           bdec("D2", "redundant_location", LOCATION, "Y2", True, [small2, small]),
+                           bdec("D3", "redundant_location", LOCATION, "X1", True, [big, big2]), bdec("D4", "redundant_location", LOCATION, "X2", True, [big2, big])],
+                          [protect], [])
+    order_ = [g.group_id for g in RT.ordered(proj, rt, RT.CONFLICT)]
+    check("the Conflicts route orders by reclaim at stake, then the oldest unresolved", order_ == ["C9", "C1", "C8"], str(order_))
+
+    # -- determinism --------------------------------------------------------------------------
+    import random
+    ev, proj, rt = routed([A, B, C, unknown, D], [drifted, redundant_c], [protect, prefer], [deferral, ev_row("E2", "skipped", GROUP, "C1")])
+    canon = lambda r: json.dumps([x.as_dict() for x in r.groups.values()] + [x.as_dict() for x in r.locations.values()] + [r.counts], sort_keys=True)  # noqa: E731
+    base = canon(rt)
+    rnd = random.Random(3)
+    shuffled = Evidence(dict(rnd.sample(list(ev.locations.items()), len(ev.locations))), dict(ev.groups),
+                        rnd.sample(ev.decisions, len(ev.decisions)), rnd.sample(ev.policies, len(ev.policies)), list(ev.events), dict(ev.roots), ev.now)
+    check("the same model in another row order routes identically", canon(RT.route_all(shuffled, R.resolve_all(shuffled), NOW)) == base)
+
+
+# ---------------------------------------------------------------------------
+# 7. Build 3 on the real project: the detector, deferrals, a rescan
+# ---------------------------------------------------------------------------
+
+def test_routing_project(tmp: Path):
+    section("7. Routing on a real project: the detector, deferrals, Skip, a rescan that moves the evidence")
+    from Phase2.runner import RunRequest, RunWorker, PRESCAN, DUPLICATES
+    from Phase2.core import connect
+    from Phase3 import evidence as E, store as S
+
+    app_root = tmp / "RouteRoot"
+    (app_root / "Projects").mkdir(parents=True)
+    corpus = tmp / "RouteCorpus"
+    root1, root2 = build_corpus(corpus)
+    before = fingerprint_tree(corpus)
+    RunWorker(app_root, None, RunRequest(PRESCAN, "Pre-Scan", source_roots=[str(root1), str(root2)], project_name="P3Route")).run()
+    project_dir = app_root / "Projects" / "P3Route"
+    RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+    conn = connect(project_dir, write=True)
+    st = S.DecisionStore(conn, actor_id="tester", session_id="session:route")
+    ev = E.load_evidence(conn)
+    by_path = {l.path: l for l in ev.locations.values()}
+    L = lambda *parts: by_path[str(Path(*parts))]                   # noqa: E731
+    doc, down, back = L(root1, "Documents", "report.pdf"), L(root1, "Downloads", "report.pdf"), L(root2, "Backup", "report.pdf")
+    link, tax = L(root1, "Documents", "report-link.pdf"), L(root1, "Documents", "tax.docx")
+    rep, taxg = doc.content_id, tax.content_id
+    check("root coverage is loaded for both roots, complete and available",
+          len(ev.roots) == 2 and all(rc.complete and rc.available for rc in ev.roots.values()))
+    check("a fresh project: nothing for the detector to write", RT.reconcile(conn, st) == {"written": 0})
+
+    d1 = st.record_decision("canonical_location", GROUP, rep, doc.location_id)
+    d2 = st.record_decision("redundant_location", LOCATION, down.location_id)
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    check("a decided group is Ready for plan; the untouched one is on the queue",
+          rt.groups[rep].primary == RT.READY_FOR_PLAN and rt.groups[taxg].primary == RT.UNRESOLVED)
+    check("the detector has nothing to write for decisions on current evidence, twice",
+          RT.reconcile(conn, st) == {"written": 0} and RT.reconcile(conn, st) == {"written": 0})
+
+    # -- Skip versus Defer -------------------------------------------------------------------
+    n0 = st.counts()["review_events"]
+    st.skip(GROUP, taxg)
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    check("Skip: one audit row; the group is exactly where it was", st.counts()["review_events"] == n0 + 1 and rt.groups[taxg].primary == RT.UNRESOLVED)
+    e1 = st.defer(GROUP, taxg, "snooze_until_date", until="2099-01-01", note="later")
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    check("Defer until a date: parked, with the trigger recorded", rt.groups[taxg].primary == RT.DEFERRED and e1["return_kind"] == "time"
+          and conn.execute("SELECT return_on_utc FROM p3_review_event WHERE review_event_id=?", (e1["review_event_id"],)).fetchone()[0] == "2099-01-01T00:00:00Z")
+    e2 = st.defer(GROUP, taxg, "snooze_until_evidence_change")
+    row = conn.execute("SELECT detail_json FROM p3_review_event WHERE review_event_id=?", (e2["review_event_id"],)).fetchone()
+    detail = json.loads(row[0])
+    check("Defer until the evidence changes records the group's evidence, ids only",
+          detail["disposition"] == "snooze_until_evidence_change" and len(detail["members"]) == 3 and all(m["observation_id"] for m in detail["members"]))
+    def refused(fn):
+        try:
+            fn()
+            return False
+        except ValueError:
+            return True
+    check("a date snooze needs a date", refused(lambda: st.defer(GROUP, taxg, "snooze_until_date")))
+    check("an unknown disposition is refused", refused(lambda: st.defer(GROUP, taxg, "snooze_until_preview_available")))
+    r = st.restore(GROUP, taxg, refers_to=e2["review_event_id"], reason="by hand")
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    check("Restore by hand returns it to the queue; the deferral rows stay", rt.groups[taxg].primary == RT.UNRESOLVED
+          and conn.execute("SELECT COUNT(*) FROM p3_review_event WHERE event_kind='deferred'").fetchone()[0] == 2)
+    e3 = st.defer(GROUP, taxg, "snooze_until_date", until="2026-01-01")
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    check("a snooze that has already elapsed is on the queue, live", rt.groups[taxg].primary == RT.UNRESOLVED and rt.groups[taxg].deferral_fired)
+    written = RT.reconcile(conn, st)
+    check("...and the detector records the restore (system operation, never a decision)",
+          written == {"restored": 1, "written": 1}
+          and conn.execute("SELECT actor_kind, agent_kind FROM p3_operation ORDER BY operation_id DESC LIMIT 1").fetchone()[:] == ("system_evidence", "routing_detector")
+          and RT.reconcile(conn, st) == {"written": 0})
+    conn.close()
+
+    # -- a rescan that moves the evidence under a decision ------------------------------------
+    time.sleep(1.1)
+    (root1 / "Downloads" / "report.pdf").write_bytes(b"alpha" * 20000 + b"!")   # the redundant-marked copy changes
+    RunWorker(app_root, project_dir, RunRequest(PRESCAN, "Scan again")).run()
+    RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+    conn = connect(project_dir, write=True)
+    st = S.DecisionStore(conn, actor_id="tester", session_id="session:route")
+    ev = E.load_evidence(conn)
+    proj = R.resolve_all(ev)
+    rt = RT.route_all(ev, proj)
+    check("the changed copy left the group; the group has three members now",
+          tuple(sorted(ev.groups[rep].member_ids)) == tuple(sorted((doc.location_id, link.location_id, back.location_id))))
+    check("the location it was is still loaded, off-group, so its decision can be judged",
+          down.location_id in ev.locations and not ev.locations[down.location_id].in_current_group)
+    check("the group routes to Needs Revalidation: the canonical decision's bound membership changed",
+          rt.groups[rep].primary == RT.NEEDS_REVALIDATION and any("member left" in c for x in rt.groups[rep].drift for c in x.changes))
+    check("the redundant mark on the changed copy drifted too, and is orphaned -- the decision rows are untouched",
+          not rt.locations[down.location_id].drift[0].applicable and proj.orphaned_decisions == (str(d2["decision_id"]),)
+          and conn.execute("SELECT COUNT(*) FROM p3_decision").fetchone()[0] == 2
+          and conn.execute("SELECT COUNT(*) FROM p3_decision_withdrawal").fetchone()[0] == 0)
+    written = RT.reconcile(conn, st)
+    check("the detector writes one needs_revalidation flag per drifted target and nothing else",
+          written == {"needs_revalidation": 2, "written": 2} and RT.reconcile(conn, st) == {"written": 0}, str(written))
+    flag = conn.execute("SELECT return_kind, return_condition, detail_json FROM p3_review_event WHERE event_kind='needs_revalidation' AND target_kind=? AND target_ref=?",
+                        (GROUP, rep)).fetchone()
+    check("the flag says what changed, F10's shape", flag["return_kind"] == "evidence_change" and "member left" in flag["return_condition"]
+          and json.loads(flag["detail_json"])["decision_ids"] == [str(d1["decision_id"])])
+    # confirming: a new canonical decision on current evidence supersedes the old; the flag clears by comparison
+    d3 = st.record_decision("canonical_location", GROUP, rep, doc.location_id, rationale="reconfirmed")
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    check("re-recording the canonical on current evidence: the group leaves Needs Revalidation by itself",
+          d3["supersedes_decision_id"] == d1["decision_id"] and not rt.groups[rep].has(RT.NEEDS_REVALIDATION))
+    written = RT.reconcile(conn, st)
+    check("...and the detector restores the flag (a row referring to it), nothing marked by hand",
+          written == {"restored": 1, "written": 1}
+          and conn.execute("SELECT refers_to_review_event_id FROM p3_review_event ORDER BY review_event_id DESC LIMIT 1").fetchone()[0] is not None)
+    st.withdraw(d2["decision_id"], "no longer a duplicate")
+    check("withdrawing the orphaned mark: the detector restores its flag too", RT.reconcile(conn, st) == {"restored": 1, "written": 1})
+    check("the re-examined copy is not 'stale': its current observation has its own verdict (unique by size)",
+          E.load_evidence(conn).locations[down.location_id].hash_current)
+
+    # -- a decided copy changes and only the walk runs: stale, and blocked ----------------
+    tax2 = L(root2, "Backup", "tax.docx")
+    d4 = st.record_decision("redundant_location", LOCATION, tax2.location_id)
+    conn.close()
+    time.sleep(1.1)
+    (root2 / "Backup" / "tax.docx").write_bytes(b"beta" * 30000 + b"?")
+    RunWorker(app_root, project_dir, RunRequest(PRESCAN, "Scan again")).run()
+    conn = connect(project_dir, write=True)
+    st = S.DecisionStore(conn, actor_id="tester", session_id="session:route")
+    ev = E.load_evidence(conn)
+    rt = RT.route_all(ev, R.resolve_all(ev))
+    lr = rt.locations[tax2.location_id]
+    check("a decided copy that changed and was not fingerprinted again: stale, so Blocked -- and drifted, which outranks it",
+          not ev.locations[tax2.location_id].hash_current and lr.has(RT.BLOCKED)
+          and lr.of(RT.BLOCKED)[0].kind == RT.STALE_CONTENT_HASH and lr.primary == RT.NEEDS_REVALIDATION)
+    check("...the copy left its group (its identity is stale), so the group itself stays on the queue and the mark is orphaned",
+          tax2.location_id not in ev.groups[taxg].member_ids and rt.groups[taxg].primary == RT.UNRESOLVED
+          and str(d4["decision_id"]) in R.resolve_all(ev).orphaned_decisions)
+    written = RT.reconcile(conn, st)
+    check("the detector records the flag and the blocker (a decided target), returning on fingerprints being current",
+          written == {"needs_revalidation": 1, "blocked": 1, "written": 2}
+          and conn.execute("SELECT return_kind FROM p3_review_event WHERE event_kind='blocked' ORDER BY review_event_id DESC LIMIT 1").fetchone()[0] == "hash_current")
+    conn.close()
+    RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+    conn = connect(project_dir, write=True)
+    st = S.DecisionStore(conn, actor_id="tester", session_id="session:route")
+    written = RT.reconcile(conn, st)
+    ev = E.load_evidence(conn)
+    check("fingerprinting again clears the blocker: the detector restores it (the flag stays: the decision still drifted)",
+          written == {"restored": 1, "written": 1} and not RT.route_all(ev, R.resolve_all(ev)).locations[tax2.location_id].has(RT.BLOCKED))
+    st.withdraw(d4["decision_id"], "gone")
+    with WriteGuard([project_dir, app_root / "Logs"]) as guard:
+        st.defer(GROUP, taxg, "snooze_until_hash_current")
+        st.skip(GROUP, taxg)
+        st.restore(GROUP, taxg)
+        RT.reconcile(conn, st)
+        RT.route_all(E.load_evidence(conn), R.resolve_all(E.load_evidence(conn)))
+    conn.close()
+    check("no Python-level write reached a path outside the project folder while routing ran", not guard.violations, str(guard.violations[:5]))
+    after = fingerprint_tree(corpus)
+    changed = [p for p, v in before["files"].items() if after["files"].get(p) != v]
+    check("only the two files the test rewrote differ on disk; everything else is byte-identical",
+          sorted(changed) == sorted([str(root1 / "Downloads" / "report.pdf"), str(root2 / "Backup" / "tax.docx")])
+          and after["everything"] == before["everything"], str(changed))
 
 
 # ---------------------------------------------------------------------------
@@ -791,9 +1203,23 @@ def test_gui(tmp: Path, before_corpus_fp, corpus):
             check("Keep All asked about the marks, withdrew them, and every copy is a keeper (resolved)",
                   asked[-1][0] == "yesno" and p.review_state == R.RESOLVED and len(p.keeper_set) == 4)
             page.defer()
-            check("Defer", page.proj.group(cid).deferred and str(page.buttons["defer"].cget("text")) == "Undefer")
+            dd = page.defer_dialog
+            dd.choice.set("snooze_until_date")
+            dd._update()
+            dd.date_var.set("2099-01-01")
+            dd._confirm()
+            r = page.routing.groups[cid]
+            check("Defer... records a deferral with a time trigger; the group is parked and the button says Restore",
+                  r.primary == RT.DEFERRED and r.deferral is not None and r.deferral.return_kind == "time"
+                  and str(page.buttons["defer"].cget("text")) == "Restore")
+            before_skip = page.store.counts()["review_events"]
+            page.skip()
+            check("Skip writes one audit row and changes nothing about the group's route",
+                  page.store.counts()["review_events"] == before_skip + 1 and page.routing.groups[cid].primary == RT.DEFERRED)
+            page.show_group(cid)                     # parked groups are off the Queue list; the detail pane still shows them
             page.defer()
-            check("Undefer", not page.proj.group(cid).deferred)
+            check("Restore ends the deferral: the group is back on its ordinary route", not page.routing.groups[cid].has(RT.DEFERRED))
+            page.show_group(cid)
             rows = [iid for iid, d in page.history_rows.items() if d["active"] and d["decision_kind"] == "keep_all_group"]
             page.history.selection_set(rows[0])
             page._history_selected()
@@ -804,9 +1230,20 @@ def test_gui(tmp: Path, before_corpus_fp, corpus):
             page.history.selection_set(inactive[0])
             page._history_selected()
             check("Undo disabled for a withdrawn or superseded decision", str(page.undo_button.cget("state")) == "disabled")
-            page.filter_var.set("Unreviewed")
+            page.filter_var.set("Queue")
             page.refresh_list()
-            check("filter: Unreviewed shows the other group only", len(page.table.get_children()) == 1)
+            check("the Queue route shows both groups again (one in progress, one unreviewed)", len(page.table.get_children()) == 2
+                  and {page.routing.groups[i].word for i in page.table.get_children()} == {"In progress", "Unreviewed"})
+            page.filter_var.set("Lens: Hard-Link Aliases")
+            page.refresh_list()
+            check("a lens: Hard-Link Aliases shows the group with the alias only",
+                  [page.rows_by_iid[i].hardlink_aliases for i in page.table.get_children()] == [1])
+            page.filter_var.set("Lens: Cross-Root")
+            page.refresh_list()
+            check("a lens: Cross-Root shows both (each spans two roots)", len(page.table.get_children()) == 2)
+            page.filter_var.set("Ready for Plan")
+            page.refresh_list()
+            check("an empty route says so without claiming completion", "Nothing on this route" in page.count_var.get())
             page.filter_var.set("All")
             page.sort_by("copies")
             check("sort by copies ascending", [page.rows_by_iid[i].location_count for i in page.table.get_children()] == [3, 4])
@@ -827,13 +1264,66 @@ def test_gui(tmp: Path, before_corpus_fp, corpus):
             check("...which lands on that group", app.review_page.selected_group == cid)
             app.show_hub()
             t = _texts(app.content)
-            check("back on the summary, the Decide line counts the reviewed group", any(x.startswith("1 of 2 groups reviewed") for x in t), str([x for x in t if "groups" in x]))
+            check("back on the summary, the Decide line counts the reviewed group and its route",
+                  any(x.startswith("1 of 2 groups reviewed") and "in progress" not in x for x in t), str([x for x in t if "groups" in x]))
+            app.show_decide()
+            page = app.review_page
+            check("Confirm decisions is disabled while nothing has drifted", str(page.buttons["confirm"].cget("state")) == "disabled")
+            # -- the queue emptied: Currently clear, never Complete ----------------------
+            page.show_group(cid)
+            page.keep_all()
+            other = [g.group_id for g in page.proj.groups if g.group_id != cid][0]
+            page.show_group(other)
+            page.keep_all()
+            page.filter_var.set("Queue")
+            page.refresh_list()
+            check("with every group decided the queue says 'Currently clear' and never 'complete'",
+                  page.count_var.get().startswith("Currently clear") and "omplete" not in page.count_var.get(), page.count_var.get())
             app.release_connection()
             app.destroy()
         check("no Python-level write reached a path outside the project folder during the window session", not guard.violations, str(guard.violations[:5]))
         after = fingerprint_tree(corpus2)
         check("the corpus behind the window session is byte-for-byte unchanged",
               all(after["files"].get(p) == v for p, v in fp_before["files"].items()) and after["everything"] == fp_before["everything"])
+
+        # -- a rescan moves the evidence: the window's own detector, then Confirm decisions --
+        from Phase2.runner import RunOutcome, COMPLETED
+        import time as _time
+        _time.sleep(1.1)
+        (root1 / "Downloads" / "report.pdf").write_bytes(b"alpha" * 20000 + b"!")
+        RunWorker(app_root, project_dir, RunRequest(PRESCAN, "Scan again")).run()
+        RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+        app = gui.Phase2App(None)
+        app.withdraw()
+        app.open_project(project_dir)
+        flags_before = app.conn.execute("SELECT COUNT(*) FROM p3_review_event WHERE event_kind='needs_revalidation'").fetchone()[0]
+        # what the window does when a run finishes: reopen, run the detector, announce, land on the summary
+        app._run_finished(RunRequest(PRESCAN, "Scan again"), RunOutcome(COMPLETED, "Scan again complete."))
+        flags_after = app.conn.execute("SELECT COUNT(*) FROM p3_review_event WHERE event_kind='needs_revalidation'").fetchone()[0]
+        check("after a run finishes, the window's detector has recorded the drift (a needs_revalidation row)", flags_after > flags_before,
+              f"{flags_before} -> {flags_after}")
+        t = _texts(app.content)
+        check("the summary's Decide line says how many need revalidation", any("need revalidation" in x for x in t), str([x for x in t if "groups" in x]))
+        app.show_decide()
+        page = app.review_page
+        page.filter_var.set("Needs Revalidation")
+        page.refresh_list()
+        check("the Needs Revalidation route lists the group whose Keep all rests on a membership that changed",
+              cid in page.table.get_children() and page.routing.groups[cid].primary == RT.NEEDS_REVALIDATION)
+        page.show_group(cid)
+        check("the route line explains what changed, in file terms",
+              "member left" in page.route_label.cget("text") or "observed again" in page.route_label.cget("text"), page.route_label.cget("text"))
+        check("Confirm decisions is enabled", str(page.buttons["confirm"].cget("state")) == "normal")
+        page.confirm_decisions()
+        keep_alls = app.conn.execute("SELECT decision_id, supersedes_decision_id FROM p3_decision WHERE decision_kind='keep_all_group' AND target_ref=? ORDER BY decision_id", (cid,)).fetchall()
+        check("Confirm re-records Keep all on current evidence: the group leaves Needs Revalidation and the old row is superseded, not deleted",
+              asked[-1][0] == "yesno" and not page.routing.groups[cid].has(RT.NEEDS_REVALIDATION)
+              and len(keep_alls) >= 2 and keep_alls[-1]["supersedes_decision_id"] == keep_alls[-2]["decision_id"],
+              f"asked={asked[-1][:2] if asked else None} route={page.routing.groups[cid].as_dict()} keep_alls={[tuple(r) for r in keep_alls]}")
+        check("...and the detector restored the flag", app.conn.execute(
+            "SELECT COUNT(*) FROM p3_review_event WHERE event_kind='restored' AND refers_to_review_event_id IS NOT NULL").fetchone()[0] >= 1)
+        app.release_connection()
+        app.destroy()
     finally:
         for n, f in real.items():
             setattr(messagebox, n, f)
@@ -848,6 +1338,8 @@ def main():
         test_resolver()
         project_dir, corpus, before, app_root = test_project(tmp)
         test_no_mutation(project_dir, corpus, before, app_root)
+        test_routing_model()
+        test_routing_project(tmp)
         test_gui(tmp, before, corpus)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -70,12 +70,27 @@ MINIMUM_FILE_LOCATIONS = 1
 MINIMUM_PHYSICAL_COPIES = 1
 
 
+#: Conflict kinds (Build 3 names them the research's way). A BLOCKING
+#: conflict is contradictory intent -- it withholds plan eligibility until a
+#: person resolves it. An ADVISORY one (an exception) routes attention but
+#: changes nothing about what is eligible.
+PROTECTED_VS_REDUNDANT = "protected_vs_redundant"          # the gate (B8 called it redundant_protected)
+CANONICAL_NO_LONGER_KEEPER = "canonical_no_longer_keeper"  # reason: marked_redundant | left_group
+SAME_PRECEDENCE_POLICY_TIE = "same_precedence_policy_tie"  # a prefer and an avoid at one tier disagree
+MINIMUM_FILE_LOCATIONS_KIND = "minimum_file_locations"
+MINIMUM_PHYSICAL_COPIES_KIND = "minimum_physical_copies"
+BLOCKING = "blocking"
+ADVISORY = "advisory"
+
+
 @dataclass(frozen=True)
 class Conflict:
     kind: str
     location_ids: tuple
     decision_ids: tuple
     message: str
+    severity: str = BLOCKING
+    reason: str = ""
 
 
 @dataclass
@@ -233,7 +248,7 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
                 # The gate: a redundant mark against active protection is a
                 # conflict, not an effect. The location stays protected.
                 conflicts.append(Conflict(
-                    "redundant_protected", (m.location_id,), (redundant.decision_id,),
+                    PROTECTED_VS_REDUNDANT, (m.location_id,), (redundant.decision_id,),
                     f"{m.path} is marked a redundant candidate but is protected by "
                     f"{POLICY_KINDS[in_force[0].kind].label.lower()} ({in_force[0].scope.get('root_path') or in_force[0].scope.get('path')}). "
                     "Protection is a hard constraint: override it explicitly, or withdraw the mark."))
@@ -252,8 +267,8 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
             canonical, canonical_id = cand, canonical_dec.decision_id
         else:
             conflicts.append(Conflict(
-                "canonical_not_member", (cand,), (canonical_dec.decision_id,),
-                f"The canonical ({cand}) is no longer a current member of this group."))
+                CANONICAL_NO_LONGER_KEEPER, (cand,), (canonical_dec.decision_id,),
+                f"The canonical ({cand}) is no longer a current member of this group.", reason="left_group"))
     for m in members:
         v, must_keep, redundant = verdicts[m.location_id]
         if v.status != UNDECIDED:
@@ -264,8 +279,8 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
             # safe side wins (the canonical must be a keeper); say so.
             v.status, v.rule, v.resolution_class = KEEPER, "explicit_canonical_location", "explicit_location_decision"
             conflicts.append(Conflict(
-                "canonical_redundant", (m.location_id,), (canonical_id, redundant.decision_id),
-                f"{m.path} is both the canonical and a redundant candidate. Withdraw one."))
+                CANONICAL_NO_LONGER_KEEPER, (m.location_id,), (canonical_id, redundant.decision_id),
+                f"{m.path} is both the canonical and a redundant candidate. Withdraw one.", reason="marked_redundant"))
         elif redundant is not None:
             v.status, v.rule, v.resolution_class = REDUNDANT, "explicit_redundant_location", "explicit_location_decision"
             if keep_all_dec is not None:
@@ -295,6 +310,15 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
         if preferred and avoided:
             v.policy_tier = "neutral"
             v.notes = v.notes + ("a prefer and an avoid folder policy both cover this location",)
+            if canonical is None and v.status != REDUNDANT:
+                # Two policies at one tier of the order disagree about a copy
+                # the recommendation still has to rank: an exception for the
+                # Conflicts route, advisory -- it changes no eligibility.
+                conflicts.append(Conflict(
+                    SAME_PRECEDENCE_POLICY_TIE, (m.location_id,), (),
+                    f"A prefer-folder and an avoid-folder policy both cover {m.path}; the recommendation "
+                    "cannot rank it. Retire or narrow one of them, or set the canonical explicitly.",
+                    severity=ADVISORY))
         elif preferred:
             v.policy_tier = "preferred"
         elif avoided:
@@ -345,7 +369,7 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
     remaining = len(member_ids) - len(redundant_ids)
     if member_ids and remaining < MINIMUM_FILE_LOCATIONS:
         conflicts.append(Conflict(
-            "minimum_file_locations", tuple(redundant_ids),
+            MINIMUM_FILE_LOCATIONS_KIND, tuple(redundant_ids),
             tuple(sorted(d for lid in redundant_ids for d in verdicts[lid][0].decision_ids)),
             "Every location in the group is marked redundant. A plan must leave at least one; the product "
             "never removes the last copy."))
@@ -353,10 +377,11 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
         remaining_objects = sum(1 for lids in objects.values() if any(statuses[l] != REDUNDANT for l in lids if l in statuses))
         if present and remaining_objects < MINIMUM_PHYSICAL_COPIES and remaining >= MINIMUM_FILE_LOCATIONS:
             conflicts.append(Conflict(
-                "minimum_physical_copies", tuple(redundant_ids), (),
+                MINIMUM_PHYSICAL_COPIES_KIND, tuple(redundant_ids), (),
                 "Every physical copy would be removed."))
-    conflicts = tuple(sorted(conflicts, key=lambda c: (c.kind, c.location_ids)))
-    if conflicts:
+    conflicts = tuple(sorted(conflicts, key=lambda c: (c.severity != BLOCKING, c.kind, c.location_ids)))
+    blocking = [c for c in conflicts if c.severity == BLOCKING]
+    if blocking:
         eligible, reclaim = (), 0
     else:
         eligible = tuple(redundant_ids)
@@ -364,14 +389,14 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
             reclaim = sum((size or 0) for _pid, lids in objects.items() if lids and all(statuses[l] == REDUNDANT for l in lids))
         else:
             reclaim = None if eligible else 0
-    ready = bool(eligible) and not conflicts
+    ready = bool(eligible) and not blocking
 
     # Review state.
     decision_ids = {d for v, _mk, _rd in verdicts.values() for d in v.decision_ids}
     decision_ids |= {d.decision_id for ds in gdec.values() for d in ds}
     undecided = [lid for lid in member_ids if statuses[lid] == UNDECIDED]
     blocked = (not group.evidence_current) or any(not m.present for m in members)
-    if conflicts:
+    if blocking:
         review_state = CONFLICT
     elif group_defer is not None:
         review_state = DEFERRED
@@ -383,7 +408,7 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
         review_state = RESOLVED
     if blocked:
         resolution_state = RS_BLOCKED
-    elif conflicts:
+    elif blocking:
         resolution_state = RS_CONFLICT
     elif canonical is not None or keep_all_dec is not None or any(
             v.rule.startswith("explicit_") for v, _mk, _rd in verdicts.values()):

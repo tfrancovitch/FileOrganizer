@@ -15,6 +15,16 @@ Canonical, Mark Redundant Candidate, Defer, and -- through its own dialog --
 Override Protection. Every one records a row and re-resolves; every one has
 Undo (a withdrawal row; nothing is ever deleted).
 
+Build 3 (B9) adds the routes: each group's Status is its primary route --
+Conflict, Needs revalidation, Blocked, Deferred, Ready for plan, Resolved,
+or the ordinary queue (In progress / Unreviewed) -- from `routing.py`, with
+every condition that applies listed beside it. The Show box filters by
+route or by lens. Defer takes a return trigger; Skip is a different key
+and records nothing but an audit row; Restore returns a parked group; Confirm
+decisions re-records decisions whose evidence moved. The detector runs when
+the page opens, so the record of what it found is current before the page
+draws.
+
 Recording a decision is instant, so there is no estimate and no progress
 screen: that pattern belongs to the collection runs.
 
@@ -29,13 +39,32 @@ from tkinter import ttk, messagebox, filedialog
 
 from . import evidence as E
 from . import resolve as R
-from .registry import LOCATION, GROUP, DECISION_KINDS, POLICY_KINDS, SOURCE_ROOT
+from . import routing as RT
+from .registry import LOCATION, GROUP, DECISION_KINDS, POLICY_KINDS, SOURCE_ROOT, DEFER_DISPOSITIONS
 from .store import DecisionStore, new_command_id, export_decision_journal
 
 STATUS_WORDS = {R.PROTECTED: "Protected", R.KEEPER: "Keeper", R.REDUNDANT: "Redundant candidate", R.UNDECIDED: "Undecided"}
 REVIEW_WORDS = {R.UNREVIEWED: "Unreviewed", R.IN_PROGRESS: "In progress", R.DEFERRED: "Deferred",
                 R.RESOLVED: "Resolved", R.CONFLICT: "Conflict"}
-FILTERS = ["All", "Unreviewed", "In progress", "Resolved", "Deferred", "Conflicts", "Ready for plan"]
+#: The Show box: the routes (synthesis §2, §6), then the lenses -- filters
+#: over the same groups, not separate workflows. "Queue" is the primary
+#: queue: groups no special condition has routed elsewhere.
+ROUTE_FILTERS = [("Queue", RT.UNRESOLVED), ("Conflicts & Exceptions", RT.CONFLICT), ("Needs Revalidation", RT.NEEDS_REVALIDATION),
+                 ("Blocked by Evidence", RT.BLOCKED), ("Deferred / Snoozed", RT.DEFERRED), ("Ready for Plan", RT.READY_FOR_PLAN),
+                 ("Resolved", RT.RESOLVED)]
+LENSES = ["High Reclaim", "Cross-Root", "Unknown Physical Identity", "Hard-Link Aliases",
+          "Filename Divergence", "Extension Divergence", "Policy Tie"]
+FILTERS = [name for name, _ in ROUTE_FILTERS] + ["All"] + [f"Lens: {l}" for l in LENSES]
+HIGH_RECLAIM_BYTES = 100 * 1024 * 1024
+CONDITION_WORDS = {
+    R.PROTECTED_VS_REDUNDANT: "protected vs redundant", R.CANONICAL_NO_LONGER_KEEPER: "canonical no longer a keeper",
+    R.SAME_PRECEDENCE_POLICY_TIE: "policy tie", R.MINIMUM_FILE_LOCATIONS_KIND: "last copy", R.MINIMUM_PHYSICAL_COPIES_KIND: "last physical copy",
+    "drift": "evidence changed", RT.PHYSICAL_IDENTITY_UNKNOWN: "identity unknown", RT.STALE_CONTENT_HASH: "fingerprint stale",
+    RT.INCOMPLETE_ROOT_COVERAGE: "root coverage unusable", RT.RECORDED_BLOCK: "blocked (recorded)", "coverage_warning": "coverage warnings",
+    "time": "snoozed until a date", "evidence_change": "snoozed until evidence changes", "source_available": "snoozed until source available",
+    "hash_current": "snoozed until fingerprints current", "manual": "deferred", "preview_available": "deferred until preview",
+    "ready": "", "kept": "", "in_progress": "", "unreviewed": "",
+}
 RULE_WORDS = {
     "protect_source_root": "protected root", "protect_folder_subtree": "protected folder",
     "explicit_must_keep_location": "Keep", "explicit_canonical_location": "Canonical",
@@ -52,7 +81,8 @@ GROUP_COLUMNS = {
     "potential": ("Potential", 90, lambda p: p.potential_reclaim_bytes or 0),
     "eligible": ("Eligible", 90, lambda p: p.plan_eligible_reclaim_bytes or 0),
     "roots": ("Roots", 50, lambda p: len({m.root_key for m in p.members})),
-    "state": ("Status", 95, lambda p: REVIEW_WORDS.get(p.review_state, p.review_state)),
+    "state": ("Status", 110, lambda p: p.review_state),        # replaced by the route order at sort time
+    "conditions": ("Conditions", 220, lambda p: ""),           # replaced by the badge text at sort time
     "canonical": ("Canonical", 190, lambda p: p.effective_canonical or ""),
 }
 MEMBER_COLUMNS = [("status", "Status", 130), ("file", "File", 170), ("folder", "Folder", 260),
@@ -89,10 +119,14 @@ def store_for(app):
 
 
 def decision_summary(conn):
-    """The numbers the project summary shows on its Decide line."""
-    proj = R.resolve_all(E.load_evidence(conn))
+    """The numbers the project summary shows on its Decide line -- the
+    resolver's totals plus the routes' counts."""
+    ev = E.load_evidence(conn)
+    proj = R.resolve_all(ev)
     t = dict(proj.totals)
     t["reviewed"] = t["groups"] - t["unreviewed"]
+    routing = RT.route_all(ev, proj, ev.now)
+    t["routes"] = {route: routing.counts[route] for route in RT.ROUTE_ORDER}
     return t
 
 
@@ -124,7 +158,24 @@ def show_review(app, content_id=None, file_path_id=None):
     page = ReviewPage(app)
     app.review_page = page
     page.build(app.content)
+    page.detect()
     page.reload(select=content_id)
+
+
+def run_detector(conn, store):
+    """The routing detector, for the window: after a collection run and when
+    the Decide page opens. Never raises -- a failure to write provenance must
+    not stop a run from finishing or a page from drawing; it is logged."""
+    try:
+        return RT.reconcile(conn, store)
+    except Exception as exc:                                        # noqa: BLE001
+        try:
+            import fo_log
+            from Phase2.gui import APP_ROOT
+            fo_log.get_app_log(str(APP_ROOT)).log("ERROR", f"Routing detector failed: {exc}")
+        except Exception:                                           # noqa: BLE001
+            pass
+        return {"written": 0, "error": str(exc)}
 
 
 class ReviewPage:
@@ -132,7 +183,8 @@ class ReviewPage:
         self.app = app
         self.store = store_for(app)
         self.proj = None
-        self.filter_var = tk.StringVar(value="All")
+        self.routing = None
+        self.filter_var = tk.StringVar(value=FILTERS[0])
         self.sort = ("potential", "desc")
         self.selected_group = None
         self.selected_member = None
@@ -148,7 +200,7 @@ class ReviewPage:
         ttk.Button(tools, text="Export journal...", command=self.export_journal).pack(side="right")
         ttk.Button(tools, text="Policies...", command=self.open_policies).pack(side="right", padx=6)
         ttk.Label(tools, text="Show:").pack(side="right", padx=(0, 4))
-        cb = ttk.Combobox(tools, textvariable=self.filter_var, values=FILTERS, state="readonly", width=14)
+        cb = ttk.Combobox(tools, textvariable=self.filter_var, values=FILTERS, state="readonly", width=26)
         cb.pack(side="right", padx=(0, 10))
         cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
 
@@ -170,6 +222,8 @@ class ReviewPage:
             heading, width, _ = GROUP_COLUMNS[key]
             self.table.heading(key, text=heading, command=lambda k=key: self.sort_by(k))
             self.table.column(key, width=width, minwidth=40, anchor="e" if key in ("copies", "physical", "aliases", "size", "potential", "eligible", "roots") else "w", stretch=False)
+        self.table.tag_configure("revalidate", foreground="#7a3e00")
+        self.table.tag_configure("blocked", foreground="#555")
         sy = ttk.Scrollbar(host, orient="vertical", command=self.table.yview)
         sx = ttk.Scrollbar(host, orient="horizontal", command=self.table.xview)
         self.table.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
@@ -190,6 +244,7 @@ class ReviewPage:
         self.group_facts = ttk.Label(host, text="", foreground="#444", wraplength=520, justify="left")
         self.group_facts.pack(anchor="w", pady=(2, 6))
         self.conflict_label = ttk.Label(host, text="", style="Warn.TLabel", wraplength=520, justify="left")
+        self.route_label = ttk.Label(host, text="", foreground="#333", wraplength=520, justify="left")
 
         mhost = ttk.Frame(host)
         mhost.pack(fill="both", expand=True)
@@ -211,8 +266,10 @@ class ReviewPage:
         self.members.tag_configure(R.KEEPER, foreground="#1f6244")
         self.members.tag_configure(R.REDUNDANT, foreground="#8a1c1c")
         for key, fn in (("k", self.keep), ("a", self.keep_all), ("c", self.set_canonical),
-                        ("r", self.mark_redundant), ("d", self.defer)):
+                        ("r", self.mark_redundant), ("d", self.defer), ("s", self.skip)):
             self.members.bind(f"<KeyPress-{key}>", lambda e, f=fn: f())
+        self.table.bind("<KeyPress-s>", lambda e: self.skip())
+        self.table.bind("<KeyPress-d>", lambda e: self.defer())
 
         # The actions. A location action needs a selected member; a group
         # action does not. Override has its own dialog (the research's
@@ -223,13 +280,17 @@ class ReviewPage:
         for key, text, cmd in (("keep", "Keep", self.keep), ("keep_all", "Keep all", self.keep_all),
                                ("canonical", "Set canonical", self.set_canonical),
                                ("redundant", "Mark redundant", self.mark_redundant),
-                               ("defer", "Defer", self.defer),
+                               ("defer", "Defer...", self.defer), ("skip", "Skip", self.skip),
                                ("override", "Override protection...", self.override_protection)):
             b = ttk.Button(acts, text=text, command=cmd)
             b.pack(side="left", padx=(0, 6))
             self.buttons[key] = b
-        ttk.Label(host, text="Keys on the member list: k keep · a keep all · c canonical · r redundant · d defer",
-                  foreground="#666").pack(anchor="w", pady=(4, 0))
+        acts2 = ttk.Frame(host)
+        acts2.pack(fill="x", pady=(4, 0))
+        self.buttons["confirm"] = ttk.Button(acts2, text="Confirm decisions", command=self.confirm_decisions)
+        self.buttons["confirm"].pack(side="left", padx=(0, 6))
+        ttk.Label(acts2, text="Keys: k keep · a keep all · c canonical · r redundant · d defer · s skip (skip records only that you passed by)",
+                  foreground="#666").pack(side="left")
 
         hist = ttk.Frame(host)
         hist.pack(fill="both", expand=True, pady=(10, 0))
@@ -256,20 +317,25 @@ class ReviewPage:
 
     # -- data -----------------------------------------------------------------
 
+    def detect(self):
+        """The routing detector: what the evidence says, written to the record."""
+        self.detector_result = run_detector(self.app.conn, self.store)
+
     def reload(self, select=None):
         """Re-derive everything from the record and redraw."""
         try:
-            self.proj = R.resolve_all(E.load_evidence(self.app.conn))
+            ev = E.load_evidence(self.app.conn)
+            self.proj = R.resolve_all(ev)
+            self.routing = RT.route_all(ev, self.proj, ev.now)
         except Exception as exc:                                    # noqa: BLE001
             messagebox.showerror("Duplicate decisions", str(exc), parent=self.app)
             return
         t = self.proj.totals
-        parts = [f"{t['groups']:,} groups", f"{t['unreviewed']:,} unreviewed", f"{t['in_progress']:,} in progress",
-                 f"{t['resolved']:,} resolved"]
-        if t["deferred"]:
-            parts.append(f"{t['deferred']:,} deferred")
-        if t["conflicts"]:
-            parts.append(f"{t['conflicts']:,} with conflicts")
+        c = self.routing.counts
+        parts = [f"{t['groups']:,} groups", f"{c[RT.UNRESOLVED]:,} in the queue"]
+        for route in (RT.CONFLICT, RT.NEEDS_REVALIDATION, RT.BLOCKED, RT.DEFERRED, RT.READY_FOR_PLAN, RT.RESOLVED):
+            if c[route]:
+                parts.append(f"{c[route]:,} {RT.STATUS_WORDS[route].lower()}")
         reclaim = f"{human_bytes(t['plan_eligible_reclaim_bytes'])} plan-eligible reclaim of {human_bytes(t['potential_reclaim_bytes'])} potential"
         if t["reclaim_unknown_groups"]:
             reclaim += f" (+{t['reclaim_unknown_groups']} groups unknown)"
@@ -279,23 +345,50 @@ class ReviewPage:
         self.summary_var.set(" · ".join(parts))
         self.refresh_list(select=select or self.selected_group)
 
+    def _route(self, p):
+        return self.routing.groups[p.group_id]
+
+    def _badges(self, p):
+        r = self._route(p)
+        words = []
+        for c in r.conditions:
+            w = CONDITION_WORDS.get(c.kind, c.kind)
+            if w and w not in words:
+                words.append(w)
+        return ", ".join(words)
+
     def _filtered(self):
         f = self.filter_var.get()
         groups = self.proj.groups
-        if f == "Unreviewed":
-            groups = [g for g in groups if g.review_state == R.UNREVIEWED]
-        elif f == "In progress":
-            groups = [g for g in groups if g.review_state == R.IN_PROGRESS]
-        elif f == "Resolved":
-            groups = [g for g in groups if g.review_state == R.RESOLVED]
-        elif f == "Deferred":
-            groups = [g for g in groups if g.review_state == R.DEFERRED]
-        elif f == "Conflicts":
-            groups = [g for g in groups if g.conflicts]
-        elif f == "Ready for plan":
-            groups = [g for g in groups if g.ready_for_plan]
+        routes = dict(ROUTE_FILTERS)
+        if f in routes:
+            route = routes[f]
+            groups = RT.ordered(self.proj, self.routing, route)
+            if route == RT.CONFLICT and self.sort == ("potential", "desc"):
+                return groups                                      # the route's own order: reclaim at stake, then oldest
+        elif f.startswith("Lens: "):
+            lens = f[len("Lens: "):]
+            if lens == "High Reclaim":
+                groups = [g for g in groups if (g.potential_reclaim_bytes or 0) >= HIGH_RECLAIM_BYTES]
+            elif lens == "Cross-Root":
+                groups = [g for g in groups if len({m.root_key for m in g.members}) > 1]
+            elif lens == "Unknown Physical Identity":
+                groups = [g for g in groups if not g.physical_identity_complete]
+            elif lens == "Hard-Link Aliases":
+                groups = [g for g in groups if g.hardlink_aliases]
+            elif lens == "Filename Divergence":
+                groups = [g for g in groups if len({_file_name(m.path).lower() for m in g.members}) > 1]
+            elif lens == "Extension Divergence":
+                groups = [g for g in groups if len({_file_name(m.path).rsplit(".", 1)[-1].lower() if "." in _file_name(m.path) else "" for m in g.members}) > 1]
+            elif lens == "Policy Tie":
+                groups = [g for g in groups if len(g.policy_preferred) > 1 or any(c.kind == R.SAME_PRECEDENCE_POLICY_TIE for c in g.conflicts)]
         key, direction = self.sort
-        sort_key = GROUP_COLUMNS[key][2]
+        if key == "state":
+            sort_key = lambda p: RT.ROUTE_ORDER.index(self._route(p).primary)     # noqa: E731
+        elif key == "conditions":
+            sort_key = self._badges
+        else:
+            sort_key = GROUP_COLUMNS[key][2]
         # Identity first, presentation second: ties fall to display order, so
         # the list is the same list every time.
         groups = sorted(groups, key=lambda p: (sort_key(p), p.group_id), reverse=(direction == "desc"))
@@ -315,7 +408,7 @@ class ReviewPage:
                 human_bytes(p.size_bytes), human_bytes(p.potential_reclaim_bytes),
                 human_bytes(p.plan_eligible_reclaim_bytes),
                 f"{len({m.root_key for m in p.members})}",
-                REVIEW_WORDS.get(p.review_state, p.review_state), canonical]
+                self._route(p).word, self._badges(p), canonical]
 
     def refresh_list(self, select=None):
         self.table.delete(*self.table.get_children())
@@ -328,10 +421,29 @@ class ReviewPage:
             self.table.heading(k, text=heading)
         groups = self._filtered()
         for p in groups:
-            tag = "conflict" if p.conflicts else "resolved" if p.review_state == R.RESOLVED else "deferred" if p.review_state == R.DEFERRED else ""
+            primary = self._route(p).primary
+            tag = {RT.CONFLICT: "conflict", RT.NEEDS_REVALIDATION: "revalidate", RT.BLOCKED: "blocked",
+                   RT.DEFERRED: "deferred", RT.READY_FOR_PLAN: "resolved", RT.RESOLVED: "resolved"}.get(primary, "")
             iid = self.table.insert("", "end", iid=p.group_id, values=self._row_values(p), tags=(tag,))
             self.rows_by_iid[iid] = p
-        self.count_var.set(f"{len(groups):,} of {len(self.proj.groups):,} groups shown")
+        f = self.filter_var.get()
+        if not groups and f == "Queue":
+            # A dynamic queue's empty state is not a milestone: new evidence
+            # can reopen it. "Currently clear", never "complete" (P3-A58).
+            c = self.routing.counts
+            elsewhere = ", ".join(f"{c[r]:,} {RT.STATUS_WORDS[r].lower()}" for r in RT.ROUTE_ORDER if r != RT.UNRESOLVED and c[r])
+            self.count_var.set("Currently clear -- no group awaits an ordinary decision" + (f" ({elsewhere})" if elsewhere else "") + ".")
+        elif not groups:
+            self.count_var.set(f"Nothing on this route or lens ({len(self.proj.groups):,} groups in all).")
+        else:
+            self.count_var.set(f"{len(groups):,} of {len(self.proj.groups):,} groups shown")
+        if select is not None and select not in self.rows_by_iid and self.proj.group(select) is not None:
+            # The action just moved this group off the route being shown (a
+            # mark made it Ready for plan, say). Keep it in view so the result
+            # is seen; the list itself no longer holds it.
+            self.table.selection_remove(*self.table.selection())
+            self.show_group(select)
+            return
         target = select if select in self.rows_by_iid else (groups[0].group_id if groups else None)
         if target is not None:
             self.table.selection_set(target)
@@ -360,15 +472,17 @@ class ReviewPage:
         self.history.delete(*self.history.get_children())
         self.history_rows = {}
         self.conflict_label.pack_forget()
+        self.route_label.pack_forget()
         p = self.proj.group(group_id) if group_id else None
         if p is None:
             self.group_title.configure(text="Select a group.")
             self.group_facts.configure(text="")
             self._set_buttons(None, None)
             return
+        route = self._route(p)
         names = sorted({_file_name(m.path) for m in p.members}, key=str.lower)
         title = names[0] + (f"  (+{len(names) - 1} other name{'s' if len(names) > 2 else ''})" if len(names) > 1 else "")
-        self.group_title.configure(text=f"{title} -- {REVIEW_WORDS.get(p.review_state, p.review_state)}")
+        self.group_title.configure(text=f"{title} -- {route.word}")
         physical = "physical copies unknown" if p.physical_copies is None else (
             f"{p.physical_copies:,} physical cop{'y' if p.physical_copies == 1 else 'ies'}"
             + (f", {p.hardlink_aliases:,} hard-link alias{'es' if p.hardlink_aliases != 1 else ''}" if p.hardlink_aliases else ""))
@@ -384,12 +498,21 @@ class ReviewPage:
             facts.append(f"Policy would suggest {v.path if v else p.suggested_canonical} as canonical -- a recommendation, not a decision.")
         elif p.resolution_state == R.RS_TIE and len(p.members) > 1 and not p.canonical:
             facts.append("No policy distinguishes these copies; the order shown is presentation only.")
-        if p.deferred:
-            facts.append("Deferred: an explicit 'not deciding yet'.")
         self.group_facts.configure(text="\n".join(facts))
         if p.conflicts:
-            self.conflict_label.configure(text="\n".join(f"Conflict: {c.message}" for c in p.conflicts))
+            self.conflict_label.configure(text="\n".join(
+                f"{'Conflict' if c.severity == R.BLOCKING else 'Exception'}: {c.message}" for c in p.conflicts))
             self.conflict_label.pack(fill="x", pady=(0, 6), before=self.members.master)
+        lines = []
+        for c in route.conditions:
+            if c.route == RT.CONFLICT or c.kind in ("ready", "kept", "in_progress", "unreviewed"):
+                continue
+            lines.append(f"{RT.STATUS_WORDS.get(c.route, 'Note')}: {c.detail}")
+        if route.deferral is not None and route.deferral_fired:
+            lines.append(f"Returned to the queue: {route.deferral_fired_why}.")
+        if lines:
+            self.route_label.configure(text="\n".join(lines))
+            self.route_label.pack(fill="x", pady=(0, 6), before=self.members.master)
         for v in p.members:
             protection = ""
             if v.status == R.PROTECTED:
@@ -412,6 +535,7 @@ class ReviewPage:
             for d in self.store.history_for(kind, ref):
                 rows.append((d, kind, ref))
         rows.sort(key=lambda r: r[0]["decision_id"])
+        entries = []
         for d, kind, ref in rows:
             spec = DECISION_KINDS.get(d["decision_kind"])
             what = spec.label if spec else d["decision_kind"]
@@ -420,9 +544,25 @@ class ReviewPage:
                 what += f": {_file_name(v.path) if v else d['value']}"
             target = "the group" if kind == GROUP else _file_name((p.verdict(ref) or p.members[0]).path)
             state = "active" if d["active"] else "withdrawn" if d["withdrawn"] else "superseded"
-            iid = self.history.insert("", "end", values=[d["occurred_utc"][:19].replace("T", " "), what, target, d["actor_id"] or "", state],
-                                      tags=() if d["active"] else ("inactive",))
-            self.history_rows[iid] = d
+            entries.append((d["occurred_utc"], 0, int(d["decision_id"]), what, target, d["actor_id"] or "", state, d, ()))
+        # Routing events, in the same list: a deferral and its trigger, a
+        # skip, what the detector found, a restore. Not undoable -- they are
+        # not decisions.
+        for kind, ref in [(GROUP, p.group_id)] + [(LOCATION, v.location_id) for v in p.members]:
+            for e in self.store.review_events_for(kind, ref):
+                what = {"deferred": "Deferred", "skipped": "Skipped", "restored": "Restored", "needs_revalidation": "Detector: evidence changed",
+                        "blocked": "Detector: blocked"}.get(e["event_kind"], e["event_kind"])
+                if e["return_condition"]:
+                    what += f" ({e['return_condition'][:60]})"
+                target = "the group" if kind == GROUP else _file_name((p.verdict(ref) or p.members[0]).path)
+                who = e["actor_id"] or "" if e["actor_kind"] == "explicit_human" else "the evidence"
+                entries.append((e["occurred_utc"], 1, int(e["review_event_id"]), what, target, who, "event", None, ("inactive",)))
+        entries.sort(key=lambda x: (x[0], x[1], x[2]))
+        for when, _k, _i, what, target, who, state, d, tags in entries:
+            iid = self.history.insert("", "end", values=[when[:19].replace("T", " "), what, target, who, state],
+                                      tags=tags if d is None else (() if d["active"] else ("inactive",)))
+            if d is not None:
+                self.history_rows[iid] = d
         self.undo_button.configure(state="disabled")
 
     def _member_selected(self):
@@ -441,8 +581,11 @@ class ReviewPage:
         for key in ("keep", "canonical", "redundant"):
             self.buttons[key].configure(state="normal" if v is not None else "disabled")
         self.buttons["keep_all"].configure(state="normal" if have_group else "disabled")
-        self.buttons["defer"].configure(state="normal" if have_group else "disabled",
-                                        text="Undefer" if (have_group and p.deferred) else "Defer")
+        parked = have_group and self._route(p).has(RT.DEFERRED)
+        self.buttons["defer"].configure(state="normal" if have_group else "disabled", text="Restore" if parked else "Defer...")
+        self.buttons["skip"].configure(state="normal" if have_group else "disabled")
+        drifted = have_group and self._route(p).has(RT.NEEDS_REVALIDATION)
+        self.buttons["confirm"].configure(state="normal" if drifted else "disabled")
         self.buttons["override"].configure(state="normal" if (v is not None and v.status == R.PROTECTED) else "disabled")
 
     # -- actions ------------------------------------------------------------------
@@ -538,16 +681,99 @@ class ReviewPage:
             self._after(p.group_id)
 
     def defer(self):
+        """Defer with a return trigger -- or, on a parked group, Restore."""
         p, _v = self._current()
         if p is None:
             return
+        route = self._route(p)
+        if route.has(RT.DEFERRED):
+            self.restore()
+            return
+        self.defer_dialog = DeferDialog(self.app, p, self.store, lambda: self._after(p.group_id))
+
+    def restore(self):
+        """A person returns a parked group to the queue: a restore event that
+        ends the open deferral; a B8 defer_review decision is withdrawn in the
+        same operation."""
+        p, _v = self._current()
+        if p is None:
+            return
+        route = self._route(p)
+        legacy = [d["decision_id"] for d in self.store.history_for(GROUP, p.group_id) if d["active"] and d["decision_kind"] == "defer_review"]
+        refers_to = route.deferral.review_event_id if route.deferral is not None else None
+        if self._record(lambda: self.store.restore(GROUP, p.group_id, refers_to=refers_to, reason="restored by hand",
+                                                   command_id=new_command_id(), withdraw=legacy), "Restore"):
+            self._after(p.group_id)
+
+    def skip(self):
+        """Skip: an audit row, nothing else -- the group stays exactly where it
+        is; the selection moves to the next group in the list."""
+        p, _v = self._current()
+        if p is None:
+            return
+        if not self._record(lambda: self.store.skip(GROUP, p.group_id, command_id=new_command_id()), "Skip"):
+            return
+        rows = list(self.table.get_children())
+        try:
+            nxt = rows[rows.index(p.group_id) + 1]
+        except (ValueError, IndexError):
+            nxt = rows[0] if rows else None
+        self.reload(select=nxt)
+        if nxt is not None:
+            self.table.focus(nxt)
+        self.table.focus_set()
+
+    def confirm_decisions(self):
+        """Re-record the decisions whose evidence moved, on current evidence:
+        each is a new decision superseding the old (the record keeps both),
+        and the revalidation flag clears because the comparison clears --
+        not because anyone marked it so. A decision that no longer makes
+        sense (a canonical that left the group, a redundant mark on a copy
+        that is no longer a duplicate) is left for Undo."""
+        p, _v = self._current()
+        if p is None:
+            return
+        route = self._route(p)
+        drifted = [x for x in route.drift if not x.applicable]
+        for v in p.members:
+            lr = self.routing.locations.get(v.location_id)
+            if lr is not None:
+                drifted.extend(x for x in lr.drift if not x.applicable)
+        if not drifted:
+            return
+        active = {d.decision_id: d for d in self.store.active()}
+        members = {v.location_id for v in p.members}
+        todo, skipped = [], []
+        for x in drifted:
+            d = active.get(x.decision_id)
+            if d is None:
+                continue
+            if d.kind == "canonical_location" and str(d.value) not in members:
+                skipped.append(f"canonical {d.value}: no longer a member -- set another, or undo it")
+            elif d.target_kind == LOCATION and d.target_ref not in members:
+                skipped.append(f"{DECISION_KINDS[d.kind].label} on a copy that is no longer in this group -- undo it")
+            else:
+                todo.append(d)
+        if not todo:
+            messagebox.showinfo("Confirm decisions", "Nothing here can be confirmed as it stands:\n\n" + "\n".join(skipped), parent=self.app)
+            return
+        if not messagebox.askyesno("Confirm decisions",
+                                   f"Re-record {len(todo)} decision(s) on the evidence as it is now? Each becomes a new "
+                                   "decision that replaces the old one; the old rows stay." + ("\n\nLeft alone:\n" + "\n".join(skipped) if skipped else ""),
+                                   parent=self.app):
+            return
         cmd = new_command_id()
-        if p.deferred:
-            active = [d for d in self.store.history_for(GROUP, p.group_id) if d["active"] and d["decision_kind"] == "defer_review"]
-            ok = all(self._record(lambda d=d: self.store.withdraw(d["decision_id"], "undeferred", command_id=cmd), "Undefer") for d in active)
-        else:
-            ok = self._record(lambda: self.store.record_decision("defer_review", GROUP, p.group_id, True, command_id=cmd), "Defer")
-        if ok:
+
+        def work():
+            for d in todo:
+                if d.kind == "override_protection":
+                    self.store.record_override(d.target_ref, d.value["policy_id"], "reconfirmed on current evidence",
+                                               command_id=cmd, confirmed=True)
+                else:
+                    self.store.record_decision(d.kind, d.target_kind, d.target_ref, d.value, rationale="reconfirmed on current evidence",
+                                               command_id=cmd)
+        if self._record(work, "Confirm decisions"):
+            self.detect()
             self._after(p.group_id)
 
     def undo_selected(self):
@@ -593,6 +819,64 @@ class ReviewPage:
             messagebox.showerror("Export journal", str(exc), parent=self.app)
             return
         messagebox.showinfo("Export journal", f"{n:,} operation(s) written to\n{path}", parent=self.app)
+
+
+# ---------------------------------------------------------------------------
+# Defer: a return trigger, chosen
+# ---------------------------------------------------------------------------
+
+class DeferDialog:
+    def __init__(self, app, group, store, on_done):
+        self.app, self.group, self.store, self.on_done = app, group, store, on_done
+        win = tk.Toplevel(app)
+        self.win = win
+        win.title("Defer")
+        win.transient(app)
+        win.grab_set()
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Not deciding yet", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="A deferral is your choice, with a trigger that returns the group to the queue. "
+                              "It is not a decision about any copy, and it is different from Skip, which only "
+                              "records that you passed by.", wraplength=520, justify="left", foreground="#444").pack(anchor="w", pady=(2, 10))
+        self.choice = tk.StringVar(value="defer_indefinitely")
+        for key, (rk, label, why) in DEFER_DISPOSITIONS.items():
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=1)
+            ttk.Radiobutton(row, text=label, variable=self.choice, value=key, command=self._update).pack(side="left")
+            ttk.Label(row, text=why, foreground="#666").pack(side="left", padx=(8, 0))
+        drow = ttk.Frame(frame)
+        drow.pack(fill="x", pady=(6, 0))
+        ttk.Label(drow, text="Date (YYYY-MM-DD):").pack(side="left")
+        self.date_var = tk.StringVar(value="")
+        self.date_entry = ttk.Entry(drow, textvariable=self.date_var, width=14, state="disabled")
+        self.date_entry.pack(side="left", padx=(6, 0))
+        ttk.Label(frame, text="Note (optional):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 2))
+        self.note = tk.Text(frame, height=2, width=64, wrap="word")
+        self.note.pack(fill="x")
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=(14, 0))
+        ttk.Button(row, text="Defer", command=self._confirm).pack(side="right")
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        self._update()
+
+    def _update(self):
+        self.date_entry.configure(state="normal" if self.choice.get() == "snooze_until_date" else "disabled")
+
+    def _confirm(self):
+        disposition = self.choice.get()
+        note = self.note.get("1.0", "end").strip() or None
+        try:
+            self.store.defer(GROUP, self.group.group_id, disposition, until=self.date_var.get().strip() or None,
+                             note=note, command_id=new_command_id())
+        except ValueError as exc:
+            messagebox.showwarning("Defer", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Defer", f"The deferral was not recorded.\n\n{exc}", parent=self.win)
+            return
+        self.win.destroy()
+        self.on_done()
 
 
 # ---------------------------------------------------------------------------

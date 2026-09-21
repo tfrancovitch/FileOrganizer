@@ -4,7 +4,7 @@ fo_db.py
 ===================================================================
 PRODUCTION CODE
 The File Organizer -- B6.1 (A-F Reconciliation)
-Module version: 1.6.0   Schema version: 9
+Module version: 1.7.0   Schema version: 10
 ====================================================================
 
 The one and only module that opens the project SQLite database.
@@ -90,6 +90,13 @@ transaction, after an automatic pre-migration backup. The tables are
 append-only intent records; Phase3/store.py is the only writer and
 Phase3/resolve.py derives every current answer from them.
 
+CHANGED IN B9 (PHASE 3, BUILD 3)
+--------------------------------
+APP_SCHEMA_VERSION is 10, so migration 010 (p3_review_event) is applied on
+open; the earlier p3 tables are unchanged. Phase3/routing.py derives every
+route from evidence, decisions and these events; Phase3/store.py is still
+the only writer.
+
 CLI
 ---
     python fo_db.py init-project     --project-dir <dir> --name <n> [--source-root <path>]...
@@ -121,8 +128,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.6.0"
-APP_VERSION = "B8"
+MODULE_VERSION = "1.7.0"
+APP_VERSION = "B9"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -143,7 +150,10 @@ APP_VERSION = "B8"
 #: 9 -> B8 (Phase 3, Builds 1-2): p3_operation, p3_decision,
 #:      p3_decision_withdrawal, p3_policy, p3_policy_version -- append-only
 #:      intent records; see migrations/009_phase3_decisions.sql.
-APP_SCHEMA_VERSION = 9
+#: 10 -> B9 (Phase 3, Build 3): p3_review_event -- routing provenance
+#:      (deferrals with return triggers, skips, what the detector found);
+#:      see migrations/010_phase3_review_events.sql.
+APP_SCHEMA_VERSION = 10
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"
