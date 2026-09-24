@@ -2459,15 +2459,28 @@ class RunCoordinator(object):
             ingestor.finalize_outcomes(outcomes, stage_ids=stage_handles or {})
             fo_exports.Exporter(conn).export_analyzer_stage(str(inventory_dir), analyzer_keys)
 
+            # B11: the image hashes just stored, compared -- the visual
+            # candidate pairs Phase 3's Similar Images page reviews. Part of
+            # the Image Analysis stage because it is the same evidence: the
+            # hashes, related. A stopped analysis skips it (the page makes
+            # the pairs when it next opens).
+            visual = None
+            if "image" in analyzer_keys and not any(getattr(o, "cancelled", False) for o in outcomes):
+                visual = self._generate_visual_candidates(conn)
+
         elapsed = time.monotonic() - started
         self._analyzer_result = {"elapsed_sec": elapsed,
-                                 "outcomes": [o.summary() for o in outcomes]}
+                                 "outcomes": [o.summary() for o in outcomes],
+                                 "visual_candidates": visual}
         self._last_stage_stopped = any(getattr(o, "cancelled", False) for o in outcomes)
         self._update_analyzer_settings(settings_path, settings, outcomes)
 
         failed = [o for o in outcomes
                   if o.status == fo_analyzer_engine.STATUS_FAILED]
         summary = self._analyzer_console_summary(outcomes, elapsed)
+        if visual and not visual.get("error"):
+            summary += ("\n  %-28s %d candidate pair(s) among %d image(s), %d new"
+                        % ("Similar images", visual["pairs_current"], visual["images_considered"], visual["pairs_new"]))
         if failed:
             # Analyzers are independent, so a failure is reported as a
             # warning on stderr with the run still successful overall.
@@ -2478,6 +2491,25 @@ class RunCoordinator(object):
                                 for o in failed)
             return True, summary, "WARNING: %s" % reasons, 0
         return True, summary, "", 0
+
+    def _generate_visual_candidates(self, conn):
+        """Compare the image hashes (Phase2.visual). Never raises: a failure
+        is recorded as a warning event and the analysis keeps its results --
+        the pairs are made again the next time the page opens."""
+        try:
+            from Phase2 import visual
+            counts = visual.generate_candidates(conn, run_id=self.run_id)
+            self.note("info", "Similar images: %d candidate pair(s) among %d image(s) (%d new, %d retired, %d over the "
+                      "neighbour cap) in %.1f s" % (counts["pairs_current"], counts["images_considered"], counts["pairs_new"],
+                                                    counts["pairs_retired"], counts["capped_images"], counts["elapsed_sec"]),
+                      category="analyzers")
+            return counts
+        except Exception as exc:                                    # noqa: BLE001
+            try:
+                self.note("warning", "Similar images could not be compared: %s" % exc, category="analyzers")
+            except Exception:                                       # noqa: BLE001
+                pass
+            return {"error": str(exc)}
 
     def _analyzer_scan_ids(self, conn):
         """Inventory scans whose observations these analyzers cover."""

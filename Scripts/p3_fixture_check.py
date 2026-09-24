@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""Phase 3 acceptance against the research fixture lab (P3.R11).
 
-The nine synthetic fixtures that test Build 1-4 scope ship under
+The eleven synthetic fixtures that test Build 1-5 scope ship under
 Resources\Phase3\fixture_lab\. Each is a SQLite file holding synthetic
 Phase 2 evidence, authoritative Phase 3 records, and an `expected_projection`
 table -- the oracle. The research's own validator computes each oracle with
@@ -21,6 +21,11 @@ against every oracle key.
     F05  Dynamic_Policy_Future_Match  a protect-folder policy made before a file existed
                                       covers it when it appears, with no decision recorded
                                       for it -- a pure policy effect (Build 4)
+    F06  Visual_Nontransitivity       A~B and B~C strong, A~C weak: equivalent, equivalent,
+                                      different -- stored and read back per pair, nothing
+                                      inferred along the chain (Build 5)
+    F07  Related_Variant              an edited crop is a related variant with Keep Both:
+                                      both kept, and never ordinary redundant-copy cleanup (Build 5)
     F08  Deferred_vs_Blocked          a person's deferral and an evidence blocker are
                                       different routes with different return triggers (Build 3)
     F09  Supersession_Undo_Reapply    change, withdraw, re-apply: every row survives
@@ -47,7 +52,8 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "Database"))
 
-from Phase3.model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, Batch, BatchMember, path_key   # noqa: E402
+from Phase3.model import (Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, Batch, BatchMember,   # noqa: E402
+                          VisualPair, path_key)
 from Phase3 import resolve as R                                                                       # noqa: E402
 from Phase3 import routing as RT                                                                      # noqa: E402
 from Phase3 import bulk as BK                                                                         # noqa: E402
@@ -68,6 +74,17 @@ def check(name, ok, detail=""):
 # Loading a fixture into the product's model
 # ---------------------------------------------------------------------------
 
+def _rows(con, sql, args=()):
+    """A fixture holds only the tables its scenario needs (F06 and F07 have
+    no groups, policies, events or batches): a missing table is no rows."""
+    try:
+        return con.execute(sql, args).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return []
+        raise
+
+
 def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
     """The fixture's rows as the model the resolver reads, plus its oracle."""
     con = sqlite3.connect(str(db_path))
@@ -84,9 +101,9 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
                 sort_key=(r["root"], path_key(r["path"])))
             protected_flags[r["location_id"]] = bool(r["protected"])
         groups = {}
-        current = {r["group_id"]: bool(r["evidence_current"]) for r in con.execute("SELECT * FROM evidence_duplicate_group")}
+        current = {r["group_id"]: bool(r["evidence_current"]) for r in _rows(con, "SELECT * FROM evidence_duplicate_group")}
         members = {}
-        for r in con.execute("SELECT group_id, location_id FROM evidence_duplicate_member ORDER BY group_id, location_id"):
+        for r in _rows(con, "SELECT group_id, location_id FROM evidence_duplicate_member ORDER BY group_id, location_id"):
             members.setdefault(r["group_id"], []).append(r["location_id"])
         for gid, lids in members.items():
             groups[gid] = Group(gid, locations[lids[0]].content_id, tuple(lids), current.get(gid, True))
@@ -115,7 +132,7 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
                 binding=binding, occurred_utc=ops.get(r["operation_id"], "")))
 
         events = []
-        for r in con.execute("SELECT rowid AS seq, * FROM p3_review_event ORDER BY rowid"):
+        for r in _rows(con, "SELECT rowid AS seq, * FROM p3_review_event ORDER BY rowid"):
             events.append(ReviewEvent(
                 review_event_id=r["review_event_id"], target_kind=r["target_kind"], target_ref=r["target_ref"],
                 kind=r["event_kind"], return_kind=r["return_kind"], return_condition=r["return_condition"],
@@ -125,7 +142,7 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
         now = max(ops.values()) if ops else "2026-09-08T12:00:00Z"
 
         policies = []
-        for r in con.execute("SELECT * FROM p3_policy_version ORDER BY policy_id, version_no"):
+        for r in _rows(con, "SELECT * FROM p3_policy_version ORDER BY policy_id, version_no"):
             scope = json.loads(r["scope_json"] or "{}")
             effect = json.loads(r["effect_json"] or "{}")
             if "path" in scope:
@@ -165,17 +182,31 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
         # member's disposition; the lab predates that, so every member here
         # is one the batch decided.
         batches = []
-        for r in con.execute("SELECT * FROM p3_bulk_batch ORDER BY batch_id"):
+        for r in _rows(con, "SELECT * FROM p3_bulk_batch ORDER BY batch_id"):
             members = tuple(BatchMember(m["target_kind"], m["target_ref"]) for m in con.execute(
                 "SELECT target_kind, target_ref FROM p3_bulk_member WHERE batch_id=? ORDER BY target_ref", (r["batch_id"],)))
             batches.append(Batch(r["batch_id"], r["scope_kind"], json.loads(r["query_json"]) if r["query_json"] else None,
                                  members, frozen=bool(r["frozen"]), committed=bool(r["committed"]),
                                  operation_id=r["operation_id"], occurred_utc=ops.get(r["operation_id"], "")))
 
+        # Visual candidate pairs (Build 5): the lab's evidence_visual_candidate
+        # is the product's visual_candidate -- a pair of two locations, the
+        # method that found it and its measurement. The lab records a score
+        # on the method's own scale (0.95 for its phash rows, 0.91 for sscd);
+        # the product keeps it as the method's score, never as a percentage.
+        pairs = {}
+        for r in _rows(con, "SELECT * FROM evidence_visual_candidate ORDER BY pair_id"):
+            a, b = sorted((r["a_location_id"], r["b_location_id"]))
+            pairs[r["pair_id"]] = VisualPair(r["pair_id"], a, b, method=r["method"], score=r["score"],
+                                             a_observation_id=locations[a].observation_id,
+                                             b_observation_id=locations[b].observation_id,
+                                             current=bool(r["current"]))
+
         oracle = {r["key"]: json.loads(r["value_json"]) for r in con.execute("SELECT key, value_json FROM expected_projection")}
         history = [(r["decision_id"], r["value_json"], bool(r["withdrawn"])) for r in rows]
         ev = Evidence(locations, groups, decisions, policies, events, {}, now)
         ev.batches = batches
+        ev.pairs = pairs
         return ev, oracle, history
     finally:
         con.close()
@@ -240,6 +271,19 @@ def actual_projection(fid: str, ev: Evidence, history) -> dict:
                 "redundant": list(p.redundant_candidates), "conflicts": [c.kind for c in p.conflicts],
                 "review_state": p.review_state, "ready_for_plan": p.ready_for_plan,
                 "plan_item_target": p.plan_eligible_locations[0] if len(p.plan_eligible_locations) == 1 else list(p.plan_eligible_locations)}
+    if fid.startswith("F06"):
+        # Per pair, read back from the product's pair projection -- and no
+        # transitive inference anywhere: A~B and B~C are equivalent, A~C is
+        # different, and nothing the product computes groups A, B and C.
+        pp = {p.pair_id: p for p in proj.pairs}
+        pair_decisions = {pid: p.relationship for pid, p in pp.items() if p.relationship}
+        chain = pp["PAB"].relationship == "equivalent_copy" and pp["PBC"].relationship == "equivalent_copy"
+        inferred = chain and pp["PAC"].relationship != "different"
+        return {"pair_decisions": pair_decisions, "transitive_equivalence_inferred": inferred}
+    if fid.startswith("F07"):
+        p = proj.pairs[0]
+        return {"relationship": p.relationship, "keeper_set": list(p.keeper_set),
+                "ordinary_redundant_candidate": p.ordinary_redundant_candidate}
     routing = RT.route_all(ev, proj, ev.now)
     if fid.startswith("F08"):
         routes, kinds = {}, {}
@@ -274,6 +318,7 @@ def _shuffled(ev: Evidence, seed: int) -> Evidence:
     # came before it), and the loader delivers it oldest first.
     out = Evidence(locations, groups, decisions, policies, list(ev.events), dict(ev.roots), ev.now)
     out.batches = list(getattr(ev, "batches", []))
+    out.pairs = dict(rnd.sample(list(ev.pairs.items()), len(ev.pairs)))
     return out
 
 
@@ -282,10 +327,12 @@ def _canon(proj: R.ProjectProjection, ev=None):
     if ev is not None:
         rt = RT.route_all(ev, proj, ev.now)
         routes = [r.as_dict() for r in rt.groups.values()] + [r.as_dict() for r in rt.locations.values()] + [rt.counts]
+        routes += [r.as_dict() for _pid, r in sorted(rt.pairs.items())] + [rt.pair_counts]
         routes.append(sorted(R.protected_locations(ev).items()))
         for b in getattr(ev, "batches", []):
             routes.append(BK.query_targets(b.query, ev, proj, rt))
-    return json.dumps([p.as_dict() for p in proj.groups] + [list(proj.orphaned_decisions), proj.totals] + routes,
+    return json.dumps([p.as_dict() for p in proj.groups] + [p.as_dict() for p in proj.pairs]
+                      + [list(proj.orphaned_decisions), proj.totals] + routes,
                       sort_keys=True, default=str)
 
 

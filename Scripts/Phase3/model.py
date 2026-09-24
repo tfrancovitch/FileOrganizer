@@ -136,6 +136,37 @@ class Batch:
 
 
 @dataclass(frozen=True)
+class VisualPair:
+    """A visual candidate pair (Build 5): Phase 2 evidence that two images'
+    perceptual hashes are close. Never a statement that they are the same
+    image -- that is a decision about this pair, and only this pair.
+
+    `current`: the latest generation found the pair and both images still
+    rest on the observations it compared. `exact_content`: the two are
+    byte-identical by current content identity (the exact-duplicate review
+    already answers them)."""
+    pair_id: str
+    a_id: str                       # the lower location id; left/right is presentation only
+    b_id: str
+    method: str = "phash"
+    distance: int | None = None     # the method's own measure (Hamming distance for a hash)
+    bits: int | None = None
+    score: float | None = None      # a method's own score, when it has one (the lab's sscd)
+    a_observation_id: str | None = None
+    b_observation_id: str | None = None
+    current: bool = True
+    exact_content: bool = False
+    detail: dict = field(default_factory=dict)
+
+    @property
+    def members(self):
+        return (self.a_id, self.b_id)
+
+    def other(self, location_id):
+        return self.b_id if str(location_id) == self.a_id else self.a_id
+
+
+@dataclass(frozen=True)
 class PolicyVersion:
     policy_version_id: str
     policy_id: str
@@ -157,6 +188,7 @@ class Evidence:
     roots: dict = field(default_factory=dict)       # root_key -> RootCoverage
     now: str = ""                                   # the moment routing is evaluated at (ISO UTC)
     batches: list = field(default_factory=list)     # Batch records, when a caller loads them (the fixture check does)
+    pairs: dict = field(default_factory=dict)       # pair_id -> VisualPair (Build 5): current pairs, plus any a decision or event names
 
     def group_of(self, location_id):
         for g in self.groups.values():

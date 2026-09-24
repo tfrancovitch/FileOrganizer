@@ -47,7 +47,7 @@ from . import resolve as R
 from . import routing as RT
 from .model import Evidence, Decision, PolicyVersion, active_decisions, under, path_key
 from .registry import (LOCATION, GROUP, decision_kind, policy_kind, bulk_action, scope_kind as _scope_kind,
-                       SOURCE_ROOT, SCOPE_EXPLICIT_SELECTION, DEFER_DISPOSITIONS,
+                       SOURCE_ROOT, SCOPE_EXPLICIT_SELECTION, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        DISP_DECIDED, DISP_SATISFIED, DISP_PRESERVED, DISP_CONFLICT, DISP_BLOCKED, DISP_NOT_APPLICABLE,
                        DISPOSITIONS, MODE_PRESERVE)
 
@@ -260,7 +260,7 @@ def plan(action, params, groups, ev: Evidence, proj: R.ProjectProjection, routin
             out.append(Candidate(GROUP, gp.group_id, (("keep_all_group", GROUP, gp.group_id, True),), gp.group_id, label))
         elif action == "defer":
             disposition = params.get("disposition") or "defer_indefinitely"
-            if disposition not in DEFER_DISPOSITIONS:
+            if disposition not in DEFER_DISPOSITIONS or disposition not in DEFER_CHOICES[GROUP]:
                 raise ValueError(f"unknown deferral disposition: {disposition!r}")
             out.append(Candidate(GROUP, gp.group_id, (), gp.group_id, label, events=((disposition, params.get("until")),)))
         elif action == "accept_recommendation":

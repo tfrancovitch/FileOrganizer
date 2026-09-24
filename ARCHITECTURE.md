@@ -1,10 +1,11 @@
-# Architecture — The File Organizer, B10 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B11 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
-routing, bulk) at the end say what B7, B8, B9 and B10 added on top.
+routing, bulk, similar images) at the end say what B7, B8, B9, B10 and B11
+added on top.
 
 ---
 
@@ -24,7 +25,7 @@ routing, bulk) at the end say what B7, B8, B9 and B10 added on top.
    |            engine            |                  |
    +--------------+--------------+------------------+
                   |
-          FileOrganizer.db           SQLite, schema 11 -- AUTHORITATIVE
+          FileOrganizer.db           SQLite, schema 12 -- AUTHORITATIVE
                   |
              fo_exports.py           renders every CSV and report FROM the DB
                   |
@@ -154,12 +155,13 @@ extracted text is reused rather than duplicated by source path.
 
 ## Database
 
-Schema **`user_version = 10`**, created by `fo_db.py` applying migrations
-`001`–`010`. Migration 006 introduced current-state separation; migration 007
+Schema **`user_version = 12`**, created by `fo_db.py` applying migrations
+`001`–`012`. Migration 006 introduced current-state separation; migration 007
 completes the A–F reconciliation/current projection; 008 is Phase 2's core
 (saved queries, retained executions, the derived-index registry, the current
 exact-duplicate projection, the FTS map); 009 is Phase 3's decision record;
-010 its review events.
+010 its review events; 011 its bulk batches; 012 the visual candidate pairs
+(Phase 2 evidence: the image hashes, compared).
 
 | Table group | Holds |
 |---|---|
@@ -175,6 +177,7 @@ exact-duplicate projection, the FTS map); 009 is Phase 3's decision record;
 | `p3_operation`, `p3_decision`, `p3_decision_withdrawal`, `p3_policy`, `p3_policy_version` | Phase 3: the append-only decision record |
 | `p3_review_event` | Phase 3: routing provenance — deferrals with return triggers, skips, what the detector found, restores |
 | `p3_bulk_batch`, `p3_bulk_member` | Phase 3: a bulk batch — its scope, frozen query, the preview as confirmed, and every member with what became of it |
+| `visual_candidate_generation`, `visual_candidate` | Phase 2 evidence (B11): each comparison of the image hashes, and every pair of images within the threshold — identity = the two file locations, kept across generations; `current` = the latest generation found it |
 
 Analyzer results keep **normalised promoted columns** (title, author,
 dimensions, duration, word count) *plus* the analyzer's own JSON detail. The
@@ -412,6 +415,9 @@ which is a per-run snapshot.
                   |                  a batch with its members and decisions; the detector's
                   |                  rows under a system operation)
         Phase3\review.py            the Decide page inside the one window
+        Phase3\pairs.py             (B11) visual candidate pairs resolved one by one --
+                                    relationship and retention, the chain guard
+        Phase3\imagegame.py         (B11) the Similar Images page: A/B compare
 ```
 
 Four authoritative families, all append-only: **operation** (one user
@@ -508,4 +514,80 @@ After a batch there are thousands of active decisions; `routing.route_all`
 indexes them by target once per pass (3,000 groups with 6,000 decisions
 route in 0.1 s), and the store's chain-head and withdrawal checks are
 targeted queries, not table loads.
+
+### Similar images — the Image Game (B11)
+
+```
+   analyzer_result (image: pHash / aHash / dHash per current observation)
+                  |
+        Phase2\visual.py            compare: pigeonhole buckets (9 segments of a 64-bit
+                  |                 hash; two hashes within 8 bits share a segment),
+                  |                 the neighbour cap, then UPSERT by (a, b) -- run at the
+                  v                 end of the Image Analysis stage, or on demand
+   visual_candidate (Phase 2 EVIDENCE: two locations, method, distance, the
+                     observations compared; current / retired, never deleted)
+                  |
+        Phase3\evidence.py          current pairs (live: both images still on the compared
+                  |                 observations), plus any a decision or event names
+        Phase3\pairs.py             each pair on its own: relationship x retention ->
+                  |                 keepers, the redundant candidate, conflicts
+        Phase3\routing.py           the same seven routes; the pairs' queue is the
+                  |                 Visual Similarity Review
+        Phase3\imagegame.py         one pair at a time, keys, linked previews
+```
+
+**Evidence on the Phase 2 side.** The image analyzer stored hashes and never
+pairs; `Phase2\visual.py` makes the pairs, because finding candidates is
+evidence, not adjudication. A pair's identity is its two file locations
+(`UNIQUE(a_file_path_id, b_file_path_id)`): a later generation that finds
+the same two images updates that row, so a decision on the pair keeps its
+target. A pair the latest generation did not find is retired
+(`current = 0`), never deleted. The search is bucketed, not all-against-all:
+cut the 64-bit pHash into 9 segments; two hashes within 8 bits agree
+exactly on at least one, so only images sharing a segment value are
+compared (vectorized with numpy where it is installed — imagehash needs
+it — and the same answer in plain Python). Each image keeps its 10 nearest
+look-alikes; the generation row counts the images a crowd trimmed.
+
+**Relationship and retention are two decisions** on the pair
+(`target_kind = visual_candidate_pair`): `equivalent_copy` /
+`related_variant` / `different` in one conflict domain, and retention —
+`canonical_location` (reused: the preferred image) and `keep_both` (new: the
+pair-scoped Keep all) — in their own. A fast action records both in one
+operation (`store.record_decisions`); Undo withdraws both
+(`store.withdraw_many`). `pairs.py` resolves each pair alone: equivalent +
+canonical makes the other image the pair's redundant candidate; keep_both
+keeps both; a related variant keeps both by default and never feeds the
+ordinary cleanup; different is a resolved false positive. The one place
+pairs meet is a guard, not an inference: when the image one pair keeps is
+the image another pair gives up, the first pair is a conflict — nothing
+asserts that the two ends of the chain are alike. Protection and an
+explicit Keep stand in front of a pair's redundant candidate exactly as in
+an exact group.
+
+**Routing.** The same seven routes; the pairs' Unresolved route is the
+Visual Similarity Review. Two blockers of their own, computed live:
+*preview unavailable* (an image cloud-only or not present — returns on the
+`preview_available` trigger, which B9 reserved) and *stale image analysis*
+(an image re-observed since its hash was compared). A decided pair whose
+images moved is Needs Revalidation, never unreviewed again. A pair of
+byte-identical images routes to Resolved (*exact copies*): the exact
+review answers it, and it can still be opened. A recorded blocked event
+now names its blocker (`detail.blocker`); an older row without one is read
+by its return kind as before.
+
+**Scale.** On a real collection (25,330 analyzed images, 51,924 pairs) the
+comparison takes 7 s; the page opens in about 3.5 s including the detector,
+moves between pairs in under 0.1 s and records an answer in about 0.3 s:
+after an answer only the decision record is re-read and only the pairs are
+re-derived, and a pair no decision touches keeps its projection and route
+(the checks compare that shortcut with a fresh derivation). The Duplicate
+decisions page and the summary leave the pairs out (the summary's line is
+plain SQL counts).
+
+**Previews** are reads: Pillow opens the file read-only and decodes it in
+memory, EXIF orientation applied; a pyramid of reduced copies serves a
+zoomed-out view and 100% is the decoded original. A file whose attributes
+say cloud-only — checked live, not only from the last scan — is never
+opened.
 

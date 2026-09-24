@@ -160,12 +160,20 @@ class ProjectProjection:
     groups: list                         # GroupProjection, display order
     orphaned_decisions: tuple            # active decisions whose target is no longer in current evidence
     totals: dict = field(default_factory=dict)
+    pairs: list = field(default_factory=list)    # pairs.PairProjection (Build 5), presentation order
 
     def group(self, group_id):
         for g in self.groups:
             if g.group_id == group_id:
                 return g
         return None
+
+    def pair(self, pair_id):
+        """One pair's projection by id (an index kept for the list it was built from)."""
+        if getattr(self, "_pair_index_of", None) is not self.pairs:
+            self._pair_index = {p.pair_id: p for p in self.pairs}
+            self._pair_index_of = self.pairs
+        return self._pair_index.get(str(pair_id))
 
 
 # -- helpers ---------------------------------------------------------------------
@@ -498,4 +506,6 @@ def resolve_all(ev: Evidence) -> ProjectProjection:
         "orphaned_decisions": len(orphaned),
         "active_decisions": len(active),
     }
-    return ProjectProjection(projections, orphaned, totals)
+    # Build 5: the visual candidate pairs, each on its own (pairs.py).
+    from .pairs import resolve_pairs
+    return ProjectProjection(projections, orphaned, totals, resolve_pairs(ev, index, active))

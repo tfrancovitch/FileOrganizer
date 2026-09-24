@@ -10,18 +10,25 @@ from the p3_* tables. Nothing here opens a source file.
 The evidence binding a decision records is also built here: references
 (ids) into file_path / file_observation / content and the group's current
 membership at the moment of deciding -- never a copy of the evidence.
+
+Build 5 adds the visual candidate pairs (`visual_candidate`, Phase 2's
+comparison of the image hashes): every pair the latest generation found
+whose two images still rest on the observations it compared, plus any pair
+a decision or review event names. Their images join `locations` (read from
+file_state, like any location a decision names).
 """
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from Phase2.core import utc_now
 from Phase2.coverage import coverage_summary
 from Phase2.derived import ensure_duplicate_projection
 
 from . import EVIDENCE_BINDING_SCHEMA
-from .model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, RootCoverage, path_key
-from .registry import LOCATION, GROUP
+from .model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, RootCoverage, VisualPair, path_key
+from .registry import LOCATION, GROUP, VISUAL_PAIR
 
 _MEMBER_SQL = """
 SELECT m.file_path_id, m.content_id, m.source_root_id, m.size_bytes, m.physical_key,
@@ -200,9 +207,84 @@ def load_policies(conn) -> list:
         version_no=int(r["version_no"]), active=(r["status"] == "active")) for r in rows]
 
 
-def load_evidence(conn, content_ids=None) -> Evidence:
+#: A visual candidate pair with what its currency rests on, read live: the
+#: generation's own flag, each image's state and current observation (a
+#: re-observed image no longer rests on the hash that was compared), and each
+#: one's content identity (byte-identical images are exact duplicates).
+#: The pair is LIVE when the latest generation found it and both images are
+#: present on the very observations it compared; EXACT when both rest on a
+#: current content identity and it is the same one.
+_LIVE = ("(vc.current = 1 AND fa.state = 'present' AND fb.state = 'present' "
+         "AND fa.current_observation_id = vc.a_observation_id AND fb.current_observation_id = vc.b_observation_id)")
+_EXACT = ("(fa.content_id IS NOT NULL AND fa.content_id = fb.content_id "
+          "AND fa.content_observation_id = fa.current_observation_id AND fb.content_observation_id = fb.current_observation_id)")
+_PAIR_SQL = f"""
+SELECT vc.candidate_id, vc.a_file_path_id, vc.b_file_path_id, vc.method, vc.hash_bits, vc.distance,
+       vc.ahash_distance, vc.dhash_distance, vc.a_observation_id, vc.b_observation_id,
+       {_LIVE} AS live, {_EXACT} AS exact
+  FROM visual_candidate vc
+  JOIN file_state fa ON fa.file_path_id = vc.a_file_path_id
+  JOIN file_state fb ON fb.file_path_id = vc.b_file_path_id
+"""
+
+
+def _pair(r) -> VisualPair:
+    pid, a, b, method, bits, distance, ad, dd, a_obs, b_obs, live, exact = tuple(r)
+    detail = {}
+    if ad is not None:
+        detail["ahash_distance"] = int(ad)
+    if dd is not None:
+        detail["dhash_distance"] = int(dd)
+    return VisualPair(str(pid), str(a), str(b), method, distance, bits, None,
+                      str(a_obs) if a_obs is not None else None, str(b_obs) if b_obs is not None else None,
+                      bool(live), bool(exact), detail)
+
+
+def load_pairs(conn, named=()) -> dict:
+    """pair_id -> VisualPair: every pair that is current now, plus the named
+    ones (a decision or review event targets them) whatever their state. A
+    database without the table (a model built by hand) has none."""
+    pairs = {}
+    try:
+        for r in conn.execute(_PAIR_SQL + f" WHERE vc.current = 1 AND {_LIVE}"):
+            p = _pair(r)
+            pairs[p.pair_id] = p
+        ids = sorted({int(n) for n in named if str(n).isdigit()} - {int(p) for p in pairs})
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" for _ in chunk)
+            for r in conn.execute(_PAIR_SQL + f" WHERE vc.candidate_id IN ({marks})", tuple(chunk)):
+                p = _pair(r)
+                pairs[p.pair_id] = p
+    except sqlite3.OperationalError:
+        return {}
+    return pairs
+
+
+def pair_counts(conn) -> dict:
+    """The project summary's numbers for the Similar images line, straight
+    from SQL (no resolution): current pairs, how many are byte-identical, and
+    how many carry an active decision."""
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*), COALESCE(SUM({_EXACT}), 0) FROM visual_candidate vc "
+            "  JOIN file_state fa ON fa.file_path_id = vc.a_file_path_id "
+            f"  JOIN file_state fb ON fb.file_path_id = vc.b_file_path_id WHERE vc.current = 1 AND {_LIVE}").fetchone()
+        decided = conn.execute(
+            "SELECT COUNT(DISTINCT d.target_ref) FROM p3_decision d WHERE d.target_kind = ? "
+            "   AND NOT EXISTS (SELECT 1 FROM p3_decision_withdrawal w WHERE w.decision_id = d.decision_id) "
+            "   AND NOT EXISTS (SELECT 1 FROM p3_decision x WHERE x.supersedes_decision_id = d.decision_id)",
+            (VISUAL_PAIR,)).fetchone()[0]
+    except sqlite3.OperationalError:
+        return {"pairs": 0, "exact": 0, "decided": 0}
+    return {"pairs": int(row[0] or 0), "exact": int(row[1] or 0), "decided": int(decided or 0)}
+
+
+def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
     """The whole model: every current exact-duplicate group (or the given
-    content ids only), every decision row, every policy's current version.
+    content ids only), every decision row, every policy's current version,
+    and (for the whole model, unless `pairs` is False -- the Duplicate
+    decisions page has no use for them) the visual candidate pairs.
 
     Needs a writable connection when the duplicate projection is stale --
     the same rule capability.py works under.
@@ -221,9 +303,18 @@ def load_evidence(conn, content_ids=None) -> Evidence:
     groups = {cid: Group(cid, cid, tuple(lids)) for cid, lids in members.items()}
     decisions = load_decisions(conn)
     events = load_events(conn)
+    want_pairs, pairs = pairs, {}
+    if want_pairs and not content_ids:
+        named = {d.target_ref for d in decisions if d.target_kind == VISUAL_PAIR}
+        named |= {e.target_ref for e in events if e.target_kind == VISUAL_PAIR}
+        pairs = load_pairs(conn, named)
     # Locations a decision or event names that are no longer current members
-    # (content changed, vanished, hash stale): routing needs to see them.
-    wanted = _bound_location_ids([d for d in decisions if not d.withdrawn], events) - set(locations)
+    # (content changed, vanished, hash stale): routing needs to see them. And
+    # every image of a visual candidate pair (Build 5).
+    wanted = _bound_location_ids([d for d in decisions if not d.withdrawn], events)
+    for p in pairs.values():
+        wanted.update(p.members)
+    wanted -= set(locations)
     if wanted and not content_ids:
         ids = sorted(int(i) for i in wanted if str(i).isdigit())
         for start in range(0, len(ids), 500):
@@ -232,7 +323,9 @@ def load_evidence(conn, content_ids=None) -> Evidence:
             for r in conn.execute(_STATE_SQL + f" WHERE fs.file_path_id IN ({marks})", tuple(chunk)):
                 loc = _location(r)
                 locations[loc.location_id] = loc
-    return Evidence(locations, groups, decisions, load_policies(conn), events, load_roots(conn), utc_now())
+    ev = Evidence(locations, groups, decisions, load_policies(conn), events, load_roots(conn), utc_now())
+    ev.pairs = pairs
+    return ev
 
 
 def group_members(conn, content_id):
@@ -283,5 +376,41 @@ def location_binding(conn, file_path_id) -> dict:
     return binding
 
 
+def pair_of(conn, pair_id):
+    """One visual candidate pair as a VisualPair (current or not), or None."""
+    if not str(pair_id).isdigit():
+        return None
+    try:
+        row = conn.execute(_PAIR_SQL + " WHERE vc.candidate_id = ?", (int(pair_id),)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return _pair(row) if row is not None else None
+
+
+def pair_binding(conn, pair_id) -> dict:
+    """What the pair looked like when the decision was made: the candidate,
+    the method's measurement, and each image's current observation. Ids
+    (and the measurement) only."""
+    p = pair_of(conn, pair_id)
+    if p is None:
+        return {}
+    members = []
+    for lid in p.members:
+        row = conn.execute("SELECT current_observation_id FROM file_state WHERE file_path_id = ?", (int(lid),)).fetchone()
+        members.append({"file_path_id": int(lid), "observation_id": row["current_observation_id"] if row else None})
+    return {
+        "schema": EVIDENCE_BINDING_SCHEMA,
+        "target_kind": VISUAL_PAIR,
+        "pair_id": int(pair_id),
+        "method": p.method,
+        "distance": p.distance,
+        "hash_bits": p.bits,
+        "compared_observations": [p.a_observation_id, p.b_observation_id],
+        "members": members,
+    }
+
+
 def binding_for(conn, target_kind, target_ref) -> dict:
+    if target_kind == VISUAL_PAIR:
+        return pair_binding(conn, target_ref)
     return location_binding(conn, target_ref) if target_kind == LOCATION else group_binding(conn, target_ref)

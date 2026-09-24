@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F06_Visual_Nontransitivity",
+  "title": "Visual Similarity Non-Transitivity",
+  "purpose": "A~B and B~C do not imply A~C; fuzzy adjudication remains pair-specific."
+}

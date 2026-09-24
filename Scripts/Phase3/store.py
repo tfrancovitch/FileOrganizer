@@ -34,6 +34,13 @@ store commits exactly what the preview showed; it never re-evaluates.
 `undo_batch` withdraws the batch's still-active decisions (and restores
 its deferrals) in one operation of kind 'bulk_undo'; the batch and member
 rows stay as recorded.
+
+Build 5 adds the visual candidate pair as a target (decisions and review
+events). `record_decisions` records several decisions in ONE operation --
+the Image Game's fast actions ("Equivalent -> Prefer Left" is a
+relationship row and a retention row, each its own decision, landing
+together or not at all) -- and `withdraw_many` withdraws several in one
+operation (the Image Game's Undo of such an action).
 """
 from __future__ import annotations
 
@@ -48,9 +55,9 @@ from . import evidence as ev_mod
 from . import routing as RT
 from .model import active_decisions, PolicyVersion
 from .registry import (decision_kind, policy_kind, event_kind, return_kind, origin_kind, bulk_action, disposition,
-                       LOCATION, GROUP, CONFIRM_EXPLICIT_OVERRIDE,
+                       LOCATION, GROUP, VISUAL_PAIR, TARGET_KINDS, CONFIRM_EXPLICIT_OVERRIDE,
                        EVENT_DEFERRED, EVENT_SKIPPED, EVENT_RESTORED, RETURN_TIME, RETURN_EVIDENCE_CHANGE,
-                       RETURN_MANUAL, DEFER_DISPOSITIONS, ORIGIN_EXPLICIT_HUMAN, ORIGIN_BULK_EXPLICIT_HUMAN,
+                       RETURN_MANUAL, DEFER_DISPOSITIONS, DEFER_CHOICES, ORIGIN_EXPLICIT_HUMAN, ORIGIN_BULK_EXPLICIT_HUMAN,
                        DISP_DECIDED, MODE_PRESERVE)
 from .resolve import _policy_covers
 
@@ -189,7 +196,7 @@ class DecisionStore:
                    return_on_utc=None, detail=None, refers_to=None):
         event_kind(kind)
         return_kind(return_kind_)
-        if target_kind not in (LOCATION, GROUP):
+        if target_kind not in TARGET_KINDS:
             raise ValueError(f"unknown target kind: {target_kind!r}")
         if refers_to is not None:
             row = self.conn.execute("SELECT review_event_id FROM p3_review_event WHERE review_event_id=?", (int(refers_to),)).fetchone()
@@ -210,9 +217,13 @@ class DecisionStore:
         against it. Returns {review_event_id, operation_id, return_kind}."""
         if disposition not in DEFER_DISPOSITIONS:
             raise ValueError(f"unknown deferral disposition: {disposition!r}")
+        if disposition not in DEFER_CHOICES.get(target_kind, ()):
+            raise ValueError(f"{DEFER_DISPOSITIONS[disposition][1]} does not apply to a {target_kind}")
         rk = DEFER_DISPOSITIONS[disposition][0]
         if target_kind == GROUP and not ev_mod.group_members(self.conn, target_ref):
             raise ValueError("this content is not a current exact-duplicate group")
+        if target_kind == VISUAL_PAIR and ev_mod.pair_of(self.conn, target_ref) is None:
+            raise ValueError("no such visual candidate pair")
 
         def work():
             op = self._operation("review", command_id, note)
@@ -299,11 +310,65 @@ class DecisionStore:
             evidence_binding = ev_mod.binding_for(self.conn, target_kind, target_ref)
         if target_kind == GROUP and not (evidence_binding or {}).get("members"):
             raise ValueError("this content is not a current exact-duplicate group")
-        if kind == "canonical_location":
+        if target_kind == VISUAL_PAIR:
+            if not (evidence_binding or {}).get("members"):
+                raise ValueError("no such visual candidate pair")
+            pair_ids = sorted(str(m["file_path_id"]) for m in evidence_binding["members"])
+            if kind == "canonical_location" and value not in pair_ids:
+                raise ValueError("the preferred image must be one of the pair")
+            if kind == "keep_both" and sorted(value) != pair_ids:
+                raise ValueError("keep_both names exactly the pair's two images")
+        elif kind == "canonical_location":
             member_ids = {str(m["file_path_id"]) for m in evidence_binding.get("members", [])}
             if value not in member_ids:
                 raise ValueError("the canonical must be a current member of the group")
         return kind, target_kind, target_ref, value, evidence_binding
+
+    def record_decisions(self, decisions, rationale=None, command_id=None, withdraw=()):
+        """Several decisions in ONE operation: every row lands or none does.
+        `decisions` = [(kind, target_kind, target_ref, value)]. Each row is
+        its own decision -- superseding the chain head in its own conflict
+        domain -- so each can later be superseded or withdrawn on its own
+        (the research's rule: relationship and retention are two rows even
+        when one click records both). `withdraw` names active decisions to
+        withdraw in the same operation. Returns {operation_id, decision_ids,
+        superseded, withdrawn}."""
+        if not decisions:
+            raise ValueError("nothing to record")
+        plan = []
+        for kind, target_kind, target_ref, value in decisions:
+            if kind == "override_protection":
+                raise ValueError("override_protection is recorded through record_override, with its own confirmation")
+            plan.append(self._validate_decision(kind, target_kind, target_ref, value, None))
+        withdraw_ids = [int(w) for w in withdraw]
+
+        def work():
+            op = self._operation("decision", command_id, rationale)
+            withdrawn = [self._withdraw_row(w, op, "withdrawn by a later decision in the same operation")
+                         for w in withdraw_ids]
+            ids, superseded = [], []
+            for kind, target_kind, target_ref, value, binding in plan:
+                did, sup = self._decision_row(op, kind, target_kind, target_ref, value, binding, rationale)
+                ids.append(did)
+                if sup is not None:
+                    superseded.append(sup)
+            return {"operation_id": op, "decision_ids": ids, "superseded": superseded, "withdrawn": withdrawn}
+        return self._run(work)
+
+    def withdraw_many(self, decision_ids, reason=None, command_id=None):
+        """Withdraw several active decisions in one operation (the Image
+        Game's Undo of a fast action). A decision no longer active is
+        refused -- the whole operation with it."""
+        ids = [int(d) for d in decision_ids]
+        if not ids:
+            raise ValueError("nothing to withdraw")
+
+        def work():
+            op = self._operation("withdrawal", command_id, reason)
+            for did in ids:
+                self._withdraw_row(did, op, reason)
+            return {"operation_id": op, "withdrawn": ids}
+        return self._run(work)
 
     def _decision_row(self, operation_id, kind, target_kind, target_ref, value, evidence_binding, rationale,
                       origin=ORIGIN_EXPLICIT_HUMAN, origin_ref=None):

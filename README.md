@@ -8,9 +8,30 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8, B9 or B10 changes a file either.
+a later phase; nothing in B8, B9, B10 or B11 changes a file either.
 
 ---
+
+## B11 — Phase 3, Build 5: similar images, one pair at a time
+
+The image analyzer has always stored a perceptual hash for every picture;
+B11 compares them. At the end of every image analysis the hashes are
+paired — two images whose pHash values differ in at most 8 of their 64
+bits become a **candidate pair** — and a pair keeps its identity (its two
+files) through every later analysis, so a pair you have answered never
+comes back as new. The side panel's **Similar Images** page (and **Compare
+images** on the summary) shows one pair at a time: two large previews with
+linked zoom and pan, Fit and 100%, each image's resolution, format, size,
+dates and path, and the measurement named for what it is ("Perceptual
+hash — Hamming distance 4 of 64 bits"), never a percentage. You say what
+the two are to each other — **Equivalent** (prefer left, prefer right or
+keep both), **Related variant** (keep both: a crop or an edit is not a
+copy), **Different**, or **Defer** — mostly with one key, and **U** undoes
+the last answer. Each answer is about that pair only: nothing is inferred
+for a third image. Byte-identical pairs stay out of the queue (the
+duplicate review answers them) but can still be opened and compared.
+`CHANGELOG-B11.md` has the detail; `PHASE3_BUILD5_HANDBACK.md` reports
+against the Build 5 handoff.
 
 ## B10 — Phase 3, Build 4: bulk decisions and the policy workflow
 
@@ -157,6 +178,8 @@ a release gate.
   (Phase 3, from B8); routes each group's attention (from B9); applies one
   decision to many groups after a preview, as a batch you can undo whole
   (from B10)
+- Compares every analyzed picture with its look-alikes by perceptual hash and
+  records, pair by pair, what you say they are to each other (from B11)
 
 ## What it deliberately does not do
 
@@ -411,6 +434,60 @@ the group has no conflict — a redundant mark on a protected copy, a copy that
 is both canonical and redundant, or every copy marked redundant (the product
 never removes the last copy). The page says which.
 
+### 4b. Similar images (from B11)
+
+**Where the pairs come from.** Analyzing **Pictures** stores a perceptual
+hash per image; at the end of that analysis the program compares them and
+records every pair within 8 of 64 bits (pHash) — no image is opened for
+this, and a cloud-only picture was never hashed. A crowd of near-identical
+images keeps each image's 10 nearest look-alikes and says how many images
+it trimmed. A project analyzed before B11 gets its pairs the first time the
+page opens. **Find similar images again** compares afresh on request.
+
+**The page.** The list on the left is the chosen **Show**: the **Visual
+Similarity Review** (pairs no answer has settled, the closest first), the
+same routes the duplicate review has — Conflicts & Exceptions, Needs
+Revalidation, Blocked by Evidence, Deferred / Snoozed, Ready for Plan,
+Resolved — and lenses: Strong near-copies (within 5 bits), Across folders
+(where copies kept twice usually are — a folder of generated variations is
+a crowd of look-alikes inside one folder), Cross-root pairs, Exact copies
+(compare on request), All pairs. A long list shows 500
+at a time around the pair in view; **N** / **P** move through all of it. On
+the right: the two images, linked (zoom with the wheel or + / −, drag to
+pan — both sides show the same region of their own image, so a resized copy
+lines up; **K** unlinks, **Y** re-syncs), **F** fit, **H** 100% (actual
+pixels, full resolution), **X** swaps the sides (presentation only). Under
+each image: its name, folder, resolution, format, size, modified time and
+the capture date the file itself records.
+
+| Key | Records |
+|---|---|
+| **A** / **L** | Equivalent, prefer left / right — two decisions: the relationship, and which copy the pair keeps (the other becomes a redundant candidate) |
+| **E** | Equivalent, keep both |
+| **V** | Related variant, keep both — never ordinary redundant-copy cleanup |
+| **D** | Different — a false positive for this pair only (any retention on it is withdrawn) |
+| **[** / **]** | the left / right image as canonical (with Keep both: the representative) |
+| **W** | Defer… with a return trigger (including *until a preview is possible*) — or Restore |
+| **S** | Skip — an audit row, nothing else |
+| **U** or Ctrl+Z | undo the last answer (its decisions withdrawn; nothing it replaced comes back) |
+
+After an answer the page moves to the next pair. Progress is the record
+itself: close the window and the queue is where you left it.
+
+**What it will not do.** Nothing is inferred along a chain: if A~B and B~C
+are equivalent, nothing is said about A~C — and if one pair keeps an image
+another pair gives up, the first pair is in **conflict** until you decide
+the missing pair or keep both. A protected image or one you explicitly
+kept cannot be the one a pair gives up (a conflict, not an effect). A
+cloud-only image is never downloaded to be shown; the pair is blocked
+until it is local. No image is deleted, moved or edited from here.
+
+**Exact copies.** Byte-identical pictures are exact duplicates: their pair
+is set aside (the Duplicate decisions page answers them). Show *Exact
+copies* — or **Compare images…** on the Duplicate decisions page — opens
+them side by side anyway; **[** / **]** there set the exact-duplicate
+group's canonical.
+
 ### Stopping a run
 
 Cancel is honoured between files, never during one, so nothing is left
@@ -468,6 +545,11 @@ folder — never next to your originals.
   malformed PDF is reported as an error on that file, not repaired.
 - **Duplicate groups are facts, not advice.** Phase 1 tells you what is
   identical. Deciding what to do about it is a later phase.
+- **Similar images are found by perceptual hash only (B11).** It finds
+  recompressed, resized, recoloured and lightly edited copies; a crop or a
+  heavy edit is usually too different for it. A folder of generated
+  variations (a batch of AI images from one prompt) can yield thousands of
+  look-alike pairs: they are reviewed one pair at a time in this build.
 
 ---
 

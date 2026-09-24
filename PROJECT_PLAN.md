@@ -4,7 +4,7 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-21 — **Phase 3 Build 4 (bulk / policy) built as B10** in `FileOrganizer-Phase3-B10\` on branch `phase3-b10` from the B9 commit (`94dfc76`, committed so Build 4 could branch from the reviewed state; tag `phase3-b9` the owner's); `PHASE3_BUILD4_HANDBACK.md` reports against its handoff. 2026-09-20, night — **Phase 3 Build 3 (review routing) built as B9** in `FileOrganizer-Phase3-B9\` on branch `phase3-b9` from the B8 commit; `PHASE3_BUILD3_HANDBACK.md` reports against its handoff. Earlier the same day — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2` (committed as `e44613a`, reviewed, tag `phase3-b8` the owner's); `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
+**Last updated:** 2026-09-23 — **Phase 3 Build 5 (Image Game) built as B11** in `FileOrganizer-Phase3-B11\` on branch `phase3-b11` from tag `phase3-b10` (`a0cfa1c`); `PHASE3_BUILD5_HANDBACK.md` reports against its handoff. 2026-09-21 — **Phase 3 Build 4 (bulk / policy) built as B10** in `FileOrganizer-Phase3-B10\` on branch `phase3-b10` from the B9 commit (`94dfc76`, committed so Build 4 could branch from the reviewed state; tag `phase3-b9` the owner's); `PHASE3_BUILD4_HANDBACK.md` reports against its handoff. 2026-09-20, night — **Phase 3 Build 3 (review routing) built as B9** in `FileOrganizer-Phase3-B9\` on branch `phase3-b9` from the B8 commit; `PHASE3_BUILD3_HANDBACK.md` reports against its handoff. Earlier the same day — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2` (committed as `e44613a`, reviewed, tag `phase3-b8` the owner's); `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction
@@ -24,19 +24,24 @@ the routes with their precedence, the revalidation detector, deferrals with
 return triggers, Skip, the lenses — shipped as **B9**; Build 4 — bulk /
 policy: the bulk batch record (schema 11), the checked selection and the
 frozen query snapshot, the categorized preview, preserve-not-overwrite,
-batch undo, the policy-creation preview — is built as **B10** and green on
-every suite (see §4a)
-**Build:** **B10** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
-project and log records it; `CHANGELOG-B10.md`; branch `phase3-b10` in the
-git repository, checked out as `FileOrganizer-Phase3-B10\` (a worktree — not
-yet committed or tagged; both the user's call after review). B9 is commit
-`94dfc76` on branch `phase3-b9` (worktree `FileOrganizer-Phase3-B9\`),
-awaiting its tag `phase3-b9`; B8 is commit `e44613a` on branch `phase3`
-(worktree `FileOrganizer-Phase3-B8\`), awaiting its tag `phase3-b8`. B7.2
-stays at tag `phase2-b7.2`, install `FileOrganizer-Phase2-B7.2\`, untouched
+batch undo, the policy-creation preview — shipped as **B10** (tag
+`phase3-b10`); Build 5 — the Image Game: visual candidate pairs made from
+the stored image hashes (schema 12, Phase 2 evidence with stable pair
+identity), relationship and retention as separate decisions on a pair, the
+pair routes and the Visual Similarity Review, A/B Compare with linked zoom
+— is built as **B11** and green on every suite (see §4a)
+**Build:** **B11** — `fo_db.APP_VERSION` and `Phase2.VERSION` agree; every run,
+project and log records it; `CHANGELOG-B11.md`; branch `phase3-b11` in the
+git repository, checked out as `FileOrganizer-Phase3-B11\` (a worktree from
+tag `phase3-b10` — not yet committed or tagged; both the user's call after
+review). B10 is commit `a0cfa1c`, tagged `phase3-b10`; B9 `94dfc76` (tag
+`phase3-b9`); B8 `e44613a` (tag `phase3-b8`). B7.2 stays at tag
+`phase2-b7.2`, install `FileOrganizer-Phase2-B7.2\`, untouched
 **Code source of truth:** `FileOrganizer\` (git): branch `phase2` for Phase 2,
-branches `phase3` (B8), `phase3-b9` (B9) and `phase3-b10` (Build 4; each to
-fast-forward `phase3` on acceptance) for Phase 3
+branches `phase3` (B8), `phase3-b9` (B9), `phase3-b10` (B10) and `phase3-b11`
+(Build 5) for Phase 3. (Note, 2026-09-23: the `phase2` branch — the main
+checkout — has been fast-forwarded to `a0cfa1c`, while `phase3` still
+points at `e44613a`.)
 
 ---
 
@@ -98,7 +103,7 @@ A nineteenth, adopted 2026-09-10:
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
 | **2** | **Understand** | **Shipped — B7.2. Closeout approved 2026-09-19; the adversarial round (P2.13) closed 2026-09-20 with B7.1 and B7.2 (defects 33–51; A-014 kept by decision)** |
-| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 (core persistence, exact-duplicate decisions); B9 (2026-09-20): Build 3 (review routing); B10 (2026-09-21): Build 4 (bulk / policy). Builds 5–7 (Image Game, plan builder, project metadata) await their handoffs** |
+| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 (core persistence, exact-duplicate decisions); B9 (2026-09-20): Build 3 (review routing); B10 (2026-09-21): Build 4 (bulk / policy); B11 (2026-09-23): Build 5 (Image Game). Builds 6–7 (plan builder, project metadata) await their handoffs** |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
 | 6 | Local LLMs | Research horizon |
@@ -111,7 +116,35 @@ changing embedded metadata is an *action*, so metadata editing is Phase 4, not 3
 
 ---
 
-## 4a. Where Phase 3 stands — B8, B9 and B10, 2026-09-21
+## 4a. Where Phase 3 stands — B8 to B11, 2026-09-23
+
+**B11 — Build 5, the Image Game** (handoff `Phase3_Handoff_Build5.zip`,
+kept at `FileOrganizer-Phase3\phase_3_handoff_build5\`; handback
+`PHASE3_BUILD5_HANDBACK.md`). The handoff's first question answered: the
+image analyzer stored one pHash / aHash / dHash per image and **no pairs**,
+so B11 adds the candidate generation on the Phase 2 side
+(`Scripts\Phase2\visual.py`, migration 012 — `visual_candidate_generation`
+and `visual_candidate`): a bucketed pigeonhole search over the 64-bit
+pHash (within 8 bits; 10 nearest look-alikes per image), run at the end of
+the Image Analysis stage or on demand. A pair's identity is its two file
+locations, kept across re-analysis. Phase 3 adds the pair as a target
+(`visual_candidate_pair`), three relationship kinds (`equivalent_copy`,
+`related_variant`, `different`) and `keep_both`, reuses `canonical_location`
+for "prefer this one", and resolves each pair alone (`Phase3\pairs.py`) —
+relationship and retention as two rows, a related variant never in the
+ordinary cleanup, no transitive inference, and a chain guard that makes a
+conflict of any pair whose keeper another pair gives up. Routing gives
+pairs the same seven routes (the Visual Similarity Review is their queue),
+two computed blockers (preview unavailable, stale image analysis) and the
+`preview_available` trigger B9 reserved; byte-identical pairs are set aside
+and openable. The Similar Images page (`Phase3\imagegame.py`): one pair at
+a time, linked zoom / pan, Fit / 100%, the evidence panel, a keymap of its
+own, Undo of the last answer. F06 and F07 pass through the product's own
+code; 65/65 fixtures, 137/137 in the new `p3_visual_check.py`, 341/341
+`p3_regression.py`. **Measured on the real collection** (a migrated copy:
+25,330 images → 51,924 pairs, 86% of them inside one folder of generated
+art): comparison 7 s, page open ~3.5 s, an answer ~0.3 s — and a queue of
+~50,000 pairs, which is the handback's first question.
 
 **B10 — Build 4, bulk / policy** (handoff
 `FileOrganizer-Phase3\phase_3_handoff_build4\`; handback
@@ -529,14 +562,15 @@ rather than time-boxed, and it does not exist for network shares.
 
 ## 6. Next
 
-**Phase 3, what comes after B10** — the remaining three builds of the Phase
-3 plan, each with its own handoff: 5 the Image Game (the perceptual hashes
-are already stored; `preview_available` blockers and snoozes wait for it;
-bulk over visual pairs and the propagation machinery belong there); 6 the
-plan builder, fingerprint and the Phase 4 contract (the Conflicts order
-becomes "blocking a current plan first" literally; a batch's explicit
-supersession mode may earn its place then); 7 project / desired source
-metadata. Before Phase 4,
+**Phase 3, what comes after B11** — the remaining two builds of the Phase
+3 plan, each with its own handoff: 6 the plan builder, fingerprint and the
+Phase 4 contract (the Conflicts order becomes "blocking a current plan
+first" literally; a batch's explicit supersession mode may earn its place
+then; it will read a pair's redundant candidate the way it reads an exact
+group's, and must respect the pair chain guard); 7 project / desired source
+metadata. Whether pair-level bulk or Survey Mode should come before them is
+the B11 handback's first question: a real collection yields ~50,000
+look-alike pairs. Before Phase 4,
 the two standing items from PHASE-2-HANDOFF: a cross-process lock, and the
 autocommit connection revisited (Phase 3's store already uses real
 transactions on the window's connection). Cheap follow-ups the handback
@@ -671,8 +705,9 @@ C:\FileOrganizerTesting\
   FileOrganizer-Phase2-B7.2\   the Phase 2 install, byte-identical to tag phase2-b7.2
   FileOrganizer-Phase3-B8\     B8: git worktree of branch phase3 (Builds 1-2, committed e44613a)
   FileOrganizer-Phase3-B9\     B9: git worktree of branch phase3-b9 (Build 3, committed 94dfc76)
-  FileOrganizer-Phase3-B10\    B10: git worktree of branch phase3-b10 (Build 4, uncommitted)
-  FileOrganizer-Phase3\        the Phase 3 handoff packages (Builds 1-2; phase_3_handoff_build3\; phase_3_handoff_build4\)
+  FileOrganizer-Phase3-B10\    B10: git worktree of branch phase3-b10 (Build 4, committed a0cfa1c, tag phase3-b10)
+  FileOrganizer-Phase3-B11\    B11: git worktree of branch phase3-b11 (Build 5, uncommitted)
+  FileOrganizer-Phase3\        the Phase 3 handoff packages (Builds 1-2; phase_3_handoff_build3\; _build4\; _build5\)
   Docs\
     Charter\          the phase model, requirements, question catalog, decisions
     Specifications\   query model, information model, report catalog, GUI contract

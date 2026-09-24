@@ -25,6 +25,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from . import capability as cap
+from . import visual as visual_evidence
 from Phase3 import review as review_view
 from .runner import (RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, ANALYSIS,
                      INDEX_TEXT, load_settings)
@@ -172,17 +173,23 @@ def show_hub(app):
          note=dup.detail if dup is not None and dup.state == cap.PARTIAL else None, bold=True)
 
     # -- decide (Phase 3) ----------------------------------------------------
-    # Once there are groups there is something to decide. The numbers are
-    # derived from the decision record every time the page draws: nothing
-    # about the current keeper set is stored as truth.
-    if summary["groups"]:
+    # Once there are groups -- or (B11) analyzed images to compare -- there
+    # is something to decide. The numbers are derived from the decision
+    # record every time the page draws: nothing about the current keeper set
+    # is stored as truth.
+    try:
+        vstatus = visual_evidence.status(app.conn)
+    except Exception:                                           # noqa: BLE001
+        vstatus = {"images": 0}
+    images = vstatus.get("images", 0)
+    if summary["groups"] or images >= 2:
         heading("Decide")
         try:
             d = review_view.decision_summary(app.conn)
         except Exception as exc:                                # noqa: BLE001
             d = None
             line("Duplicate decisions", f"unavailable: {exc}")
-        if d is not None:
+        if d is not None and summary["groups"]:
             routes = d.get("routes", {})
             text = f"{d['reviewed']:,} of {d['groups']:,} groups reviewed"
             # The routes (B9): where attention is owed, in precedence order.
@@ -206,6 +213,19 @@ def show_hub(app):
             btext = (f"{len(batches):,} recorded, {in_force:,} still in force" if batches
                      else "none -- check groups on the Decide page and use Bulk action...")
             line("Bulk batches", btext, action=("Batches...", lambda: review_view.BatchesDialog(app, review_view.store_for(app), app.show_hub)), view=True)
+        if images >= 2:
+            # Similar images (B11): the visual candidate pairs, one at a time.
+            # Plain counts from SQL -- the routes are the page's to work out.
+            if not vstatus.get("generation"):
+                vtext = f"not compared yet -- {images:,} analyzed images; the page compares them when it opens"
+            else:
+                pc = review_view.E.pair_counts(app.conn)
+                vtext = f"{pc['decided']:,} of {pc['pairs']:,} candidate pairs decided"
+                if pc["exact"]:
+                    vtext += f"; {pc['exact']:,} byte-identical pair{'s' if pc['exact'] != 1 else ''} set aside"
+            line("Similar images", vtext, action=("Compare images", app.show_similar), view=True, bold=True,
+                 note=("Images were analyzed since the last comparison: the page compares them again when it opens."
+                       if vstatus.get("generation") and vstatus.get("out_of_date") else None))
 
     # -- files by type -----------------------------------------------------
     pending = [b for b in summary["buckets"] if b["files"] and b["action"]]

@@ -2,6 +2,7 @@ r"""The File Organizer Phase 3 -- Decide / Plan.
 
 Builds 1-2 (B8): Core Persistence and Exact-Duplicate Decisions.
 Build 3 (B9): Review Routing. Build 4 (B10): Bulk / Policy.
+Build 5 (B11): the Image Game -- visual candidate pairs.
 
 Phase 3 converts evidence into attributable human intent, and that intent
 into an inspectable projection of what SHOULD happen -- without touching a
@@ -21,9 +22,15 @@ Phase 4, which does not exist yet.
     bulk.py       bulk decisions: the frozen scope, the categorized preview
                   (every target through the same resolver), the policy
                   impact preview -- pure functions over the model
+    pairs.py      visual candidate pairs, each resolved on its own:
+                  relationship and retention, the chain guard (Build 5)
     store.py      records operations, decisions, withdrawals, policy
                   versions, review events and bulk batches; append-only
     review.py     the Exact-Duplicate Review pages inside the one window
+    imagegame.py  the Similar Images page: one pair at a time (Build 5)
+
+The pairs themselves are Phase 2 evidence (Phase2\visual.py compares the
+image hashes); this package only records and resolves decisions about them.
 
 The product version is Phase2.VERSION (== fo_db.APP_VERSION); Phase 3 ships
 inside the same build and carries no version of its own.

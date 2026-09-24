@@ -55,7 +55,7 @@ from . import bulk as BK
 from . import evidence as E
 from . import resolve as R
 from . import routing as RT
-from .registry import (LOCATION, GROUP, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS,
+from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED)
 from .store import DecisionStore, new_command_id, export_decision_journal
 
@@ -132,7 +132,7 @@ def store_for(app):
 def decision_summary(conn):
     """The numbers the project summary shows on its Decide line -- the
     resolver's totals plus the routes' counts."""
-    ev = E.load_evidence(conn)
+    ev = E.load_evidence(conn, pairs=False)
     proj = R.resolve_all(ev)
     t = dict(proj.totals)
     t["reviewed"] = t["groups"] - t["unreviewed"]
@@ -173,12 +173,13 @@ def show_review(app, content_id=None, file_path_id=None):
     page.reload(select=content_id)
 
 
-def run_detector(conn, store):
+def run_detector(conn, store, pairs=True):
     """The routing detector, for the window: after a collection run and when
     the Decide page opens. Never raises -- a failure to write provenance must
-    not stop a run from finishing or a page from drawing; it is logged."""
+    not stop a run from finishing or a page from drawing; it is logged.
+    `pairs=False`: the exact-duplicate targets only (the Decide page's)."""
     try:
-        return RT.reconcile(conn, store)
+        return RT.reconcile(conn, store, pairs=pairs)
     except Exception as exc:                                        # noqa: BLE001
         try:
             import fo_log
@@ -316,6 +317,10 @@ class ReviewPage:
         acts2.pack(fill="x", pady=(4, 0))
         self.buttons["confirm"] = ttk.Button(acts2, text="Confirm decisions", command=self.confirm_decisions)
         self.buttons["confirm"].pack(side="left", padx=(0, 6))
+        # B11: byte-identical images need no relationship decision, but a
+        # person may still want to look -- and pick the canonical by eye.
+        self.buttons["compare"] = ttk.Button(acts2, text="Compare images...", command=self.compare_images)
+        self.buttons["compare"].pack(side="left", padx=(0, 6))
         ttk.Label(acts2, text="Keys: k keep · a keep all · c canonical · r redundant · d defer · s skip (skip records only that you passed by) · "
                               "Space checks the group -- keys act on the selected row only",
                   foreground="#666", wraplength=520, justify="left").pack(side="left")
@@ -347,12 +352,12 @@ class ReviewPage:
 
     def detect(self):
         """The routing detector: what the evidence says, written to the record."""
-        self.detector_result = run_detector(self.app.conn, self.store)
+        self.detector_result = run_detector(self.app.conn, self.store, pairs=False)
 
     def reload(self, select=None):
         """Re-derive everything from the record and redraw."""
         try:
-            ev = E.load_evidence(self.app.conn)
+            ev = E.load_evidence(self.app.conn, pairs=False)        # the pairs are the Similar Images page's
             self.ev = ev
             self.proj = R.resolve_all(ev)
             self.routing = RT.route_all(ev, self.proj, ev.now)
@@ -667,6 +672,9 @@ class ReviewPage:
         self.buttons["skip"].configure(state="normal" if have_group else "disabled")
         drifted = have_group and self._route(p).has(RT.NEEDS_REVALIDATION)
         self.buttons["confirm"].configure(state="normal" if drifted else "disabled")
+        from .imagegame import is_previewable
+        images = have_group and len(p.members) > 1 and is_previewable(p.members[0].path)
+        self.buttons["compare"].configure(state="normal" if images else "disabled")
         self.buttons["override"].configure(state="normal" if (v is not None and v.status == R.PROTECTED) else "disabled")
 
     # -- actions ------------------------------------------------------------------
@@ -857,6 +865,18 @@ class ReviewPage:
             self.detect()
             self._after(p.group_id)
 
+    def compare_images(self):
+        """Open two copies of an image group side by side on the Similar
+        Images page: the selected copy (or the canonical, or the first) on
+        the left, the next copy on the right. Nothing is required of them --
+        the exact-duplicate question is already answered."""
+        p, v = self._current()
+        if p is None or len(p.members) < 2:
+            return
+        left = v.location_id if v is not None else (p.effective_canonical or p.members[0].location_id)
+        right = next(m.location_id for m in p.members if m.location_id != left)
+        self.app.show_similar(compare=(left, right))
+
     def undo_selected(self):
         sel = self.history.selection()
         d = self.history_rows.get(sel[0]) if sel else None
@@ -907,8 +927,14 @@ class ReviewPage:
 # ---------------------------------------------------------------------------
 
 class DeferDialog:
-    def __init__(self, app, group, store, on_done):
+    """A deferral with its return trigger, for a group -- or (Build 5) for a
+    visual candidate pair: `target_kind` / `target_ref` name it, and the
+    triggers offered are the ones that apply to it (registry.DEFER_CHOICES)."""
+
+    def __init__(self, app, group, store, on_done, target_kind=GROUP, target_ref=None):
         self.app, self.group, self.store, self.on_done = app, group, store, on_done
+        self.target_kind = target_kind
+        self.target_ref = target_ref if target_ref is not None else group.group_id
         win = tk.Toplevel(app)
         self.win = win
         win.title("Defer")
@@ -917,11 +943,13 @@ class DeferDialog:
         frame = ttk.Frame(win, padding=14)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Not deciding yet", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(frame, text="A deferral is your choice, with a trigger that returns the group to the queue. "
+        what = "pair" if target_kind == VISUAL_PAIR else "group"
+        ttk.Label(frame, text=f"A deferral is your choice, with a trigger that returns the {what} to the queue. "
                               "It is not a decision about any copy, and it is different from Skip, which only "
                               "records that you passed by.", wraplength=520, justify="left", foreground="#444").pack(anchor="w", pady=(2, 10))
         self.choice = tk.StringVar(value="defer_indefinitely")
-        for key, (rk, label, why) in DEFER_DISPOSITIONS.items():
+        for key in DEFER_CHOICES[target_kind]:
+            rk, label, why = DEFER_DISPOSITIONS[key]
             row = ttk.Frame(frame)
             row.pack(fill="x", pady=1)
             ttk.Radiobutton(row, text=label, variable=self.choice, value=key, command=self._update).pack(side="left")
@@ -948,7 +976,7 @@ class DeferDialog:
         disposition = self.choice.get()
         note = self.note.get("1.0", "end").strip() or None
         try:
-            self.store.defer(GROUP, self.group.group_id, disposition, until=self.date_var.get().strip() or None,
+            self.store.defer(self.target_kind, self.target_ref, disposition, until=self.date_var.get().strip() or None,
                              note=note, command_id=new_command_id())
         except ValueError as exc:
             messagebox.showwarning("Defer", str(exc), parent=self.win)
@@ -1314,7 +1342,8 @@ class BulkDialog:
         self.folder_var.trace_add("write", lambda *a: self._inputs_changed())
         self.defer_row = ttk.Frame(frame)
         self.defer_var = tk.StringVar(value="defer_indefinitely")
-        for key, (rk, label, why) in DEFER_DISPOSITIONS.items():
+        for key in DEFER_CHOICES[GROUP]:
+            rk, label, why = DEFER_DISPOSITIONS[key]
             r = ttk.Frame(self.defer_row)
             r.pack(fill="x")
             ttk.Radiobutton(r, text=label, variable=self.defer_var, value=key, command=self._inputs_changed).pack(side="left")

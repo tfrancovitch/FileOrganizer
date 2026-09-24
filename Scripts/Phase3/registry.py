@@ -8,7 +8,7 @@ window must ask before recording it. That is what keeps `p3_decision.value_json`
 from becoming an unstructured escape hatch: the store refuses any kind or
 value the registry does not describe.
 
-Six decision kinds exist in this build (the exact-duplicate domain); five
+Six decision kinds serve the exact-duplicate domain (Builds 1-2); five
 policy kinds (protect / prefer / avoid over a source root or folder). The
 vocabulary is the research's working vocabulary, adopted provisionally: the
 keys below are what the database stores, so a later rename of the display
@@ -21,6 +21,20 @@ recorded), the two bulk scope kinds, the bulk actions the window offers
 (each names the decision kinds it records and, where one exists, the policy
 kind that says the same thing about the future), and the dispositions a
 batch member can land in.
+
+Build 5 (Image Game) adds a third target, the visual candidate pair
+(`visual_candidate_pair`, target_ref = the pair's candidate_id), and the
+research's rule that relationship and retention are separate decisions:
+
+    relationship  equivalent_copy | related_variant | different
+                  (one conflict domain: a new one supersedes the old)
+    retention     canonical_location (reused: "this copy represents the
+                  pair" -- Prefer Left / Prefer Right) | keep_both (new:
+                  the pair-scoped Keep All)
+
+A fast action ("Equivalent -> Prefer Left") records two rows in one
+operation; each is its own decision, supersedable on its own. Nothing here
+is a group of images: every relationship names exactly one pair.
 """
 from __future__ import annotations
 
@@ -30,6 +44,8 @@ from dataclasses import dataclass
 
 LOCATION = "file_location"                    # target_ref: file_path_id (as text)
 GROUP = "exact_duplicate_group_version"       # target_ref: content_id (as text)
+VISUAL_PAIR = "visual_candidate_pair"         # target_ref: visual_candidate.candidate_id (as text) -- Build 5
+TARGET_KINDS = (LOCATION, GROUP, VISUAL_PAIR)
 
 # -- the resolution order (P3.R2 keeper-rule catalog), earlier outranks later --
 
@@ -62,6 +78,21 @@ def _location_ref(value):
     return value.strip()
 
 
+def _id_order(value):
+    s = str(value)
+    return (0, int(s), s) if s.isdigit() else (1, 0, s)
+
+
+def _location_pair(value):
+    """keep_both names the pair's two locations (the fixture lab's shape: ["A","B"])."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("keep_both names the two file locations of the pair")
+    ids = [str(v).strip() for v in value]
+    if not all(ids) or ids[0] == ids[1]:
+        raise ValueError("keep_both names two different file locations")
+    return sorted(ids, key=_id_order)
+
+
 def _override(value):
     if not isinstance(value, dict):
         raise ValueError("override_protection names the policy it overrides")
@@ -80,7 +111,7 @@ class DecisionKind:
     key: str
     label: str
     target_kinds: frozenset
-    value_kind: str                 # 'flag' | 'location_ref' | 'override'
+    value_kind: str                 # 'flag' | 'location_ref' | 'override' | 'location_pair'
     resolution_class: str           # one of RESOLUTION_ORDER, or 'none' (not a retention decision)
     conflict_domain: str            # same target + same domain: the new decision supersedes the old
     requires_evidence: bool
@@ -91,7 +122,8 @@ class DecisionKind:
 
     def validate_value(self, value):
         """The value as it will be stored, or ValueError."""
-        return {"flag": _flag, "location_ref": _location_ref, "override": _override}[self.value_kind](value)
+        return {"flag": _flag, "location_ref": _location_ref, "override": _override,
+                "location_pair": _location_pair}[self.value_kind](value)
 
     def domain_key(self, value):
         """The conflict domain instance for one recorded value.
@@ -118,10 +150,11 @@ DECISION_KINDS = {k.key: k for k in (
         description="Retain every current member of the group. Multiple keepers are a normal resolved state; "
                     "zero reclaim is a valid answer."),
     DecisionKind(
-        "canonical_location", "Set canonical", frozenset({GROUP}), "location_ref",
+        "canonical_location", "Set canonical", frozenset({GROUP, VISUAL_PAIR}), "location_ref",
         "explicit_location_decision", "group_canonical",
         requires_evidence=True, supersedable=True, affects_reclaim=True, confirmation=CONFIRM_NONE,
-        description="Which copy represents the group. Optional; the canonical is always a keeper. "
+        description="Which copy represents the group -- or, on a visual candidate pair, which of the two is "
+                    "preferred (Prefer Left / Prefer Right). Optional; the canonical is always a keeper. "
                     "It says nothing about which copy came first."),
     DecisionKind(
         "redundant_location", "Mark redundant candidate", frozenset({LOCATION}), "flag",
@@ -141,7 +174,40 @@ DECISION_KINDS = {k.key: k for k in (
         requires_evidence=True, supersedable=True, affects_reclaim=True, confirmation=CONFIRM_EXPLICIT_OVERRIDE,
         description="The only way a protected location can become a redundant candidate: names the policy "
                     "rule it defeats, for this one location, with the actor and rationale recorded."),
+    # -- Build 5: visual candidate pairs. Relationship (about the pair) ------
+    DecisionKind(
+        "equivalent_copy", "Equivalent copy", frozenset({VISUAL_PAIR}), "flag",
+        "none", "pair_relationship",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="The same underlying image for cleanup purposes (recompressed, resized, a trivial "
+                    "watermark or colour change the person considers redundant). About this pair only: "
+                    "it says nothing about any third image."),
+    DecisionKind(
+        "related_variant", "Related variant", frozenset({VISUAL_PAIR}), "flag",
+        "none", "pair_relationship",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="Meaningfully related but NOT interchangeable (a deliberate crop, a black-and-white edit, "
+                    "a retouch, an annotated export). Its default retention is Keep Both, and it never falls "
+                    "into the ordinary redundant-copy cleanup."),
+    DecisionKind(
+        "different", "Different", frozenset({VISUAL_PAIR}), "flag",
+        "none", "pair_relationship",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="This candidate pair is a false positive. Pair-specific: it does not label either image "
+                    "as unique."),
+    # -- ... and retention (about which of the two survive) -------------------
+    DecisionKind(
+        "keep_both", "Keep both", frozenset({VISUAL_PAIR}), "location_pair",
+        "explicit_group_decision", "pair_retention",
+        requires_evidence=True, supersedable=True, affects_reclaim=True, confirmation=CONFIRM_NONE,
+        description="Retain both images of the pair (the pair-scoped Keep all). With a canonical beside it, "
+                    "the canonical names the representative and both stay."),
 )}
+
+#: The relationship kinds of a visual candidate pair (one conflict domain).
+PAIR_RELATIONSHIPS = ("equivalent_copy", "related_variant", "different")
+#: The retention kinds a pair may carry.
+PAIR_RETENTION = ("canonical_location", "keep_both")
 
 
 def decision_kind(key):
@@ -177,13 +243,14 @@ RETURN_TIME = "time"                        # snooze until a date
 RETURN_EVIDENCE_CHANGE = "evidence_change"  # until the target's evidence changes
 RETURN_SOURCE_AVAILABLE = "source_available"
 RETURN_HASH_CURRENT = "hash_current"
-RETURN_PREVIEW_AVAILABLE = "preview_available"   # Build 5: no previews exist; honoured if recorded, never fires here
+RETURN_PREVIEW_AVAILABLE = "preview_available"   # both images local and present (Build 5 computes it for pairs)
 RETURN_MANUAL = "manual"                    # defer indefinitely; only a person restores it
 RETURN_KINDS = (RETURN_TIME, RETURN_EVIDENCE_CHANGE, RETURN_SOURCE_AVAILABLE, RETURN_HASH_CURRENT,
                 RETURN_PREVIEW_AVAILABLE, RETURN_MANUAL)
 
 #: The deferral dispositions a person may choose (synthesis §5), with the
-#: return kind each records. snooze_until_preview_available is Build 5's.
+#: return kind each records. snooze_until_preview_available is Build 5's and
+#: is offered on a visual candidate pair only (see DEFER_CHOICES).
 DEFER_DISPOSITIONS = {
     "defer_indefinitely": (RETURN_MANUAL, "Defer indefinitely", "Until you restore it."),
     "snooze_until_date": (RETURN_TIME, "Snooze until a date", "Returns to the queue on that day."),
@@ -193,7 +260,20 @@ DEFER_DISPOSITIONS = {
                                       "Returns when every root the copies are under is available and scanned."),
     "snooze_until_hash_current": (RETURN_HASH_CURRENT, "Snooze until fingerprints are current",
                                   "Returns when every copy's fingerprint rests on its current observation."),
+    "snooze_until_preview_available": (RETURN_PREVIEW_AVAILABLE, "Snooze until a preview is possible",
+                                       "Returns when both images are present and local -- the product never "
+                                       "downloads a cloud-only file to show it."),
 }
+
+#: Which dispositions each target offers. A group has no preview to wait
+#: for; a pair of images has no fingerprint of its own to wait for.
+DEFER_CHOICES = {
+    GROUP: ("defer_indefinitely", "snooze_until_date", "snooze_until_evidence_change",
+            "snooze_until_source_available", "snooze_until_hash_current"),
+    VISUAL_PAIR: ("defer_indefinitely", "snooze_until_date", "snooze_until_evidence_change",
+                  "snooze_until_source_available", "snooze_until_preview_available"),
+}
+DEFER_CHOICES[LOCATION] = DEFER_CHOICES[GROUP]
 
 
 def event_kind(key):

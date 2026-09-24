@@ -43,6 +43,21 @@ an evidence change, the source coming back, fingerprints becoming current
 rows for what it finds and never decides anything.
 
 Skip is not Defer: a skip is an audit row and nothing else.
+
+Build 5 routes visual candidate pairs through the same seven routes (the
+"Visual Similarity Review" is the pairs' primary queue, their UNRESOLVED
+route) with two blockers of their own, both computed live:
+
+  preview_unavailable   an image is cloud-only or not present -- the product
+                        never downloads one to show it; returns when both
+                        are local (the preview_available trigger)
+  stale_image_analysis  an image was observed again since its hash was
+                        compared -- analyze images again
+
+A pair of byte-identical images (current exact duplicates) routes to
+Resolved with the condition 'exact_content': the exact-duplicate review
+already answers it, so it stays out of the queue -- and can still be
+opened and compared on request.
 """
 from __future__ import annotations
 
@@ -51,8 +66,9 @@ from dataclasses import dataclass, field, asdict
 from . import evidence as ev_mod
 from . import resolve as R
 from .model import Evidence, ReviewEvent, active_decisions
-from .registry import (LOCATION, GROUP, EVENT_DEFERRED, EVENT_BLOCKED, EVENT_NEEDS_REVALIDATION, EVENT_RESTORED,
-                       RETURN_TIME, RETURN_EVIDENCE_CHANGE, RETURN_SOURCE_AVAILABLE, RETURN_HASH_CURRENT, RETURN_MANUAL)
+from .registry import (LOCATION, GROUP, VISUAL_PAIR, EVENT_DEFERRED, EVENT_BLOCKED, EVENT_NEEDS_REVALIDATION, EVENT_RESTORED,
+                       RETURN_TIME, RETURN_EVIDENCE_CHANGE, RETURN_SOURCE_AVAILABLE, RETURN_HASH_CURRENT,
+                       RETURN_PREVIEW_AVAILABLE, RETURN_MANUAL)
 
 # -- routes ---------------------------------------------------------------------
 
@@ -79,6 +95,8 @@ STATUS_WORDS = {
 PHYSICAL_IDENTITY_UNKNOWN = "physical_identity_unknown"
 STALE_CONTENT_HASH = "stale_content_hash"
 INCOMPLETE_ROOT_COVERAGE = "incomplete_root_coverage"
+PREVIEW_UNAVAILABLE = "preview_unavailable"          # Build 5, pairs: an image is cloud-only or gone
+STALE_IMAGE_ANALYSIS = "stale_image_analysis"        # Build 5, pairs: an image changed since its hash was compared
 RECORDED_BLOCK = "recorded"          # an open blocked event of a kind this build cannot compute
 
 #: Which return kind a computed blocker clears on (what the detector records).
@@ -86,11 +104,30 @@ BLOCKER_RETURN = {
     PHYSICAL_IDENTITY_UNKNOWN: RETURN_EVIDENCE_CHANGE,
     STALE_CONTENT_HASH: RETURN_HASH_CURRENT,
     INCOMPLETE_ROOT_COVERAGE: RETURN_SOURCE_AVAILABLE,
+    PREVIEW_UNAVAILABLE: RETURN_PREVIEW_AVAILABLE,
+    STALE_IMAGE_ANALYSIS: RETURN_EVIDENCE_CHANGE,
 }
 COMPUTED_BLOCKERS = tuple(BLOCKER_RETURN)
-_BLOCKER_BY_RETURN = {rk: k for k, rk in BLOCKER_RETURN.items()}
+#: A recorded blocked row names its blocker in detail['blocker'] (the
+#: detector always writes it). A row without one is read by its return kind,
+#: as Build 3 recorded them -- the three Build 3 kinds only: a recorded
+#: preview_available row with no blocker named stays a recorded block.
+_BLOCKER_BY_RETURN = {RETURN_EVIDENCE_CHANGE: PHYSICAL_IDENTITY_UNKNOWN, RETURN_HASH_CURRENT: STALE_CONTENT_HASH,
+                      RETURN_SOURCE_AVAILABLE: INCOMPLETE_ROOT_COVERAGE}
+
+
+def recorded_blocker(e: ReviewEvent):
+    """The computed blocker kind a recorded blocked event stands for, or None
+    (a kind this build cannot compute: it is honoured as recorded)."""
+    named = (e.detail or {}).get("blocker")
+    if named in COMPUTED_BLOCKERS:
+        return named
+    return _BLOCKER_BY_RETURN.get(e.return_kind)
 
 ROUTING_VERSION = "fileorganizer.p3.routing/1"
+
+EXACT_CONTENT = "exact_content"      # a pair of byte-identical images: answered by the exact-duplicate review
+PAIR_QUEUE_WORD = "Visual Similarity Review"
 
 
 @dataclass(frozen=True)
@@ -136,6 +173,8 @@ class Route:
     def word(self):
         if self.primary == UNRESOLVED:
             return "In progress" if any(c.kind == "in_progress" for c in self.conditions) else "Unreviewed"
+        if self.primary == RESOLVED and any(c.kind == EXACT_CONTENT for c in self.conditions):
+            return "Exact copies"
         return STATUS_WORDS[self.primary]
 
     def as_dict(self):
@@ -151,6 +190,8 @@ class RoutingProjection:
     locations: dict             # location_id -> Route (only locations that carry decisions or events)
     counts: dict
     now: str
+    pairs: dict = field(default_factory=dict)       # pair_id -> Route (Build 5)
+    pair_counts: dict = field(default_factory=dict)
 
     def route(self, group_id):
         return self.groups.get(group_id)
@@ -253,6 +294,11 @@ def binding_drift(ev: Evidence, target_kind, target_ref, binding) -> tuple:
                 changes.append(f"new member: {_name(ev, fid)}")
             for fid in sorted(bound - now):
                 changes.append(f"member left: {_name(ev, fid)}")
+    elif target_kind == VISUAL_PAIR:
+        pair = ev.pairs.get(str(target_ref))
+        if pair is None or not pair.current:
+            changes.append("the two images are no longer a current candidate pair (re-observed, gone, or no "
+                           "longer alike by the hash)")
     return tuple(changes)
 
 
@@ -265,8 +311,16 @@ def _target_locations(ev: Evidence, target_kind, target_ref):
     if target_kind == GROUP:
         g = ev.groups.get(str(target_ref))
         return [ev.locations[i] for i in g.member_ids if i in ev.locations] if g else []
+    if target_kind == VISUAL_PAIR:
+        p = ev.pairs.get(str(target_ref))
+        return [ev.locations[i] for i in p.members if i in ev.locations] if p else []
     loc = ev.locations.get(str(target_ref))
     return [loc] if loc else []
+
+
+def _preview_possible(locs, expected=2):
+    """Both images there to be looked at: present and local (never hydrated)."""
+    return len(locs) >= expected and all(l.present and not l.cloud_only for l in locs)
 
 
 def deferral_fired(ev: Evidence, e: ReviewEvent, now=None):
@@ -294,7 +348,11 @@ def deferral_fired(ev: Evidence, e: ReviewEvent, now=None):
         if locs and all(l.hash_current for l in locs):
             return True, "every fingerprint is current again"
         return False, ""
-    return False, ""                                              # manual, preview_available, unknown
+    if kind == RETURN_PREVIEW_AVAILABLE:
+        if _preview_possible(locs, 2 if e.target_kind == VISUAL_PAIR else 1):
+            return True, "the images can be shown again (present and local)"
+        return False, ""
+    return False, ""                                              # manual, unknown
 
 
 def blockers_for(ev: Evidence, target_kind, target_ref, group_proj=None):
@@ -315,6 +373,46 @@ def blockers_for(ev: Evidence, target_kind, target_ref, group_proj=None):
         out.append(Condition(BLOCKED, STALE_CONTENT_HASH,
                              "fingerprint stale for " + ", ".join(_name(ev, l.location_id) for l in stale[:3])
                              + (f" and {len(stale) - 3} more" if len(stale) > 3 else "")))
+    out.extend(_root_conditions(ev, locs))
+    return out
+
+
+def problem_roots(ev: Evidence):
+    """The roots whose latest walk says anything at all (a blocker or a
+    warning): a pair whose images are elsewhere needs no coverage look-up."""
+    return {k for k, rc in ev.roots.items() if not (rc.available and rc.complete)}
+
+
+def pair_blockers(ev: Evidence, pair, roots_to_check=None):
+    """The computed blockers on a visual candidate pair (Build 5), plus its
+    images' coverage conditions. Physical identity and the content
+    fingerprint are not a pair's concern: nothing about a pair is counted
+    in bytes, and its evidence is the image hash."""
+    out = []
+    locs = _target_locations(ev, VISUAL_PAIR, pair.pair_id)
+    missing = [i for i in pair.members if i not in ev.locations]
+    gone = [l for l in locs if not l.present]
+    cloud = [l for l in locs if l.present and l.cloud_only]
+    if missing or gone or cloud:
+        bits = [f"{_name(ev, l.location_id)} is cloud-only (never downloaded to be shown)" for l in cloud]
+        bits += [f"{_name(ev, l.location_id)} is not present" for l in gone]
+        bits += [f"location {i} is not in the current evidence" for i in missing]
+        out.append(Condition(BLOCKED, PREVIEW_UNAVAILABLE, "no preview possible -- " + "; ".join(bits)))
+    compared = {pair.a_id: pair.a_observation_id, pair.b_id: pair.b_observation_id}
+    moved = [l for l in locs if l.present and compared.get(l.location_id) is not None
+             and l.observation_id != compared[l.location_id]]
+    if moved:
+        out.append(Condition(BLOCKED, STALE_IMAGE_ANALYSIS,
+                             "changed since its hash was compared: " + ", ".join(_name(ev, l.location_id) for l in moved)
+                             + " -- analyze images again"))
+    if roots_to_check is None or any(l.root_key in roots_to_check for l in locs):
+        out.extend(_root_conditions(ev, locs))
+    return out
+
+
+def _root_conditions(ev: Evidence, locs):
+    """Unusable walks block; a completed walk with inaccessible folders warns."""
+    out = []
     hard, warn = [], []
     for root in sorted({l.root_key for l in locs}):
         rc = ev.roots.get(root)
@@ -393,18 +491,10 @@ def route_target(ev: Evidence, target_kind, target_ref, group_proj=None, opened=
     # 3 blocked -- computed live; plus open recorded blockers of kinds this build cannot compute
     computed = blockers_for(ev, target_kind, ref, group_proj)
     conditions.extend(computed)
-    for e in slot[EVENT_BLOCKED]:
-        if _BLOCKER_BY_RETURN.get(e.return_kind) is not None:
-            continue                     # a computable kind: the live computation speaks (present above, or cleared)
-        conditions.append(Condition(BLOCKED, RECORDED_BLOCK, e.return_condition or (e.return_kind or "blocked"),
-                                    event_id=e.review_event_id))
+    conditions.extend(_recorded_blocks(slot))
 
     # 4 deferred -- the open deferral, unless its trigger has fired; a B8 defer_review decision counts
-    deferral = slot[EVENT_DEFERRED][0] if slot[EVENT_DEFERRED] else None
-    fired, why = deferral_fired(ev, deferral, now) if deferral else (False, "")
-    if deferral and not fired:
-        conditions.append(Condition(DEFERRED, deferral.return_kind or RETURN_MANUAL, _deferral_text(deferral),
-                                    event_id=deferral.review_event_id))
+    deferral, fired, why = _deferral(ev, slot, now, conditions)
     legacy = [d for d in own if d.kind == "defer_review"]
     if legacy and deferral is None:
         conditions.append(Condition(DEFERRED, RETURN_MANUAL, "deferred indefinitely (a B8 record)",
@@ -422,15 +512,94 @@ def route_target(ev: Evidence, target_kind, target_ref, group_proj=None, opened=
         elif group_proj.review_state == R.UNREVIEWED:
             conditions.append(Condition(UNRESOLVED, "unreviewed", "no decision yet"))
 
-    # One condition once, in route order.
+    ordered = _unique(conditions)
+    return Route(target_kind, ref, _primary(ordered), ordered, drift, deferral, fired, why, slot)
+
+
+def _recorded_blocks(slot):
+    """Open recorded blockers of kinds this build cannot compute (a computable
+    kind is left to the live computation: present, or cleared)."""
+    return [Condition(BLOCKED, RECORDED_BLOCK, e.return_condition or (e.return_kind or "blocked"), event_id=e.review_event_id)
+            for e in slot[EVENT_BLOCKED] if recorded_blocker(e) is None]
+
+
+def _deferral(ev, slot, now, conditions):
+    """The open deferral, whether its trigger has fired, and -- unless it has
+    -- its condition appended."""
+    deferral = slot[EVENT_DEFERRED][0] if slot[EVENT_DEFERRED] else None
+    fired, why = deferral_fired(ev, deferral, now) if deferral else (False, "")
+    if deferral and not fired:
+        conditions.append(Condition(DEFERRED, deferral.return_kind or RETURN_MANUAL, _deferral_text(deferral),
+                                    event_id=deferral.review_event_id))
+    return deferral, fired, why
+
+
+def _unique(conditions):
+    """One condition once, in route order."""
     unique, seen = [], set()
     for c in sorted(conditions, key=lambda c: (ROUTE_ORDER.index(c.route) if c.route in ROUTE_ORDER else 99)):
         key = (c.route, c.kind, c.detail)
         if key not in seen:
             seen.add(key)
             unique.append(c)
-    ordered = tuple(unique)
-    return Route(target_kind, ref, _primary(ordered), ordered, drift, deferral, fired, why, slot)
+    return tuple(unique)
+
+
+_EMPTY_SLOT = {EVENT_DEFERRED: [], EVENT_BLOCKED: [], EVENT_NEEDS_REVALIDATION: []}
+
+
+_UNREVIEWED = (Condition(UNRESOLVED, "unreviewed", "no decision yet"),)
+_EXACT_UNREVIEWED = (Condition(RESOLVED, EXACT_CONTENT, "byte-identical copies: the exact-duplicate review "
+                               "answers this pair (open it to compare anyway)"),)
+
+
+def route_pair(ev: Evidence, pp, opened=None, active=None, now=None, by_target=None, roots_to_check=None):
+    """One visual candidate pair's route (Build 5): the same seven routes, in
+    the same precedence, from the pair's own projection, decisions, events
+    and evidence. Its UNRESOLVED route is the Visual Similarity Review."""
+    opened = opened if opened is not None else open_events(ev.events)
+    if by_target is None:
+        by_target = _by_target(active if active is not None else active_decisions(ev.decisions))
+    ref = str(pp.pair_id)
+    own = by_target.get((VISUAL_PAIR, ref), [])
+    slot = opened.get((VISUAL_PAIR, ref), _EMPTY_SLOT)
+    pair = ev.pairs.get(ref)
+    if not own and slot is _EMPTY_SLOT and pair is not None and pair.current and not pp.conflicts:
+        # The common case by far -- an untouched, current pair. Its only
+        # possible conditions are a preview blocker or a coverage one.
+        blockers = pair_blockers(ev, pair, roots_to_check)
+        if not blockers:
+            conds = _EXACT_UNREVIEWED if pp.exact_content else _UNREVIEWED
+            return Route(VISUAL_PAIR, ref, conds[0].route, conds, (), None, False, "", slot)
+    conditions = [Condition(CONFLICT, c.kind, c.message, decision_ids=c.decision_ids, severity=c.severity)
+                  for c in pp.conflicts]
+    drift = tuple(decision_drift(ev, d) for d in own)
+    flag = slot[EVENT_NEEDS_REVALIDATION][0].review_event_id if slot[EVENT_NEEDS_REVALIDATION] else None
+    for x in drift:
+        if not x.applicable:
+            conditions.append(Condition(NEEDS_REVALIDATION, "drift", f"{x.kind}: " + "; ".join(x.changes),
+                                        event_id=flag, decision_ids=(x.decision_id,)))
+    if pair is not None:
+        conditions.extend(pair_blockers(ev, pair, roots_to_check))
+    conditions.extend(_recorded_blocks(slot))
+    deferral, fired, why = _deferral(ev, slot, now, conditions)
+    if pp.ready_for_plan:
+        conditions.append(Condition(READY_FOR_PLAN, "ready", "one image is a redundant candidate"))
+    elif pp.review_state == R.RESOLVED:
+        what = {"different": "marked different (a false positive)",
+                "related_variant": "related variant -- both kept" + (" (the default)" if pp.default_retention else ""),
+                "equivalent_copy": "equivalent -- both kept"}.get(pp.relationship, "resolved")
+        conditions.append(Condition(RESOLVED, "kept", what))
+    elif pp.review_state == R.IN_PROGRESS:
+        conditions.append(Condition(UNRESOLVED, "in_progress", "relationship or retention still to decide"))
+    elif pp.review_state == R.UNREVIEWED:
+        if pp.exact_content:
+            conditions.append(Condition(RESOLVED, EXACT_CONTENT, "byte-identical copies: the exact-duplicate review "
+                                        "answers this pair (open it to compare anyway)"))
+        else:
+            conditions.append(Condition(UNRESOLVED, "unreviewed", "no decision yet"))
+    ordered = _unique(conditions)
+    return Route(VISUAL_PAIR, ref, _primary(ordered), ordered, drift, deferral, fired, why, slot)
 
 
 def route_all(ev: Evidence, proj: R.ProjectProjection, now=None) -> RoutingProjection:
@@ -470,7 +639,40 @@ def route_all(ev: Evidence, proj: R.ProjectProjection, now=None) -> RoutingProje
         for c in r.conditions:
             conditions[f"{c.route}:{c.kind}"] = conditions.get(f"{c.route}:{c.kind}", 0) + 1
     counts["conditions"] = conditions
-    return RoutingProjection(groups, locations, counts, now)
+    # Build 5: every visual candidate pair, on its own.
+    pairs, pair_counts = route_pairs(ev, getattr(proj, "pairs", ()), now, opened, by_target)
+    return RoutingProjection(groups, locations, counts, now, pairs, pair_counts)
+
+
+def route_pairs(ev: Evidence, pair_projections, now=None, opened=None, by_target=None, previous=None):
+    """Every pair's route and the pairs' counts -- the pair half of route_all,
+    callable alone (the Similar Images page re-routes its pairs after a
+    decision without re-routing every group).
+
+    `previous` (pair_id -> Route, from the same evidence) is reused for a
+    pair with no decision and no review event, then or now: nothing but the
+    evidence routes it, and the evidence has not moved. Same answer."""
+    now = now or ev.now
+    opened = opened if opened is not None else open_events(ev.events)
+    if by_target is None:
+        by_target = _by_target(active_decisions(ev.decisions))
+    roots = problem_roots(ev)
+    pairs = {}
+    for pp in pair_projections:
+        old = previous.get(pp.pair_id) if previous else None
+        if (old is not None and not old.drift and old.open_events is _EMPTY_SLOT and old.deferral is None
+                and (VISUAL_PAIR, pp.pair_id) not in by_target and (VISUAL_PAIR, pp.pair_id) not in opened):
+            pairs[pp.pair_id] = old
+            continue
+        pairs[pp.pair_id] = route_pair(ev, pp, opened, None, now, by_target=by_target, roots_to_check=roots)
+    pair_counts = {route: 0 for route in ROUTE_ORDER}
+    pair_counts[EXACT_CONTENT] = 0
+    for r in pairs.values():
+        pair_counts[r.primary] += 1
+        if r.primary == RESOLVED and any(c.kind == EXACT_CONTENT for c in r.conditions):
+            pair_counts[EXACT_CONTENT] += 1
+    pair_counts["pairs"] = len(pairs)
+    return pairs, pair_counts
 
 
 def ordered(proj: R.ProjectProjection, routing: RoutingProjection, route):
@@ -490,9 +692,22 @@ def ordered(proj: R.ProjectProjection, routing: RoutingProjection, route):
     return groups
 
 
+def ordered_pairs(proj: R.ProjectProjection, routing: RoutingProjection, route):
+    """The pairs whose primary route this is, in the route's own order:
+    conflicts oldest decision first; every other route the pairs' own order
+    (the closest measurement first)."""
+    pairs = [p for p in proj.pairs if routing.pairs[p.pair_id].primary == route]
+    if route == CONFLICT:
+        def key(p):
+            r = routing.pairs[p.pair_id]
+            return (min((int(d) for c in r.conditions for d in c.decision_ids if str(d).isdigit()), default=10 ** 12), p.pair_id)
+        pairs.sort(key=key)
+    return pairs
+
+
 # -- the detector ---------------------------------------------------------------------
 
-def reconcile(conn, store, now=None):
+def reconcile(conn, store, now=None, pairs=True):
     """Bring the review-event record in line with what the evidence says.
 
     Runs when the review surface opens and after a collection run. Writes,
@@ -512,9 +727,11 @@ def reconcile(conn, store, now=None):
                            moving, without one row per untouched group.
 
     Never touches a decision. Idempotent: a second run writes nothing.
-    Returns the counts written.
+    Returns the counts written. `pairs=False` leaves the visual candidate
+    pairs out (the Duplicate decisions page reconciles its own targets; the
+    Similar Images page and every collection run reconcile the pairs).
     """
-    ev = ev_mod.load_evidence(conn)
+    ev = ev_mod.load_evidence(conn, pairs=pairs)
     if now:
         ev.now = now
     proj = R.resolve_all(ev)
@@ -526,6 +743,7 @@ def reconcile(conn, store, now=None):
             engaged.add((GROUP, gp.group_id))
     writes = []
     targets = [(GROUP, gid, r) for gid, r in routing.groups.items()] + [(LOCATION, lid, r) for lid, r in routing.locations.items()]
+    targets += [(VISUAL_PAIR, pid, r) for pid, r in routing.pairs.items()]
     for target_kind, ref, route in targets:
         slot = route.open_events
         own_drift = [x for x in route.drift if not x.applicable]
@@ -541,7 +759,7 @@ def reconcile(conn, store, now=None):
                                "refers_to": e.review_event_id,
                                "return_condition": "the decisions rest on current evidence again"})
         computed = {c.kind: c for c in route.conditions if c.route == BLOCKED and c.kind in COMPUTED_BLOCKERS}
-        recorded = {_BLOCKER_BY_RETURN.get(e.return_kind): e for e in slot[EVENT_BLOCKED]}
+        recorded = {recorded_blocker(e): e for e in slot[EVENT_BLOCKED]}
         if (target_kind, ref) in engaged or route.deferral is not None:
             for kind in sorted(set(computed) - set(recorded)):
                 writes.append({"event_kind": EVENT_BLOCKED, "target_kind": target_kind, "target_ref": ref,

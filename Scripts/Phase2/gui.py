@@ -38,8 +38,9 @@ from .reports import ReportCatalog
 from .saved import SavedQueryStore
 from . import VERSION
 from . import hub as hub_view
-from .runner import RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, run_blocking, app_root_for
+from .runner import RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, ANALYSIS, run_blocking, app_root_for
 from Phase3 import review as review_view
+from Phase3 import imagegame as imagegame_view
 
 #: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -252,7 +253,7 @@ class Phase2App(tk.Tk):
         self.nav_sep=ttk.Separator(nav); self.nav_sep.pack(fill="x",pady=10)
         self.nav_buttons=[]
         for label,cmd in [
-            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Reports",self.show_reports),
+            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Similar Images",self.show_similar),("Reports",self.show_reports),
             ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history)]:
             b=ttk.Button(nav,text=label,style="Nav.TButton",command=cmd); b.pack(fill="x",pady=2)
             self.nav_buttons.append(b)
@@ -401,9 +402,11 @@ class Phase2App(tk.Tk):
             self.show_open_panel(); self._announce(request,outcome); return
         self.reopen_connection()
         # Phase 3: a walk or a fingerprinting pass may have moved the evidence
-        # under a decision. The routing detector records what it finds now,
-        # so the summary and the Decide page say so at once (never raises).
-        if request.kind in (PRESCAN,DUPLICATES,FINGERPRINT): review_view.run_detector(self.conn,review_view.store_for(self))
+        # under a decision -- and (B11) an image analysis re-compares the
+        # images, which may move a visual candidate pair. The routing detector
+        # records what it finds now, so the summary and the Decide pages say
+        # so at once (never raises).
+        if request.kind in (PRESCAN,DUPLICATES,FINGERPRINT,ANALYSIS): review_view.run_detector(self.conn,review_view.store_for(self))
         self._announce(request,outcome)
         if outcome.ok and request.after=="doors": hub_view.show_doors(self)
         else: self.show_hub()
@@ -556,6 +559,11 @@ class Phase2App(tk.Tk):
         """Phase 3's Exact-Duplicate Review, inside this window (Phase3.review)."""
         if self.conn is None: self.show_welcome(); return
         review_view.show_review(self, content_id=content_id, file_path_id=file_path_id)
+
+    def show_similar(self, pair_id=None, compare=None):
+        """Phase 3's Image Game -- visual candidate pairs, one at a time (Phase3.imagegame)."""
+        if self.conn is None: self.show_welcome(); return
+        imagegame_view.show_similar(self, pair_id=pair_id, compare=compare)
 
     def clear(self):
         # A scrolling list binds the mouse wheel for the whole window while

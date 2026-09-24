@@ -105,6 +105,15 @@ are unchanged. A batch's membership is frozen at commit and never
 re-evaluated; Phase3/bulk.py previews and Phase3/store.py commits, still
 the only writer.
 
+CHANGED IN B11 (PHASE 3, BUILD 5)
+---------------------------------
+APP_SCHEMA_VERSION is 12, so migration 012 (visual_candidate_generation,
+visual_candidate) is applied on open. These are Phase 2 evidence -- the
+comparison of the perceptual hashes the image analyzer already stored --
+written by Phase2/visual.py at the end of an image analysis (or on demand
+when the Similar Images page finds them out of date). A pair's identity is
+its two file locations, so a decision on it survives re-analysis.
+
 CLI
 ---
     python fo_db.py init-project     --project-dir <dir> --name <n> [--source-root <path>]...
@@ -136,8 +145,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.8.0"
-APP_VERSION = "B10"
+MODULE_VERSION = "1.9.0"
+APP_VERSION = "B11"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -161,7 +170,12 @@ APP_VERSION = "B10"
 #: 10 -> B9 (Phase 3, Build 3): p3_review_event -- routing provenance
 #:      (deferrals with return triggers, skips, what the detector found);
 #:      see migrations/010_phase3_review_events.sql.
-APP_SCHEMA_VERSION = 11
+#: 11 -> B10 (Phase 3, Build 4): p3_bulk_batch, p3_bulk_member -- frozen
+#:      batch membership; see migrations/011_phase3_bulk_batches.sql.
+#: 12 -> B11 (Phase 3, Build 5): visual_candidate_generation,
+#:      visual_candidate -- Phase 2 evidence (perceptual-hash candidate
+#:      pairs with stable identity); see migrations/012_visual_candidates.sql.
+APP_SCHEMA_VERSION = 12
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"
