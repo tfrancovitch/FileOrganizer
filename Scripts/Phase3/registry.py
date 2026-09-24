@@ -13,6 +13,14 @@ policy kinds (protect / prefer / avoid over a source root or folder). The
 vocabulary is the research's working vocabulary, adopted provisionally: the
 keys below are what the database stores, so a later rename of the display
 words costs nothing.
+
+Build 3 added the review-event vocabulary (deferral dispositions and their
+return kinds). Build 4 adds the origin kinds a decision may carry
+(`explicit_human`, and `bulk_explicit_human` for a decision a batch
+recorded), the two bulk scope kinds, the bulk actions the window offers
+(each names the decision kinds it records and, where one exists, the policy
+kind that says the same thing about the future), and the dispositions a
+batch member can land in.
 """
 from __future__ import annotations
 
@@ -143,6 +151,19 @@ def decision_kind(key):
         raise ValueError(f"unknown decision kind: {key!r}")
 
 
+# -- where a decision came from (Build 4) -----------------------------------------
+
+ORIGIN_EXPLICIT_HUMAN = "explicit_human"            # one person, one target, one click
+ORIGIN_BULK_EXPLICIT_HUMAN = "bulk_explicit_human"  # one person, many targets, one previewed batch (origin_ref = batch id)
+ORIGIN_KINDS = (ORIGIN_EXPLICIT_HUMAN, ORIGIN_BULK_EXPLICIT_HUMAN)
+
+
+def origin_kind(key):
+    if key not in ORIGIN_KINDS:
+        raise ValueError(f"unknown decision origin: {key!r}")
+    return key
+
+
 # -- review events (Build 3) ------------------------------------------------------
 
 EVENT_DEFERRED = "deferred"
@@ -185,6 +206,81 @@ def return_kind(key):
     if key is not None and key not in RETURN_KINDS:
         raise ValueError(f"unknown return kind: {key!r}")
     return key
+
+
+# -- bulk batches (Build 4) ----------------------------------------------------------
+
+SCOPE_EXPLICIT_SELECTION = "explicit_selection"      # the exact set a person checked
+SCOPE_QUERY_SNAPSHOT = "query_result_snapshot"       # what a filter listed at one moment, frozen
+SCOPE_KINDS = (SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT)
+
+#: What became of each member of a batch. Only 'decided' records a decision;
+#: the others are the exceptions the preview counted and the batch kept.
+DISP_DECIDED = "decided"
+DISP_SATISFIED = "already_satisfied"      # an active decision already says this
+DISP_PRESERVED = "preserved"              # an explicit, incompatible decision stands; never overwritten
+DISP_CONFLICT = "conflict"                # recording it would contradict a hard constraint (protection, the last-copy floor)
+DISP_BLOCKED = "blocked"                  # the evidence is not fit to decide on (Build 3's blockers)
+DISP_NOT_APPLICABLE = "not_applicable"    # nothing to do here (no recommendation to accept, say)
+DISPOSITIONS = (DISP_DECIDED, DISP_SATISFIED, DISP_PRESERVED, DISP_CONFLICT, DISP_BLOCKED, DISP_NOT_APPLICABLE)
+
+#: How a batch treats a target that already carries incompatible intent.
+#: 'preserve' is the only mode this build records; 'supersede' (deliberately
+#: replacing prior intent across a batch) is the research's distinct
+#: operation, left for a later build -- the store refuses it.
+MODE_PRESERVE = "preserve"
+MODE_SUPERSEDE = "supersede"
+
+
+def scope_kind(key):
+    if key not in SCOPE_KINDS:
+        raise ValueError(f"unknown bulk scope kind: {key!r}")
+    return key
+
+
+def disposition(key):
+    if key not in DISPOSITIONS:
+        raise ValueError(f"unknown batch disposition: {key!r}")
+    return key
+
+
+@dataclass(frozen=True)
+class BulkAction:
+    key: str
+    label: str
+    member_kind: str                # what one batch member is: a group, or one copy
+    decision_kinds: tuple           # the decision kinds it records (empty for a deferral)
+    needs_folder: bool              # the action takes a folder (copies under it)
+    policy_twin: str | None         # the policy kind that says the same about the future, if one exists
+    records_events: bool            # a deferral records review events, not decisions
+    description: str
+
+
+BULK_ACTIONS = {a.key: a for a in (
+    BulkAction("keep_all", "Keep all copies", GROUP, ("keep_all_group",), False, None, False,
+               "Every copy of each group is a keeper. A group with a redundant mark is left as it is (the mark is "
+               "explicit intent); Keep all on one group by hand asks to withdraw its marks -- a batch never withdraws."),
+    BulkAction("accept_recommendation", "Accept the recommendation", GROUP, ("canonical_location", "redundant_location"), False, None, False,
+               "Where policy singles out one copy, set it as the canonical and (unless switched off) mark the other "
+               "undecided copies redundant candidates. Protected and explicitly kept copies stay; a group with an "
+               "explicit canonical of its own is preserved."),
+    BulkAction("keep_under", "Keep copies under a folder", LOCATION, ("must_keep_location",), True, "protect_folder_subtree", False,
+               "Every copy under the folder (in the groups in scope) gets an explicit Keep. The policy that says the "
+               "same about the future is Protect folder."),
+    BulkAction("redundant_under", "Mark copies under a folder redundant", LOCATION, ("redundant_location",), True, "avoid_folder_subtree", False,
+               "Every copy under the folder (in the groups in scope) becomes a redundant candidate -- unless it is "
+               "protected, explicitly kept, the canonical, or the last copy of its group. No policy can mark a copy "
+               "redundant; Avoid folder only ranks such copies below others in the recommendation."),
+    BulkAction("defer", "Defer", GROUP, (), False, None, True,
+               "Park every group in scope with one return trigger. A group already parked is left as it is."),
+)}
+
+
+def bulk_action(key):
+    try:
+        return BULK_ACTIONS[key]
+    except KeyError:
+        raise ValueError(f"unknown bulk action: {key!r}")
 
 
 # -- policies ------------------------------------------------------------------

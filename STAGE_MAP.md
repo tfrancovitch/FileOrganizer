@@ -278,6 +278,10 @@ Recording a decision on the Decide page is a point interaction, not a run:
 no estimate, no progress screen, no `run` row. Each click is one
 `p3_operation` row (who, through what, when) with the decision, withdrawal,
 policy-version or review-event rows it made, written in one transaction.
+A bulk batch (B10) is the same shape at a larger size: one operation of
+kind `bulk` holds the batch row, one member row per target with what
+became of it, and every decision the batch recorded — a preview first,
+then exactly that; undoing a batch is one operation of kind `bulk_undo`.
 The audit trail for decisions is those tables; **Export journal…** writes
 them as text into the project's `Exports\` folder. Nothing on that page
 opens or changes a source file.

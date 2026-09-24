@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F04_Frozen_Bulk_Query",
+  "title": "Frozen Query-Result Batch",
+  "purpose": "Current-query bulk decision freezes exact membership and does not acquire a later matching target."
+}

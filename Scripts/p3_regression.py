@@ -40,6 +40,28 @@ What it proves, in order:
      changed and nothing else; a snooze that elapsed is restored; a rescan
      that changes a copy routes the group to Needs Revalidation with the
      decision untouched; re-recording clears it; Skip versus Defer.
+  8. Build 4 (B10), on hand-built models: the bulk-action registry and the
+     origin kinds; the Show filter as one function; the frozen query and
+     what it matches now (F04's shape); every preview bucket -- decided,
+     already satisfied, preserved (an explicit decision is never
+     overwritten), conflict (protection, the last-copy floor judged over
+     the whole batch, a group already in conflict), blocked, not
+     applicable; the canonical gating its marks; a deferral batch;
+     determinism; and the speed of previewing 4,000 groups.
+  9. Build 4 on the real project: one operation holds a batch, its frozen
+     members and its decisions, each with origin bulk_explicit_human and
+     the batch id, bound to the evidence the preview captured; the commit
+     refuses when the record moved since the preview; a batch's undo
+     withdraws what still stands and leaves a hand-superseded decision
+     alone; a deferral batch and its undo; accept the recommendation; the
+     frozen snapshot does not acquire a later match (F04) while a policy
+     made earlier covers a later file with no decision (F05); the policy
+     impact preview; zero mutation around all of it.
+ 10. The window, Build 4: the check column and Space; "N checked"; Bulk
+     action... appearing only then; the letter keys still act on the
+     selected row alone; the bulk dialog's three scopes in the research's
+     words, preview before commit, commit; Batches... with Undo; the
+     policy route out of the bulk dialog; the summary's Bulk batches line.
 
 Run:  python Scripts\p3_regression.py
 """
@@ -499,15 +521,17 @@ def test_project(tmp: Path):
     check("Find My Duplicates through the worker", out.ok, f"{out.status}: {out.message}")
 
     conn = connect(project_dir, write=True)
-    check("a fresh project lands on schema 10 with the six p3 tables",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 10 and {r[0] for r in conn.execute(
+    check("a fresh project lands on schema 11 with the eight p3 tables",
+          conn.execute("PRAGMA user_version").fetchone()[0] == 11 and {r[0] for r in conn.execute(
               "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'p3_%'")} == {
-              "p3_operation", "p3_decision", "p3_decision_withdrawal", "p3_policy", "p3_policy_version", "p3_review_event"})
+              "p3_operation", "p3_decision", "p3_decision_withdrawal", "p3_policy", "p3_policy_version", "p3_review_event",
+              "p3_bulk_batch", "p3_bulk_member"})
     check("app_meta carries the Phase 3 contracts",
-          conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1")
-    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B9', schema 10 everywhere",
-          fo_db.APP_VERSION == "B9" and __import__("Phase2").VERSION == "B9" and fo_db.APP_SCHEMA_VERSION == 10
-          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 10 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 10)
+          conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1"
+          and conn.execute("SELECT value FROM app_meta WHERE key='phase3.bulk_schema'").fetchone()[0] == "fileorganizer.p3.bulk/1")
+    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B10', schema 11 everywhere",
+          fo_db.APP_VERSION == "B10" and __import__("Phase2").VERSION == "B10" and fo_db.APP_SCHEMA_VERSION == 11
+          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 11 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 11)
 
     # -- migrating a schema-8 database ---------------------------------------
     old_dir = tmp / "Old8"
@@ -530,9 +554,9 @@ def test_project(tmp: Path):
     c8.close()
     fo_db.write_project_json(paths, "uid-8", "Old8", "2026-01-01T00:00:00Z", "B7.2")
     c9, _ = fo_db.open_project(str(old_dir), app_version=fo_db.APP_VERSION)
-    check("a schema-8 project opens and migrates to 10", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 10)
-    check("migrations 009 and 010 recorded with this build's version",
-          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10) ORDER BY version")] == ["B9", "B9"])
+    check("a schema-8 project opens and migrates to 11", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 11)
+    check("migrations 009, 010 and 011 recorded with this build's version",
+          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11) ORDER BY version")] == ["B10"] * 3)
     same = all(c9.execute(f"SELECT * FROM {t}").fetchall() == rows for t, rows in snapshot8.items() if t != "schema_migration")
     check("every pre-existing row is untouched by the migration", same)
     check("a pre-migration backup was made", any(paths.backup_dir and Path(paths.backup_dir).glob("*")))
@@ -578,7 +602,7 @@ def test_project(tmp: Path):
     check("store refuses override of a policy that does not cover the location", refused(lambda: st.record_override(doc.location_id, protect["policy_id"], "why", confirmed=True)))
     check("store refuses override of a preference policy", refused(lambda: st.record_override(doc.location_id, prefer["policy_id"], "why", confirmed=True)))
     check("override cannot be recorded through record_decision", refused(lambda: st.record_decision("override_protection", LOCATION, back.location_id, {"policy_id": "1", "policy_version_id": "1"})))
-    check("nothing was written by the refusals", st.counts() == {"operations": 2, "decisions": 0, "withdrawals": 0, "policy_versions": 2, "review_events": 0})
+    check("nothing was written by the refusals", st.counts() == {"operations": 2, "decisions": 0, "withdrawals": 0, "policy_versions": 2, "review_events": 0, "batches": 0})
 
     d1 = st.record_decision("canonical_location", GROUP, report_group, doc.location_id, rationale="the working copy")
     d2 = st.record_decision("redundant_location", LOCATION, down.location_id)
@@ -596,7 +620,7 @@ def test_project(tmp: Path):
     op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (d1["operation_id"],)).fetchone()
     check("the operation carries actor, actor kind, agent kind and version, session and command ids, time, note",
           op["actor_id"] == "tester" and op["actor_kind"] == "explicit_human" and op["agent_kind"] == "dashboard"
-          and op["agent_version"] == "B9" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
+          and op["agent_version"] == "B10" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
           and op["occurred_utc"].endswith("Z") and op["note"] == "the working copy")
     g = R.resolve_all(E.load_evidence(conn)).group(report_group)
     check("the gate in a real project: the protected backup mark is a conflict; Downloads is eligible only once the conflict clears",
@@ -1071,6 +1095,585 @@ def test_routing_project(tmp: Path):
 
 
 # ---------------------------------------------------------------------------
+# 8. Build 4: bulk on hand-built models
+# ---------------------------------------------------------------------------
+
+def _refused(fn):
+    try:
+        fn()
+        return False
+    except ValueError:
+        return True
+
+
+def test_bulk_model():
+    section("8. Bulk (Build 4) on hand-built models: scope, the preview buckets, preserve-not-overwrite, determinism, speed")
+    from Phase3 import bulk as BK
+    from Phase3.model import Batch, BatchMember
+    from dataclasses import replace
+    SNAP, EXPL = REG.SCOPE_QUERY_SNAPSHOT, REG.SCOPE_EXPLICIT_SELECTION
+    DECIDED, SATISFIED, PRESERVED, CONFLICT, BLOCKED, NA = (REG.DISP_DECIDED, REG.DISP_SATISFIED, REG.DISP_PRESERVED,
+                                                            REG.DISP_CONFLICT, REG.DISP_BLOCKED, REG.DISP_NOT_APPLICABLE)
+
+    # -- the registry -------------------------------------------------------------
+    check("five bulk actions: keep all, accept the recommendation, keep under a folder, mark under a folder, defer",
+          set(REG.BULK_ACTIONS) == {"keep_all", "accept_recommendation", "keep_under", "redundant_under", "defer"})
+    check("every bulk action names registered decision kinds and, where it has one, a registered policy twin",
+          all(all(k in REG.DECISION_KINDS for k in a.decision_kinds) and (a.policy_twin is None or a.policy_twin in REG.POLICY_KINDS)
+              and a.member_kind in (LOCATION, GROUP) for a in REG.BULK_ACTIONS.values()))
+    check("the folder actions have policy twins (protect / avoid the folder); the others have none, honestly",
+          REG.BULK_ACTIONS["keep_under"].policy_twin == "protect_folder_subtree" and REG.BULK_ACTIONS["redundant_under"].policy_twin == "avoid_folder_subtree"
+          and all(REG.BULK_ACTIONS[k].policy_twin is None for k in ("keep_all", "accept_recommendation", "defer")))
+    check("origin kinds: explicit_human and bulk_explicit_human; an unknown origin is refused",
+          REG.ORIGIN_KINDS == ("explicit_human", "bulk_explicit_human") and _refused(lambda: REG.origin_kind("robot")))
+    check("scope kinds and dispositions as the research names them",
+          REG.SCOPE_KINDS == ("explicit_selection", "query_result_snapshot") and REG.DISPOSITIONS == (
+              "decided", "already_satisfied", "preserved", "conflict", "blocked", "not_applicable")
+          and _refused(lambda: REG.scope_kind("everything")) and _refused(lambda: REG.disposition("ignored")))
+
+    # -- the model -----------------------------------------------------------------
+    A = loc("A", r"C:\Docs\a.pdf", phys="P1")
+    B = loc("B", r"C:\Downloads\a.pdf", phys="P2")
+    C = loc("C", r"E:\Backup\a.pdf", root="Backup", phys="P3")
+    D = loc("D", r"C:\Docs\b.pdf", phys="P4", content="C2")
+    E_ = loc("E", r"C:\Downloads\b.pdf", phys="P5", content="C2")
+    F = loc("F", r"C:\Docs2\c.pdf", phys="P6", content="C3")
+    G = loc("G", r"C:\Downloads\c.pdf", phys="P7", content="C3")
+    protect = pol("PV1", "protect_source_root", {"root_key": "Backup", "root_path": "E:\\Backup"})
+    prefer = pol("PV2", "prefer_folder_subtree", {"path": r"C:\Docs"})
+    ev, proj, rt = routed([A, B, C, D, E_, F, G], [dec("D1", "must_keep_location", LOCATION, "B")], [protect, prefer])
+
+    # -- the Show filter and the query --------------------------------------------------
+    check("filter_groups: the Queue lists every unresolved group -- the page's list and the snapshot are one function",
+          sorted(g.group_id for g in BK.filter_groups(proj, rt, "Queue")) == ["C1", "C2", "C3"] and BK.FILTERS[0] == "Queue")
+    check("a lens is the same function: Cross-Root lists the group that spans two roots",
+          [g.group_id for g in BK.filter_groups(proj, rt, "Lens: Cross-Root")] == ["C1"])
+    q = BK.snapshot_query(show="Queue")
+    check("a snapshot query records its schema and the Show filter, nothing more",
+          q == {"schema": "fileorganizer.p3.bulk-query/1", "targets": GROUP, "show": "Queue"})
+    kind, refs = BK.query_targets(q, ev, proj, rt)
+    check("query_targets: a group scope names the groups the filter lists, in display order",
+          kind == GROUP and sorted(refs) == ["C1", "C2", "C3"] and refs == [g.group_id for g in proj.groups])
+    check("...a folder criterion names copies, in display order, and respects the folder boundary (Docs, not Docs2)",
+          BK.query_targets(BK.snapshot_query(show="All", folder=r"C:\Docs"), ev, proj, rt) == (LOCATION, ["A", "D"]))
+    check("describe_query says what a batch was over", BK.describe_query(BK.snapshot_query(show="Queue", folder=r"C:\Docs")) == r"Show: Queue; copies under C:\Docs"
+          and BK.describe_query(None, {"selection": ["C1"]}) == "1 checked group")
+    # F04's shape on a model: no groups at all, a query over locations
+    T1, T2, T3 = loc("T1", r"C:\Downloads\a.tmp", content=None), loc("T2", r"C:\Downloads\b.tmp", content=None), loc("T3", r"C:\Downloads\future.tmp", content=None)
+    T4 = loc("T4", r"C:\Downloads\keep.txt", content=None)
+    ev4, proj4, rt4 = routed([T1, T2, T3, T4])
+    f04 = {"extension": ".tmp", "folder": r"C:\Downloads"}
+    check("F04's query (extension + folder, no group scope) matches every .tmp under Downloads NOW, and not keep.txt",
+          BK.query_targets(f04, ev4, proj4, rt4) == (LOCATION, ["T1", "T2", "T3"]))
+    batch = Batch("B1", SNAP, f04, (BatchMember(LOCATION, "T1"), BatchMember(LOCATION, "T2")))
+    check("a frozen batch's members are what it recorded: the later match is not one of them",
+          batch.member_refs() == ("T1", "T2") and "T3" not in batch.member_refs() and batch.frozen and batch.committed)
+
+    # -- previews: scope --------------------------------------------------------------------
+    pv = BK.preview(ev, proj, rt, "keep_all", {}, SNAP, q)
+    check("Keep all over the Queue: three groups in scope, three decisions, all new; the query travels with the preview",
+          pv.scope_size == 3 and pv.counts[DECIDED] == 3 and pv.decision_count == 3 and pv.query == q and pv.scope_kind == SNAP)
+    lines = pv.lines()
+    check("the preview reads as the research asks: N in scope, the buckets, and the sentence that is always true",
+          lines[0].startswith("3 groups in scope (Show: Queue)") and "3 would receive a decision (3 decisions: Keep all)" in lines[1]
+          and lines[-1] == "No source files will be changed.", "\n".join(lines))
+    pv = BK.preview(ev, proj, rt, "keep_all", {}, EXPL, selection=["C2"])
+    check("an explicit selection: only the checked group; no query; the checked ids recorded as the parameters",
+          pv.scope_size == 1 and pv.query is None and pv.parameters["selection"] == ["C2"] and pv.scope_kind == EXPL)
+    check("an empty selection is refused", _refused(lambda: BK.preview(ev, proj, rt, "keep_all", {}, EXPL, selection=[])))
+    check("a snapshot without its query is refused", _refused(lambda: BK.preview(ev, proj, rt, "keep_all", {}, SNAP, None)))
+    check("a folder action without a folder is refused", _refused(lambda: BK.preview(ev, proj, rt, "keep_under", {}, SNAP, q)))
+    check("an unknown action or scope kind is refused",
+          _refused(lambda: BK.preview(ev, proj, rt, "delete_all", {}, SNAP, q)) and _refused(lambda: BK.preview(ev, proj, rt, "keep_all", {}, "all", q)))
+    pv = BK.preview(ev, proj, rt, "keep_under", {"folder": r"C:\Docs"}, SNAP, q)
+    check("a folder action over a snapshot records the folder in the frozen query and names copies as members",
+          pv.query["folder_key"] == r"c:\docs" and pv.query["targets"] == LOCATION and [c.target_ref for c in pv.candidates] == ["A", "D"]
+          and pv.member_word == "copies")
+
+    # -- the buckets --------------------------------------------------------------------------
+    ev, proj, rt = routed([A, B, C, D, E_, F, G], [dec("D1", "must_keep_location", LOCATION, "B"), dec("D2", "keep_all_group", GROUP, "C3"),
+                                                   dec("D3", "redundant_location", LOCATION, "E")], [protect, prefer])
+    pv = BK.preview(ev, proj, rt, "keep_all", {}, SNAP, BK.snapshot_query(show="All"))
+    by = {c.target_ref: c for c in pv.candidates}
+    check("already satisfied: a group with Keep all in force", by["C3"].disposition == SATISFIED and "already recorded" in by["C3"].detail)
+    check("preserved: a group carrying a redundant mark (Keep all by hand asks to withdraw it; a batch never withdraws)",
+          by["C2"].disposition == PRESERVED and "redundant mark" in by["C2"].detail)
+    check("decided: the rest -- one decision from three groups, and the lines say so",
+          by["C1"].disposition == DECIDED and pv.decision_count == 1 and "1 have an explicit incompatible decision, preserved" in "\n".join(pv.lines()))
+    check("the preview carries samples for the buckets that hide problems",
+          any("preserved (explicit decision stands): b.pdf" in l for l in pv.lines()) and pv.samples(PRESERVED) == [(by["C2"].label, by["C2"].detail)])
+    pv = BK.preview(ev, proj, rt, "redundant_under", {"folder": r"C:\Downloads"}, SNAP, BK.snapshot_query(show="All"))
+    by = {c.target_ref: c for c in pv.candidates}
+    check("copies under the folder, one candidate each: B, E, G", sorted(by) == ["B", "E", "G"])
+    check("preserved: an explicit Keep stands on B (the same domain, the other way)", by["B"].disposition == PRESERVED and "Keep (#D1) stands" in by["B"].detail)
+    check("already satisfied: E carries the mark", by["E"].disposition == SATISFIED)
+    check("preserved: Keep all is in force on G's group", by["G"].disposition == PRESERVED and "Keep all" in by["G"].detail)
+    check("...so nothing would be recorded, and the preview says so", pv.decision_count == 0)
+    pv = BK.preview(ev, proj, rt, "redundant_under", {"folder": r"E:\Backup"}, SNAP, BK.snapshot_query(show="All"))
+    check("conflict: a redundant mark on a protected copy is not recorded, and the resolver's own message says why",
+          [c.disposition for c in pv.candidates] == [CONFLICT] and "protected" in pv.candidates[0].detail and pv.decision_count == 0)
+    ev2, proj2, rt2 = routed([A, B])
+    pv = BK.preview(ev2, proj2, rt2, "redundant_under", {"folder": "C:\\"}, SNAP, BK.snapshot_query(show="All"))
+    check("the last-copy floor is judged over the whole batch: marking every copy under the folder is a conflict for each copy",
+          [c.disposition for c in pv.candidates] == [CONFLICT, CONFLICT] and "last copy" in pv.candidates[0].detail)
+    ev2, proj2, rt2 = routed([A, B, C])
+    pv = BK.preview(ev2, proj2, rt2, "redundant_under", {"folder": "C:\\"}, SNAP, BK.snapshot_query(show="All"))
+    check("...with a copy outside the folder both marks are recorded", [c.disposition for c in pv.candidates] == [DECIDED, DECIDED] and pv.decision_count == 2)
+    ev3, proj3, rt3 = routed([A, B, C], [dec("D1", "redundant_location", LOCATION, "C")], [protect])
+    pv = BK.preview(ev3, proj3, rt3, "keep_all", {}, SNAP, BK.snapshot_query(show="All"))
+    check("Keep all on a group carrying the mark that put it in conflict: preserved -- the explicit mark is the reason given",
+          pv.candidates[0].disposition == PRESERVED and "redundant mark" in pv.candidates[0].detail)
+    pv = BK.preview(ev3, proj3, rt3, "keep_under", {"folder": r"C:\Docs"}, SNAP, BK.snapshot_query(show="All"))
+    check("a group already in conflict receives nothing else either: it needs a person first",
+          pv.candidates[0].disposition == CONFLICT and "needs a person" in pv.candidates[0].detail)
+    ev5, proj5, rt5 = routed([A, replace(B, hash_current=False), C])
+    pv = BK.preview(ev5, proj5, rt5, "keep_all", {}, SNAP, BK.snapshot_query(show="All"))
+    check("blocked: a group with a stale fingerprint receives no retention decision", pv.candidates[0].disposition == BLOCKED and "stale" in pv.candidates[0].detail)
+    pv = BK.preview(ev5, proj5, rt5, "defer", {}, SNAP, BK.snapshot_query(show="All"))
+    check("...but can be deferred: a deferral decides nothing about a copy", pv.candidates[0].disposition == DECIDED and pv.event_count == 1)
+    ev5, proj5, rt5 = routed([A, B, loc("U", r"C:\x\a.pdf", phys=None, known=False)])
+    pv = BK.preview(ev5, proj5, rt5, "redundant_under", {"folder": r"C:\Downloads"}, SNAP, BK.snapshot_query(show="All"))
+    check("blocked: unknown physical identity in the group blocks a mark on any of its copies",
+          pv.candidates[0].disposition == BLOCKED and "identity unknown" in pv.candidates[0].detail)
+
+    # -- accept the recommendation ----------------------------------------------------------------
+    ev6, proj6, rt6 = routed([A, B, C, D, E_, F, G], [dec("D1", "must_keep_location", LOCATION, "B")], [protect, prefer])
+    pv = BK.preview(ev6, proj6, rt6, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All"))
+    by = {c.target_ref: c for c in pv.candidates}
+    check("accept the recommendation, C1: canonical A and nothing else -- B is kept explicitly, C protected; the preview says what it left alone",
+          by["C1"].to_record == (("canonical_location", GROUP, "C1", "A"),) and "1 protected, 1 kept" in by["C1"].detail)
+    check("...C2: canonical D and E marked redundant, two decisions in one candidate",
+          by["C2"].to_record == (("canonical_location", GROUP, "C2", "D"), ("redundant_location", LOCATION, "E", True)))
+    check("...C3: Docs2 is not Docs, so no recommendation -- not applicable, and counted as such",
+          by["C3"].disposition == NA and pv.counts[NA] == 1 and pv.decision_count == 3)
+    pv = BK.preview(ev6, proj6, rt6, "accept_recommendation", {"mark_others": False}, SNAP, BK.snapshot_query(show="All"))
+    check("with the marks switched off only the canonicals are set", pv.decision_count == 2 and all(len(c.to_record) <= 1 for c in pv.candidates))
+    H = loc("H", r"F:\Other.pdf", root="Other", phys="P8", content="C2")
+    ev7, proj7, rt7 = routed([A, B, C, D, E_, F, G, H], [dec("D1", "must_keep_location", LOCATION, "B"), dec("D2", "canonical_location", GROUP, "C2", "E")],
+                             [protect, prefer])
+    pv = BK.preview(ev7, proj7, rt7, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All"))
+    by = {c.target_ref: c for c in pv.candidates}
+    check("a canonical of the person's own is preserved, and it gates the marks: nothing at all is recorded for that group",
+          by["C2"].disposition == PRESERVED and by["C2"].to_record == () and len(by["C2"].decisions) == 2
+          and "gates the rest" in by["C2"].outcomes[1][1], str(by["C2"]))
+    ev8, proj8, rt8 = routed([A, B, C, D, E_, F, G], [dec("D1", "must_keep_location", LOCATION, "B"), dec("D2", "canonical_location", GROUP, "C2", "D")],
+                             [protect, prefer])
+    pv = BK.preview(ev8, proj8, rt8, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All"))
+    by = {c.target_ref: c for c in pv.candidates}
+    check("a canonical equal to the recommendation is already satisfied; the mark still goes in",
+          by["C2"].disposition == DECIDED and by["C2"].to_record == (("redundant_location", LOCATION, "E", True),) and "already recorded" in by["C2"].detail)
+
+    # -- a deferral batch ------------------------------------------------------------------------------
+    pv = BK.preview(ev6, proj6, rt6, "defer", {"disposition": "snooze_until_date", "until": "2099-01-01"}, EXPL, selection=["C1", "C2"])
+    check("a deferral batch plans events, not decisions, one per group",
+          pv.decision_count == 0 and pv.event_count == 2 and all(c.events_to_record == (("snooze_until_date", "2099-01-01"),) for c in pv.candidates)
+          and "2 would be deferred" in "\n".join(pv.lines()))
+    ev9, proj9, rt9 = routed([A, B, C, D, E_, F, G], [], [], events=[ev_row("E1", "deferred", GROUP, "C1", "manual", "Defer indefinitely")])
+    pv = BK.preview(ev9, proj9, rt9, "defer", {}, EXPL, selection=["C1", "C2"])
+    by = {c.target_ref: c for c in pv.candidates}
+    check("a group already deferred is already satisfied; the other is deferred", by["C1"].disposition == SATISFIED and by["C2"].disposition == DECIDED)
+    check("an unknown deferral disposition is refused", _refused(lambda: BK.preview(ev6, proj6, rt6, "defer", {"disposition": "until_never"}, EXPL, selection=["C1"])))
+
+    # -- determinism ---------------------------------------------------------------------------------------
+    canon = lambda p_: json.dumps({k: v for k, v in p_.as_dict().items() if k != "evaluated_utc"}, sort_keys=True, default=str)  # noqa: E731
+    base = canon(BK.preview(ev8, proj8, rt8, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All")))
+    import random
+    same = True
+    for seed in (1, 2, 3):
+        rnd = random.Random(seed)
+        locs = list(ev8.locations.values())
+        rnd.shuffle(locs)
+        decs = list(ev8.decisions)
+        rnd.shuffle(decs)
+        evs, projs, rts = routed(locs, decs, list(reversed(ev8.policies)))
+        same = same and canon(BK.preview(evs, projs, rts, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All"))) == base
+    check("the same preview from the same rows in any order, and twice",
+          same and canon(BK.preview(ev8, proj8, rt8, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All"))) == base)
+
+    # -- speed: the resolver across a batch, not one target at a time -----------------------------------------
+    big, decisions = [], []
+    for i in range(4000):
+        cid = f"G{i}"
+        big.append(loc(f"L{i}a", rf"C:\Docs\f{i}.pdf", phys=f"P{i}a", content=cid, size=1000 + i))
+        big.append(loc(f"L{i}b", rf"C:\Downloads\f{i}.pdf", phys=f"P{i}b", content=cid, size=1000 + i))
+        big.append(loc(f"L{i}c", rf"E:\Backup\f{i}.pdf", root="Backup", phys=f"P{i}c", content=cid, size=1000 + i))
+        if i % 8 == 0:
+            decisions.append(dec(f"D{i}", "must_keep_location", LOCATION, f"L{i}b", seq=i + 1))
+    t0 = time.perf_counter()
+    evb, projb, rtb = routed(big, decisions, [protect, prefer])
+    t1 = time.perf_counter()
+    pv1 = BK.preview(evb, projb, rtb, "keep_all", {}, SNAP, BK.snapshot_query(show="All"))
+    t2 = time.perf_counter()
+    pv2 = BK.preview(evb, projb, rtb, "accept_recommendation", {}, SNAP, BK.snapshot_query(show="All"))
+    t3 = time.perf_counter()
+    pv3 = BK.preview(evb, projb, rtb, "redundant_under", {"folder": r"C:\Downloads"}, SNAP, BK.snapshot_query(show="All"))
+    t4 = time.perf_counter()
+    check(f"4,000 groups (12,000 copies): resolve+route {t1 - t0:.2f}s; preview Keep all {t2 - t1:.2f}s, accept recommendation {t3 - t2:.2f}s, "
+          f"mark under a folder {t4 - t3:.2f}s -- each preview under 3 s",
+          (t2 - t1) < 3 and (t3 - t2) < 3 and (t4 - t3) < 3 and pv1.decision_count == 4000 and pv2.decision_count == 4000 * 2 - 500
+          and pv3.counts[PRESERVED] == 500 and pv3.decision_count == 3500)
+    print(f"        (4,000-group preview timings: keep all {t2 - t1:.3f}s, accept {t3 - t2:.3f}s, folder {t4 - t3:.3f}s)")
+
+
+# ---------------------------------------------------------------------------
+# 9. Build 4 on the real project
+# ---------------------------------------------------------------------------
+
+def test_bulk_project(tmp: Path):
+    section("9. Bulk on a real project: commit equals preview, provenance, undo, the frozen snapshot (F04) beside a policy (F05)")
+    from Phase2.runner import RunRequest, RunWorker, PRESCAN, DUPLICATES
+    from Phase2.core import connect
+    from Phase3 import evidence as E, store as S, bulk as BK
+    SNAP, EXPL = REG.SCOPE_QUERY_SNAPSHOT, REG.SCOPE_EXPLICIT_SELECTION
+
+    app_root = tmp / "BulkRoot"
+    (app_root / "Projects").mkdir(parents=True)
+    corpus = tmp / "BulkCorpus"
+    root1, root2 = build_corpus(corpus)
+    before = fingerprint_tree(corpus)
+    RunWorker(app_root, None, RunRequest(PRESCAN, "Pre-Scan", source_roots=[str(root1), str(root2)], project_name="P3Bulk")).run()
+    project_dir = app_root / "Projects" / "P3Bulk"
+    RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+    conn = connect(project_dir, write=True)
+    st = S.DecisionStore(conn, actor_id="tester", session_id="session:bulk")
+
+    def state():
+        ev = E.load_evidence(conn)
+        proj = R.resolve_all(ev)
+        return ev, proj, RT.route_all(ev, proj, ev.now)
+    ev, proj, rt = state()
+    by_path = {l.path: l for l in ev.locations.values()}
+    L = lambda *parts: by_path[str(Path(*parts))]                   # noqa: E731
+    doc, link, down, back = L(root1, "Documents", "report.pdf"), L(root1, "Documents", "report-link.pdf"), L(root1, "Downloads", "report.pdf"), L(root2, "Backup", "report.pdf")
+    tax1, tax3 = L(root1, "Documents", "tax.docx"), L(root1, "Archive", "tax.docx")
+    rep, taxg = doc.content_id, tax1.content_id
+    st.create_policy("protect_source_root", {"root_key": back.root_key, "root_path": str(root2)}, rationale="the backup drive")
+    st.create_policy("prefer_folder_subtree", {"path_key": path_key(root1 / "Documents"), "path": str(root1 / "Documents")})
+
+    # -- a snapshot batch: copies under Downloads, over the Queue ------------------------------------
+    ev, proj, rt = state()
+    q = BK.snapshot_query(show="Queue")
+    pv = BK.preview(ev, proj, rt, "redundant_under", {"folder": str(root1 / "Downloads")}, SNAP, q, conn=conn)
+    check("preview over the Queue's copies under Downloads: one copy, one decision, its evidence binding captured now",
+          [c.target_ref for c in pv.candidates] == [down.location_id] and pv.decision_count == 1
+          and pv.candidates[0].bindings[("redundant_location", LOCATION, down.location_id)]["observation_id"] == int(down.observation_id)
+          and pv.record_mark == 2)
+    res = st.commit_bulk(pv, note="downloads are copies")
+    op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (res["operation_id"],)).fetchone()
+    b = conn.execute("SELECT * FROM p3_bulk_batch WHERE batch_id=?", (res["batch_id"],)).fetchone()
+    d = conn.execute("SELECT * FROM p3_decision WHERE decision_id=?", (res["decision_ids"][0],)).fetchone()
+    members = st.batch_members(res["batch_id"])
+    check("commit: one operation of kind 'bulk' holds the batch row, its member row and its decision",
+          op["kind"] == "bulk" and op["note"] == "downloads are copies" and b["operation_id"] == d["operation_id"] == res["operation_id"]
+          and len(members) == 1 and res["decisions"] == 1)
+    check("the decision carries origin bulk_explicit_human and origin_ref = the batch id, and binds the evidence the preview captured",
+          d["origin_kind"] == "bulk_explicit_human" and d["origin_ref"] == str(res["batch_id"])
+          and json.loads(d["evidence_binding_json"])["observation_id"] == int(down.observation_id) and d["rationale"] == "downloads are copies")
+    check("the batch row: scope query_result_snapshot, the frozen query (the Show filter and the folder), frozen and committed, preserve mode, the preview as shown",
+          b["scope_kind"] == "query_result_snapshot" and json.loads(b["query_json"])["show"] == "Queue" and json.loads(b["query_json"])["folder_key"] == path_key(root1 / "Downloads")
+          and b["frozen"] == 1 and b["committed"] == 1 and b["mode"] == "preserve" and json.loads(b["preview_json"])["counts"]["decided"] == 1
+          and b["action"] == "redundant_under")
+    check("the member row says what became of the copy", members[0]["target_ref"] == down.location_id and members[0]["disposition"] == "decided")
+    ev, proj, rt = state()
+    check("and the group is Ready for plan with the Downloads copy a redundant candidate",
+          rt.groups[rep].primary == RT.READY_FOR_PLAN and proj.group(rep).redundant_candidates == (down.location_id,))
+    batches = st.batches()
+    check("batches(): one batch, one decision, in force", len(batches) == 1 and batches[0]["decisions"] == 1 and batches[0]["in_force"] == 1 and batches[0]["label"] == "Mark copies under a folder redundant")
+
+    # -- commit equals preview; the record must not have moved -----------------------------------------
+    pv = BK.preview(ev, proj, rt, "keep_all", {}, SNAP, BK.snapshot_query(show="All"), conn=conn)
+    by = {c.target_ref: c for c in pv.candidates}
+    check("Keep all over All: the batch-marked group is preserved (a batch's mark is explicit intent too); the other is decided",
+          by[rep].disposition == REG.DISP_PRESERVED and by[taxg].disposition == REG.DISP_DECIDED and pv.decision_count == 1)
+    st.record_decision("must_keep_location", LOCATION, tax1.location_id)          # the record moves under the preview
+    check("a commit over a record that moved since the preview is refused, and writes nothing",
+          _refused(lambda: st.commit_bulk(pv)) and st.counts()["batches"] == 1)
+    ev, proj, rt = state()
+    pv = BK.preview(ev, proj, rt, "keep_all", {}, SNAP, BK.snapshot_query(show="All"), conn=conn)
+    res2 = st.commit_bulk(pv)
+    check("previewed again, it commits: Keep all on the tax group (compatible with the explicit Keep on one copy)",
+          res2["decisions"] == 1 and R.resolve_all(E.load_evidence(conn)).group(taxg).review_state == R.RESOLVED)
+
+    # -- undo -------------------------------------------------------------------------------------------------
+    u = st.undo_batch(res["batch_id"])
+    ev, proj, rt = state()
+    check("undo batch 1: its decision is withdrawn in one operation of kind 'bulk_undo'; the group is back on the queue",
+          u["withdrawn"] == 1 and conn.execute("SELECT kind FROM p3_operation WHERE operation_id=?", (u["operation_id"],)).fetchone()[0] == "bulk_undo"
+          and rt.groups[rep].primary == RT.UNRESOLVED
+          and conn.execute("SELECT reason FROM p3_decision_withdrawal WHERE decision_id=?", (res["decision_ids"][0],)).fetchone()[0] == "batch #1 undone")
+    check("...the batch and its member rows are untouched", conn.execute("SELECT COUNT(*) FROM p3_bulk_member WHERE batch_id=?", (res["batch_id"],)).fetchone()[0] == 1
+          and st.batch(res["batch_id"])["in_force"] == 0 and st.batch(res["batch_id"])["withdrawn_decisions"] == 1)
+    check("undoing it again is refused", _refused(lambda: st.undo_batch(res["batch_id"])))
+    check("undoing a batch that does not exist is refused", _refused(lambda: st.undo_batch(999)))
+    st.undo_batch(res2["batch_id"])
+    pv = BK.preview(*state(), "keep_under", {"folder": str(root1 / "Documents")}, SNAP, BK.snapshot_query(show="All"), conn=conn)
+    by = {c.target_ref: c for c in pv.candidates}
+    check("Keep copies under Documents: tax.docx there already has its Keep (satisfied); report.pdf and its alias are decided",
+          by[tax1.location_id].disposition == REG.DISP_SATISFIED and by[doc.location_id].disposition == by[link.location_id].disposition == REG.DISP_DECIDED
+          and pv.decision_count == 2)
+    res3 = st.commit_bulk(pv)
+    st.record_decision("redundant_location", LOCATION, doc.location_id)             # by hand, later: supersedes the batch's Keep on doc
+    u = st.undo_batch(res3["batch_id"])
+    ev, proj, rt = state()
+    check("undo leaves a decision the person has since superseded alone: only the alias's Keep is withdrawn; the hand mark on report.pdf stands",
+          u["withdrawn"] == 1 and proj.group(rep).verdict(doc.location_id).status == R.REDUNDANT and proj.group(rep).verdict(link.location_id).status == R.UNDECIDED)
+    st.withdraw(st.history_for(LOCATION, doc.location_id)[-1]["decision_id"], "undo the hand mark")
+
+    # -- a deferral batch -------------------------------------------------------------------------------------
+    pv = BK.preview(*state(), "defer", {"disposition": "snooze_until_date", "until": "2099-01-01"}, EXPL, selection=[taxg], conn=conn)
+    res4 = st.commit_bulk(pv, note="later")
+    ev, proj, rt = state()
+    e = conn.execute("SELECT * FROM p3_review_event WHERE operation_id=?", (res4["operation_id"],)).fetchall()
+    check("a deferral batch records deferred events under its own operation, no decision; the group is parked with its trigger",
+          res4["decisions"] == 0 and res4["events"] == 1 and len(e) == 1 and e[0]["return_kind"] == "time" and e[0]["return_on_utc"] == "2099-01-01T00:00:00Z"
+          and rt.groups[taxg].primary == RT.DEFERRED and st.batch(res4["batch_id"])["in_force"] == 1)
+    u = st.undo_batch(res4["batch_id"])
+    ev, proj, rt = state()
+    check("its undo restores the deferral (a restored row naming it); the group is back", u["restored"] == 1 and rt.groups[taxg].primary == RT.UNRESOLVED
+          and conn.execute("SELECT refers_to_review_event_id FROM p3_review_event ORDER BY review_event_id DESC LIMIT 1").fetchone()[0] == e[0]["review_event_id"])
+
+    # -- accept the recommendation on the real thing --------------------------------------------------------
+    pv = BK.preview(*state(), "accept_recommendation", {}, SNAP, BK.snapshot_query(show="Queue"), conn=conn)
+    by = {c.target_ref: c for c in pv.candidates}
+    check("accept the recommendation: the report group has two preferred copies (a tie) -- not applicable; the tax group gets its Documents copy as canonical and the Archive copy marked; Backup stays protected",
+          by[rep].disposition == REG.DISP_NOT_APPLICABLE and by[taxg].to_record == (("canonical_location", GROUP, taxg, tax1.location_id), ("redundant_location", LOCATION, tax3.location_id, True))
+          and "1 protected" in by[taxg].detail)
+    res5 = st.commit_bulk(pv)
+    ev, proj, rt = state()
+    g = proj.group(taxg)
+    check("...committed: the tax group is Ready for plan, canonical Documents, 117 KB eligible, both decisions from the batch",
+          rt.groups[taxg].primary == RT.READY_FOR_PLAN and g.canonical == tax1.location_id and g.plan_eligible_reclaim_bytes == 120000
+          and {r[0] for r in conn.execute("SELECT origin_ref FROM p3_decision WHERE decision_id IN (?,?)", tuple(res5["decision_ids"]))} == {str(res5["batch_id"])})
+
+    # -- F04 and F05 on the real thing: a frozen snapshot beside a policy ------------------------------------------
+    pv = BK.preview(*state(), "redundant_under", {"folder": str(root1 / "Downloads")}, SNAP, BK.snapshot_query(show="All"), conn=conn)
+    res6 = st.commit_bulk(pv, note="F04")
+    frozen_query = st.batch(res6["batch_id"])["query"]
+    st.create_policy("protect_folder_subtree", {"path_key": path_key(root1 / "Archive"), "path": str(root1 / "Archive")}, rationale="F05")
+    conn.close()
+    time.sleep(1.1)
+    (root1 / "Downloads" / "tax.docx").write_bytes(b"beta" * 30000)       # a later match of the frozen query
+    (root1 / "Archive" / "report.pdf").write_bytes(b"alpha" * 20000)      # a later file under the protected folder
+    RunWorker(app_root, project_dir, RunRequest(PRESCAN, "Scan again")).run()
+    RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+    conn = connect(project_dir, write=True)
+    st = S.DecisionStore(conn, actor_id="tester", session_id="session:bulk")
+    ev, proj, rt = state()
+    by_path = {l.path: l for l in ev.locations.values()}
+    new_tax, new_rep = L(root1, "Downloads", "tax.docx"), L(root1, "Archive", "report.pdf")
+    _kind, now_matches = BK.query_targets(frozen_query, ev, proj, rt)
+    check("F04: the frozen query matches the new Downloads copy NOW (the matcher says so) -- and the batch does not have it, and it has no decision",
+          new_tax.location_id in now_matches and new_tax.location_id not in {m["target_ref"] for m in st.batch_members(res6["batch_id"])}
+          and not st.active_for(LOCATION, new_tax.location_id) and st.batch(res6["batch_id"])["members"] == 1)
+    check("F05: the policy made before the file existed protects the new Archive copy, with no decision recorded for it",
+          new_rep.location_id in R.protected_locations(ev) and proj.group(rep).verdict(new_rep.location_id).status == R.PROTECTED
+          and not st.active_for(LOCATION, new_rep.location_id))
+    check("the detector has nothing to say about the batch's decision: its bound copy was observed unchanged",
+          all(x.applicable for x in rt.locations[down.location_id].drift))
+
+    # -- the policy impact preview ---------------------------------------------------------------------------------------
+    pp = BK.policy_preview(conn, "protect_folder_subtree", {"path_key": path_key(root1 / "Downloads"), "path": str(root1 / "Downloads")})
+    check("policy_preview: covers the two Downloads copies (both in groups); one would become protected and one batch mark would go into conflict; and the statement about the future",
+          pp["covers_locations"] == 2 and pp["covers_members"] == 2 and pp["totals"]["newly_protected"] == 2 and pp["totals"]["new_conflicts"] == 1
+          and any("WILL be evaluated" in l for l in pp["lines"]), "\n".join(pp["lines"]))
+    check("...and it recorded nothing", st.counts()["policy_versions"] == 3)
+
+    # -- zero mutation around the new paths -------------------------------------------------------------------------------
+    with WriteGuard([project_dir, app_root / "Logs"]) as guard:
+        ev, proj, rt = state()
+        pv = BK.preview(ev, proj, rt, "keep_all", {}, SNAP, BK.snapshot_query(show="All"), conn=conn)
+        check("with every group decided, Keep all over All records nothing: both are preserved", pv.decision_count == 0 and pv.counts[REG.DISP_PRESERVED] == 2)
+        pv = BK.preview(ev, proj, rt, "defer", {}, EXPL, selection=[rep, taxg], conn=conn)
+        r7 = st.commit_bulk(pv)
+        st.batches()
+        st.undo_batch(r7["batch_id"])
+        BK.policy_preview(conn, "avoid_folder_subtree", {"path_key": path_key(root1 / "Downloads"), "path": str(root1 / "Downloads")})
+        (project_dir / "Exports").mkdir(exist_ok=True)
+        S.export_decision_journal(conn, project_dir / "Exports" / "DecisionJournal.txt")
+    check("no Python-level write reached a path outside the project folder while bulk ran", not guard.violations, str(guard.violations[:5]))
+    text = (project_dir / "Exports" / "DecisionJournal.txt").read_text(encoding="utf-8")
+    check("the journal lists the batches and marks their decisions", "bulk batch #1: redundant_under over query_result_snapshot" in text and "(batch #5)" in text)
+    conn.close()
+    after = fingerprint_tree(corpus)
+    changed = [p for p, v in before["files"].items() if after["files"].get(p) != v]
+    added = sorted(after["everything"] - before["everything"])
+    check("every original corpus file is byte-identical; only the two files the test added are new",
+          not changed and added == sorted([str(root1 / "Downloads" / "tax.docx"), str(root1 / "Archive" / "report.pdf")]), f"{changed} {added}")
+
+
+# ---------------------------------------------------------------------------
+# 10. The window, Build 4: the check column, the bulk dialog, Batches
+# ---------------------------------------------------------------------------
+
+def test_gui_bulk(tmp: Path):
+    section("10. The window, Build 4: checks, Bulk action..., the preview, Batches and Undo, the policy route")
+    try:
+        import tkinter as tk
+        probe = tk.Tk()
+        probe.withdraw()
+        probe.destroy()
+    except Exception as exc:                                        # noqa: BLE001
+        print(f"  SKIP  no display ({exc})")
+        return
+    from tkinter import messagebox
+    from Phase2.runner import RunRequest, RunWorker, PRESCAN, DUPLICATES
+    from Phase2 import gui
+    from Phase3 import review as RV
+
+    app_root = tmp / "BulkGuiRoot"
+    (app_root / "Projects").mkdir(parents=True)
+    corpus = tmp / "BulkGuiCorpus"
+    root1, root2 = build_corpus(corpus)
+    fp_before = fingerprint_tree(corpus)
+    RunWorker(app_root, None, RunRequest(PRESCAN, "Pre-Scan", source_roots=[str(root1), str(root2)], project_name="P3BulkGui")).run()
+    project_dir = app_root / "Projects" / "P3BulkGui"
+    RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run()
+
+    asked = []
+    real = {n: getattr(messagebox, n) for n in ("askyesno", "showinfo", "showwarning", "showerror")}
+    messagebox.askyesno = lambda *a, **k: (asked.append(("yesno", a[0] if a else k.get("title"))), True)[1]
+    for n in ("showinfo", "showwarning", "showerror"):
+        setattr(messagebox, n, lambda *a, _n=n, **k: asked.append((_n, a[0] if a else k.get("title"), a[1] if len(a) > 1 else k.get("message"))))
+    try:
+        with WriteGuard([project_dir, app_root / "Logs", gui.APP_ROOT / "Logs"]) as guard:
+            app = gui.Phase2App(None)
+            app.withdraw()
+            app.open_project(project_dir)
+            app.update_idletasks()
+            t = _texts(app.content)
+            check("the summary's Decide heading has a Bulk batches line with a Batches... button, saying none yet",
+                  "Bulk batches" in t and "Batches..." in t and any(x.startswith("none -- check groups") for x in t))
+            app.show_decide()
+            app.update_idletasks()
+            page = app.review_page
+            ids = list(page.table.get_children())
+            check("the group list has a check column, every row unchecked, and 'Nothing checked' with no bulk button",
+                  list(RV.GROUP_COLUMNS)[0] == "check" and all(page.table.set(i, "check") == RV.UNCHECKED for i in ids)
+                  and page.checked_var.get() == "Nothing checked" and not page.bulk_button.winfo_manager())
+            cid = [g.group_id for g in page.proj.groups if g.location_count == 4][0]
+            other = [g.group_id for g in page.proj.groups if g.group_id != cid][0]
+            page.table.focus(cid)
+            page.toggle_check()
+            check("Space on the focused row checks it: the glyph, the count, and Bulk action... appears",
+                  page.table.set(cid, "check") == RV.CHECKED and page.checked_var.get() == "1 checked" and page.bulk_button.winfo_manager() == "pack")
+            page.table.selection_set(cid)
+            page.show_group(cid)
+            p = page.proj.group(cid)
+            by = {RV._folder(v.path).rsplit("\\", 1)[-1] + "/" + RV._file_name(v.path): v.location_id for v in p.members}
+            link = by["Documents/report-link.pdf"]
+            page.members.selection_set(link)
+            page._member_selected()
+            page.keep()
+            check("the letter keys act on the selected row only, checked or not: Keep recorded exactly one decision, on the alias",
+                  page.store.counts()["decisions"] == 1 and page.store.active_for(LOCATION, link)[0].kind == "must_keep_location"
+                  and cid in page.checked)
+            page.check_all_shown()
+            check("Check all shown checks every listed group", page.checked_var.get() == "2 checked" and page.checked == {cid, other})
+            page.clear_checks()
+            check("Clear empties it and the bulk button goes away", page.checked_var.get() == "Nothing checked" and not page.bulk_button.winfo_manager())
+            page._toggle(cid)
+            page._toggle(other)
+
+            # -- the bulk dialog ------------------------------------------------------------------------------
+            page.bulk_action()
+            app.update_idletasks()
+            bd = page.bulk_dialog
+            texts = {k: str(b.cget("text")) for k, b in bd.scope_buttons.items()}
+            states = {k: str(b.cget("state")) for k, b in bd.scope_buttons.items()}
+            check("the three scopes in the research's words, the narrowest as the default: '2 checked groups' / '2 current matches (Show: Queue)' / a policy instead",
+                  bd.scope_var.get() == "checked" and texts["checked"] == "2 checked groups" and texts["matches"].startswith("2 current matches (Show: Queue)")
+                  and texts["policy"].startswith("Create a reusable policy instead"), str(texts))
+            check("Keep all has no policy twin, so that scope is disabled and says so; Record is disabled until a preview",
+                  states["policy"] == "disabled" and "no policy says this" in texts["policy"] and str(bd.ok.cget("state")) == "disabled")
+            bd._confirm()
+            check("confirming without a preview records nothing, with an explanation", asked[-1][0] == "showinfo" and "Preview first" in asked[-1][2]
+                  and page.store.counts()["batches"] == 0)
+            bd.action_var.set(RV.BULK_ACTIONS["keep_under"].label)
+            bd._action_changed()
+            check("a folder action enables the policy scope, naming the twin", str(bd.scope_buttons["policy"].cget("state")) == "normal"
+                  and "Protect folder" in str(bd.scope_buttons["policy"].cget("text")))
+            bd.folder_var.set(str(root1 / "Documents"))
+            bd.scope_var.set("matches")
+            bd.run_preview()
+            text = bd.preview_text.get("1.0", "end")
+            check("the preview over the current matches: three copies under Documents, one already kept, two decisions; the closing sentence",
+                  text.startswith("3 copies in scope (Show: Queue; copies under") and "2 would receive a decision (2 decisions: Keep)" in text
+                  and "1 already satisfy it" in text and "No source files will be changed." in text, text)
+            check("Record says what it will record", str(bd.ok.cget("text")) == "Record 2 decisions" and str(bd.ok.cget("state")) == "normal")
+            bd.folder_var.set(str(root1 / "Downloads"))
+            check("changing an input voids the preview", str(bd.ok.cget("state")) == "disabled")
+            bd.folder_var.set(str(root1 / "Documents"))
+            bd.run_preview()
+            bd.note.insert("1.0", "the working folder")
+            bd._confirm()
+            app.update_idletasks()
+            check("the commit records the batch (the window says so), clears the checks and re-derives",
+                  asked[-1][0] == "showinfo" and asked[-1][2].startswith("Batch #1 recorded: 2 decision(s) over 3 copies; 1 left as exceptions")
+                  and not page.checked and page.store.counts()["batches"] == 1 and page.store.counts()["decisions"] == 3)
+            page.show_group(cid)
+            check("the group's history names the batch a decision came from",
+                  any("(batch #1)" in str(page.history.item(i, "values")[1]) for i in page.history.get_children()))
+            check("the summary line and routes reflect it: the report group is in progress",
+                  page.routing.groups[cid].word == "In progress")
+
+            # -- Batches... and Undo ----------------------------------------------------------------------------
+            page.open_batches()
+            app.update_idletasks()
+            bt = page.batches_dialog
+            row = bt.table.item(bt.table.get_children()[0], "values")
+            check("Batches... lists the batch: action, scope, 3 members, 2 recorded, 2 in force, the note",
+                  row[2] == "Keep copies under a folder" and row[3].startswith("Show: Queue; copies under") and row[4] == "3" and row[5] == "2"
+                  and row[6] == "2" and row[7] == "the working folder", str(row))
+            mrows = [bt.members.item(i, "values") for i in bt.members.get_children()]
+            check("...and its members with what became of each (two decided, one already satisfied)",
+                  sorted(r[1] for r in mrows) == ["already satisfied", "decided", "decided"] and all(r[0].endswith(".pdf") or r[0].endswith(".docx") for r in mrows))
+            check("Undo batch is enabled", str(bt.undo_button.cget("state")) == "normal")
+            bt.undo()
+            app.update_idletasks()
+            row = bt.table.item(bt.table.get_children()[0], "values")
+            check("Undo batch asked, withdrew both decisions and the list says 0 in force; the batch stays listed",
+                  asked[-1][0] == "yesno" and row[6] == "0" and str(bt.undo_button.cget("state")) == "disabled"
+                  and page.store.counts()["withdrawals"] == 2 and page.store.counts()["batches"] == 1)
+            bt.win.destroy()
+
+            # -- the policy route out of the bulk dialog ---------------------------------------------------------
+            page._toggle(cid)
+            page.bulk_action()
+            bd = page.bulk_dialog
+            bd.action_var.set(RV.BULK_ACTIONS["redundant_under"].label)
+            bd._action_changed()
+            bd.folder_var.set(str(root1 / "Downloads"))
+            bd.scope_var.set("policy")
+            bd._inputs_changed()
+            check("choosing the policy scope says a policy is the opposite of a snapshot and offers to continue",
+                  "opposite of a snapshot" in bd.preview_text.get("1.0", "end") and str(bd.ok.cget("text")) == "Continue to the policy..."
+                  and "Avoid folder" in str(bd.scope_buttons["policy"].cget("text")))
+            bd._confirm()
+            app.update_idletasks()
+            pd = page.policy_dialog
+            check("...which opens the Add policy dialog prefilled with the twin kind and the folder, Create disabled until previewed",
+                  pd.kind_var.get() == "Avoid folder" and pd.folder_var.get() == str(root1 / "Downloads") and str(pd.ok.cget("state")) == "disabled")
+            pd.preview()
+            check("its preview says what the policy covers today and that future matches WILL be evaluated against it",
+                  "Future matching evidence WILL be evaluated" in pd.preview_text.get("1.0", "end") and str(pd.ok.cget("state")) == "normal")
+            pd._confirm()
+            check("the policy is created", any(p_["kind"] == "avoid_folder_subtree" for p_ in page.store.policies()))
+            app.show_hub()
+            t = _texts(app.content)
+            check("back on the summary, the Bulk batches line counts the batch and says none is in force",
+                  any(x.startswith("1 recorded, 0 still in force") for x in t), str([x for x in t if "recorded" in x]))
+            app.release_connection()
+            app.destroy()
+        check("no Python-level write reached a path outside the project folder during the bulk window session", not guard.violations, str(guard.violations[:5]))
+        after = fingerprint_tree(corpus)
+        check("the corpus behind the bulk window session is byte-for-byte unchanged",
+              all(after["files"].get(p) == v for p, v in fp_before["files"].items()) and after["everything"] == fp_before["everything"])
+    finally:
+        for n, f in real.items():
+            setattr(messagebox, n, f)
+
+
+# ---------------------------------------------------------------------------
 # 5. The window, headless
 # ---------------------------------------------------------------------------
 
@@ -1135,6 +1738,21 @@ def test_gui(tmp: Path, before_corpus_fp, corpus):
             dlg._kind_changed()
             dlg.root_var.set(str(root2))
             dlg.reason.insert("1.0", "backup")
+            check("Add policy: Create is disabled until the policy has been previewed", str(dlg.ok.cget("state")) == "disabled")
+            dlg._confirm()
+            check("...and confirming without a preview records nothing, with an explanation",
+                  asked and asked[-1][0] == "showinfo" and "Preview first" in asked[-1][2] and not page_store.policies())
+            dlg.preview()
+            text = dlg.preview_text.get("1.0", "end")
+            check("the policy preview says what it covers today and that future matches WILL be evaluated against it",
+                  "Covers 2 current file locations now (2 of them in 2 duplicate groups)" in text
+                  and "Future matching evidence WILL be evaluated against this policy" in text
+                  and "2 copies become protected" in text, text)
+            check("...and Create is enabled for exactly the inputs previewed", str(dlg.ok.cget("state")) == "normal")
+            dlg.folder_var.set("x")
+            check("changing an input voids the preview", str(dlg.ok.cget("state")) == "disabled")
+            dlg.folder_var.set("")
+            dlg.preview()
             dlg._confirm()
             app.update_idletasks()
             check("Add policy dialog records a protection of the second root", len(page_store.policies()) == 1
@@ -1340,7 +1958,10 @@ def main():
         test_no_mutation(project_dir, corpus, before, app_root)
         test_routing_model()
         test_routing_project(tmp)
+        test_bulk_model()
+        test_bulk_project(tmp)
         test_gui(tmp, before, corpus)
+        test_gui_bulk(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     passed = sum(1 for _, ok, _ in RESULTS if ok)

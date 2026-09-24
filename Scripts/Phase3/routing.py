@@ -352,14 +352,25 @@ def _deferral_text(e: ReviewEvent):
             RETURN_MANUAL: "deferred indefinitely"}.get(kind, f"deferred ({kind})")
 
 
+def _by_target(active):
+    """(target_kind, target_ref) -> the target's active decisions, in recording order."""
+    out = {}
+    for d in sorted(active, key=lambda d: (d.sequence, d.decision_id)):
+        out.setdefault((d.target_kind, str(d.target_ref)), []).append(d)
+    return out
+
+
 def route_target(ev: Evidence, target_kind, target_ref, group_proj=None, opened=None, active=None, now=None,
-                 inherited=()):
+                 inherited=(), by_target=None):
     """One target's route: every condition that applies, in route order, and
-    the primary among them. `inherited` are a group's members' conditions."""
+    the primary among them. `inherited` are a group's members' conditions.
+    `by_target` is the active decisions indexed by target (route_all builds
+    it once: after a bulk batch there are thousands, and every target asks)."""
     opened = opened if opened is not None else open_events(ev.events)
-    active = sorted(active if active is not None else active_decisions(ev.decisions),
-                    key=lambda d: (d.sequence, d.decision_id))
+    if by_target is None:
+        by_target = _by_target(active if active is not None else active_decisions(ev.decisions))
     ref = str(target_ref)
+    own = by_target.get((target_kind, ref), [])
     conditions = list(inherited)
     slot = opened.get((target_kind, ref), {EVENT_DEFERRED: [], EVENT_BLOCKED: [], EVENT_NEEDS_REVALIDATION: []})
 
@@ -372,7 +383,7 @@ def route_target(ev: Evidence, target_kind, target_ref, group_proj=None, opened=
     # 2 needs revalidation -- drift on the target's own active decisions. The
     # live comparison decides; an open flag the detector recorded is carried
     # as provenance and never routes by itself (the detector restores it).
-    drift = tuple(decision_drift(ev, d) for d in active if d.target_kind == target_kind and d.target_ref == ref)
+    drift = tuple(decision_drift(ev, d) for d in own)
     flag = slot[EVENT_NEEDS_REVALIDATION][0].review_event_id if slot[EVENT_NEEDS_REVALIDATION] else None
     for x in drift:
         if not x.applicable:
@@ -394,7 +405,7 @@ def route_target(ev: Evidence, target_kind, target_ref, group_proj=None, opened=
     if deferral and not fired:
         conditions.append(Condition(DEFERRED, deferral.return_kind or RETURN_MANUAL, _deferral_text(deferral),
                                     event_id=deferral.review_event_id))
-    legacy = [d for d in active if d.target_kind == target_kind and d.target_ref == ref and d.kind == "defer_review"]
+    legacy = [d for d in own if d.kind == "defer_review"]
     if legacy and deferral is None:
         conditions.append(Condition(DEFERRED, RETURN_MANUAL, "deferred indefinitely (a B8 record)",
                                     decision_ids=tuple(d.decision_id for d in legacy)))
@@ -432,12 +443,13 @@ def route_all(ev: Evidence, proj: R.ProjectProjection, now=None) -> RoutingProje
     now = now or ev.now
     opened = open_events(ev.events)
     active = active_decisions(ev.decisions)
+    by_target = _by_target(active)
     targets = {str(d.target_ref) for d in active if d.target_kind == LOCATION}
     targets |= {str(e.target_ref) for e in ev.events if e.target_kind == LOCATION}
     by_member = {v.location_id: gp for gp in proj.groups for v in gp.members}
     locations = {}
     for lid in sorted(targets, key=lambda x: (ev.locations[x].sort_key if x in ev.locations else (), x)):
-        locations[lid] = route_target(ev, LOCATION, lid, by_member.get(lid), opened, active, now)
+        locations[lid] = route_target(ev, LOCATION, lid, by_member.get(lid), opened, active, now, by_target=by_target)
     groups = {}
     for gp in proj.groups:
         inherited = []
@@ -448,7 +460,7 @@ def route_all(ev: Evidence, proj: R.ProjectProjection, now=None) -> RoutingProje
         undecided = list(gp.undecided)
         if undecided and all(locations.get(l) is not None and locations[l].has(DEFERRED) for l in undecided):
             inherited.extend(c for l in undecided for c in locations[l].of(DEFERRED))
-        groups[gp.group_id] = route_target(ev, GROUP, gp.group_id, gp, opened, active, now, inherited=tuple(inherited))
+        groups[gp.group_id] = route_target(ev, GROUP, gp.group_id, gp, opened, active, now, inherited=tuple(inherited), by_target=by_target)
     counts = {route: 0 for route in ROUTE_ORDER}
     for r in groups.values():
         counts[r.primary] += 1

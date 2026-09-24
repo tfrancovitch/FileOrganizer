@@ -106,6 +106,36 @@ class RootCoverage:
 
 
 @dataclass(frozen=True)
+class BatchMember:
+    """One target a bulk batch addressed, and what became of it (Build 4)."""
+    target_kind: str
+    target_ref: str
+    disposition: str = "decided"    # decided | already_satisfied | preserved | conflict | blocked | not_applicable
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class Batch:
+    """A bulk batch as recorded: its frozen membership and the query or
+    selection that produced it. Membership never changes after commit -- a
+    later matching target is not a member (P3-A41: a snapshot is not a
+    policy)."""
+    batch_id: str
+    scope_kind: str                 # explicit_selection | query_result_snapshot
+    query: dict | None              # the frozen query (None for an explicit selection)
+    members: tuple                  # BatchMember, in recorded order
+    action: str = ""
+    parameters: dict = field(default_factory=dict)
+    frozen: bool = True
+    committed: bool = True
+    operation_id: str | None = None
+    occurred_utc: str = ""
+
+    def member_refs(self, target_kind=None):
+        return tuple(m.target_ref for m in self.members if target_kind is None or m.target_kind == target_kind)
+
+
+@dataclass(frozen=True)
 class PolicyVersion:
     policy_version_id: str
     policy_id: str
@@ -126,6 +156,7 @@ class Evidence:
     events: list = field(default_factory=list)      # every ReviewEvent row, oldest first
     roots: dict = field(default_factory=dict)       # root_key -> RootCoverage
     now: str = ""                                   # the moment routing is evaluated at (ISO UTC)
+    batches: list = field(default_factory=list)     # Batch records, when a caller loads them (the fixture check does)
 
     def group_of(self, location_id):
         for g in self.groups.values():

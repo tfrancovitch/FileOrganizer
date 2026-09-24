@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 r"""Phase 3 acceptance against the research fixture lab (P3.R11).
 
-The seven synthetic fixtures that test Build 1-3 scope ship under
+The nine synthetic fixtures that test Build 1-4 scope ship under
 Resources\Phase3\fixture_lab\. Each is a SQLite file holding synthetic
 Phase 2 evidence, authoritative Phase 3 records, and an `expected_projection`
 table -- the oracle. The research's own validator computes each oracle with
 per-fixture hand-written logic; this check runs the product's ONE general
-resolution function (Phase3.resolve) and ONE general router (Phase3.routing)
-over the same rows and diffs the result against every oracle key.
+resolution function (Phase3.resolve), ONE general router (Phase3.routing)
+and ONE query matcher (Phase3.bulk) over the same rows and diffs the result
+against every oracle key.
 
     F01  Keeper_Protected_Hardlink    canonical + keeper set + protected root +
                                       physical copies vs hard-link aliases, together
     F02  Multiple_Intentional_Keepers multiple keepers is a resolved state; zero reclaim is valid
     F03  Folder_Priority_Exception    a folder preference plus one explicit exception, and
                                       the exception wins
+    F04  Frozen_Bulk_Query            a query-result batch freezes its membership: the
+                                      product's matcher says a later file matches the
+                                      frozen query NOW, and the batch does not have it (Build 4)
+    F05  Dynamic_Policy_Future_Match  a protect-folder policy made before a file existed
+                                      covers it when it appears, with no decision recorded
+                                      for it -- a pure policy effect (Build 4)
     F08  Deferred_vs_Blocked          a person's deferral and an evidence blocker are
                                       different routes with different return triggers (Build 3)
     F09  Supersession_Undo_Reapply    change, withdraw, re-apply: every row survives
@@ -40,9 +47,10 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SCRIPTS / "Database"))
 
-from Phase3.model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, path_key   # noqa: E402
+from Phase3.model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, Batch, BatchMember, path_key   # noqa: E402
 from Phase3 import resolve as R                                                                       # noqa: E402
 from Phase3 import routing as RT                                                                      # noqa: E402
+from Phase3 import bulk as BK                                                                         # noqa: E402
 
 FIXTURES = SCRIPTS.parent / "Resources" / "Phase3" / "fixture_lab" / "Fixtures"
 RESULTS = []
@@ -152,9 +160,23 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
                         policies.append(PolicyVersion(f"SYN{synthetic}", f"SYNP{synthetic}", "protect_folder_subtree",
                                                       {"path_key": locations[l].path_key, "path": locations[l].path}))
 
+        # Bulk batches (Build 4): the lab's shape is the product's -- scope
+        # kind, the frozen query, the members. The product also records each
+        # member's disposition; the lab predates that, so every member here
+        # is one the batch decided.
+        batches = []
+        for r in con.execute("SELECT * FROM p3_bulk_batch ORDER BY batch_id"):
+            members = tuple(BatchMember(m["target_kind"], m["target_ref"]) for m in con.execute(
+                "SELECT target_kind, target_ref FROM p3_bulk_member WHERE batch_id=? ORDER BY target_ref", (r["batch_id"],)))
+            batches.append(Batch(r["batch_id"], r["scope_kind"], json.loads(r["query_json"]) if r["query_json"] else None,
+                                 members, frozen=bool(r["frozen"]), committed=bool(r["committed"]),
+                                 operation_id=r["operation_id"], occurred_utc=ops.get(r["operation_id"], "")))
+
         oracle = {r["key"]: json.loads(r["value_json"]) for r in con.execute("SELECT key, value_json FROM expected_projection")}
         history = [(r["decision_id"], r["value_json"], bool(r["withdrawn"])) for r in rows]
-        return Evidence(locations, groups, decisions, policies, events, {}, now), oracle, history
+        ev = Evidence(locations, groups, decisions, policies, events, {}, now)
+        ev.batches = batches
+        return ev, oracle, history
     finally:
         con.close()
 
@@ -184,6 +206,26 @@ def actual_projection(fid: str, ev: Evidence, history) -> dict:
                                                     if p.canonical is not None and p.suggested_canonical is not None
                                                     and p.canonical != p.suggested_canonical),
                 "conflicts": [c.kind for p in proj.groups for c in p.conflicts]}
+    if fid.startswith("F04"):
+        # The frozen batch: its members are what it recorded, full stop. The
+        # product's own query matcher, asked what the frozen query matches
+        # NOW, names the later file too -- and the batch does not have it.
+        batch = ev.batches[0]
+        members = sorted(batch.member_refs())
+        routing = RT.route_all(ev, proj, ev.now)
+        _kind, now_matches = BK.query_targets(batch.query, ev, proj, routing)
+        later = sorted(set(now_matches) - set(members))
+        return {"batch_members": members,
+                "later_matching_target": later[0] if len(later) == 1 else later,
+                "later_target_in_batch": any(l in members for l in later)}
+    if fid.startswith("F05"):
+        # Protection is a policy effect on evidence, group or no group: the
+        # file that appeared after the policy was made is covered, and no
+        # decision exists for either file.
+        prot = R.protected_locations(ev)
+        return {"protected_locations": sorted(prot),
+                "explicit_human_decisions_for_policy_effect": sum(1 for d in ev.decisions if d.origin_kind == "explicit_human"),
+                "policy_version": sorted({pv for pvs in prot.values() for pv in pvs})[0] if prot else None}
     if fid.startswith("F09"):
         hist = []
         for did, value_json, withdrawn in history:
@@ -230,7 +272,9 @@ def _shuffled(ev: Evidence, seed: int) -> Evidence:
     groups = dict(rnd.sample(list(ev.groups.items()), len(ev.groups)))
     # Events keep their order: the record is a sequence (a restore ends what
     # came before it), and the loader delivers it oldest first.
-    return Evidence(locations, groups, decisions, policies, list(ev.events), dict(ev.roots), ev.now)
+    out = Evidence(locations, groups, decisions, policies, list(ev.events), dict(ev.roots), ev.now)
+    out.batches = list(getattr(ev, "batches", []))
+    return out
 
 
 def _canon(proj: R.ProjectProjection, ev=None):
@@ -238,6 +282,9 @@ def _canon(proj: R.ProjectProjection, ev=None):
     if ev is not None:
         rt = RT.route_all(ev, proj, ev.now)
         routes = [r.as_dict() for r in rt.groups.values()] + [r.as_dict() for r in rt.locations.values()] + [rt.counts]
+        routes.append(sorted(R.protected_locations(ev).items()))
+        for b in getattr(ev, "batches", []):
+            routes.append(BK.query_targets(b.query, ev, proj, rt))
     return json.dumps([p.as_dict() for p in proj.groups] + [list(proj.orphaned_decisions), proj.totals] + routes,
                       sort_keys=True, default=str)
 

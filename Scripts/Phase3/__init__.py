@@ -1,6 +1,7 @@
 r"""The File Organizer Phase 3 -- Decide / Plan.
 
 Builds 1-2 (B8): Core Persistence and Exact-Duplicate Decisions.
+Build 3 (B9): Review Routing. Build 4 (B10): Bulk / Policy.
 
 Phase 3 converts evidence into attributable human intent, and that intent
 into an inspectable projection of what SHOULD happen -- without touching a
@@ -15,8 +16,13 @@ Phase 4, which does not exist yet.
     resolve.py    the deterministic keeper / canonical / protection
                   resolution -- a pure function, unit-tested against the
                   research fixture lab
-    store.py      records operations, decisions, withdrawals and policy
-                  versions; append-only
+    routing.py    where a group's attention goes (the routes), the
+                  revalidation and blocker detector -- pure, plus provenance
+    bulk.py       bulk decisions: the frozen scope, the categorized preview
+                  (every target through the same resolver), the policy
+                  impact preview -- pure functions over the model
+    store.py      records operations, decisions, withdrawals, policy
+                  versions, review events and bulk batches; append-only
     review.py     the Exact-Duplicate Review pages inside the one window
 
 The product version is Phase2.VERSION (== fo_db.APP_VERSION); Phase 3 ships
@@ -27,3 +33,5 @@ from Phase2 import VERSION  # noqa: F401  -- one product, one version
 #: The decision-record contract written to app_meta by migration 009.
 DECISION_SCHEMA = "fileorganizer.p3.decisions/1"
 EVIDENCE_BINDING_SCHEMA = "fileorganizer.p3.evidence-binding/1"
+BULK_SCHEMA = "fileorganizer.p3.bulk/1"                  # migration 011
+BULK_QUERY_SCHEMA = "fileorganizer.p3.bulk-query/1"      # the frozen query a snapshot batch records

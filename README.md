@@ -8,9 +8,30 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8 changes a file either.
+a later phase; nothing in B8, B9 or B10 changes a file either.
 
 ---
+
+## B10 — Phase 3, Build 4: bulk decisions and the policy workflow
+
+B10 lets one decision reach many groups at once, safely. The Decide page's
+group list has a **check column** (click it, or press Space); once
+something is checked, **Bulk action…** appears. It offers Keep all, Accept
+the recommendation (the policy-suggested canonical, with the other undecided
+copies marked redundant), Keep copies under a folder, Mark copies under a
+folder redundant, and Defer — over **N checked groups**, or over the **N
+current matches** of the Show filter (frozen at commit: a later match is
+not included), or, for the folder actions, as **a reusable policy instead**,
+which is the opposite thing and is named as such. Nothing is recorded until
+you **Preview**: the preview says how many would receive a decision, how
+many already satisfy it, how many carry an explicit decision it preserves,
+how many would conflict and how many the evidence blocks — with examples —
+and the commit records exactly that. **Batches…** lists every batch with
+what became of each member and undoes a whole batch in one click. **Add
+policy** now previews what the policy covers and changes today and says
+plainly that future matches will be evaluated against it, before it can be
+created. `CHANGELOG-B10.md` has the detail; `PHASE3_BUILD4_HANDBACK.md`
+reports against the Build 4 handoff.
 
 ## B9 — Phase 3, Build 3: review routing
 
@@ -133,15 +154,17 @@ a release gate.
 - Exports CSV inventories and readable reports
 - Records your decisions about duplicate copies — keepers, the canonical,
   redundant candidates, protection — as an append-only, attributable record
-  (Phase 3, from B8)
+  (Phase 3, from B8); routes each group's attention (from B9); applies one
+  decision to many groups after a preview, as a batch you can undo whole
+  (from B10)
 
 ## What it deliberately does not do
 
 Deleting duplicates, moving files, renaming, reorganising folders, tagging, and
 AI-assisted sorting are **later phases**. Phase 1 exists so that when those
 arrive, they act on facts that were established carefully; Phase 3 exists so
-that they act on decisions a person made and can inspect first. B8 records
-decisions and never acts on them.
+that they act on decisions a person made and can inspect first. Phase 3
+records decisions and never acts on them.
 
 ---
 
@@ -348,8 +371,40 @@ and when a snooze elapsed.
 protected copy cannot be marked redundant until the protection is overridden
 for that copy), or prefer / avoid a root or folder. Preferences only shape
 the recommendation shown as "(policy)"; they never decide for you. Retiring
-a policy is a new version; its history stays. **Export journal…** writes the
-whole decision record as text into the project's `Exports\` folder.
+a policy is a new version; its history stays. Adding a policy previews
+first: what it covers now (every file under the root or folder, and how
+many of those are in duplicate groups), what changes today, and the
+statement that **future matching evidence will be evaluated against it** —
+a file that appears there later is covered too, with no decision recorded
+for it. **Export journal…** writes the whole decision record as text into
+the project's `Exports\` folder.
+
+**Bulk (from B10).** Check groups in the list (click the first column, or
+press Space on the focused row; **Check all shown** / **Clear**); the
+letter keys still act on the selected row only. **Bulk action…** appears
+once something is checked:
+
+| Action | What it records, per group in scope |
+|---|---|
+| **Keep all copies** | Keep all — unless the group carries a redundant mark, which is preserved |
+| **Accept the recommendation** | the policy-suggested copy as canonical, and (unless switched off) the other undecided copies as redundant candidates; protected and kept copies stay |
+| **Keep copies under a folder** | Keep on every copy under the folder |
+| **Mark copies under a folder redundant** | a redundant mark on every copy under the folder — never on a protected copy, a kept copy, the canonical, or the last copy of a group |
+| **Defer** | a deferral with one return trigger, on every group |
+
+The scope is **N checked groups** (the default), **N current matches** of
+the Show filter — frozen when you commit; a group that comes to match the
+filter later is not included — or, for the folder actions, **a reusable
+policy instead** (Protect folder / Avoid folder), which affects future
+matches too. **Preview** before anything is recorded: how many would
+receive a decision, already satisfy it, carry an explicit decision the
+batch preserves (a batch never overwrites one), would conflict (not
+recorded; those need you), or are blocked by the evidence — with examples.
+The commit records exactly what the preview showed, as one batch; the
+window says what was recorded and what was left as exceptions.
+**Batches…** (also on the summary) lists every batch, its members and what
+became of each, and **Undo batch** withdraws everything the batch recorded
+that still stands — a decision you have since changed by hand is left alone.
 
 A group's redundant candidates count towards plan-eligible reclaim only when
 the group has no conflict — a redundant mark on a protected copy, a copy that
@@ -455,7 +510,7 @@ continues. Some system and cloud-only files simply cannot be read.
 | Projects | `Projects\` beside the app |
 | Database | `Projects\<name>\Database\FileOrganizer.db` |
 | Run output | `Projects\<name>\Runs\<timestamp>\` |
-| Decision record | tables `p3_*` in the project database (decisions, policies, review events); `Exports\DecisionJournal.txt` when exported |
+| Decision record | tables `p3_*` in the project database (decisions, policies, review events, bulk batches); `Exports\DecisionJournal.txt` when exported |
 | Application log | `Logs\app.log` |
 
 To back up a project, copy its whole folder. To move the app, move the folder —

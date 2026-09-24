@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F05_Dynamic_Policy_Future_Match",
+  "title": "Dynamic Policy Applies to Future Match",
+  "purpose": "Future-facing policy applies to current/future matching locations without fake explicit-human decisions."
+}

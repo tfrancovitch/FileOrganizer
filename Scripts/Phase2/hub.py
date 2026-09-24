@@ -200,6 +200,12 @@ def show_hub(app):
             ptext = ("; ".join(f"{p['label']}: {p['scope_text']}" for p in policies[:4])
                      + (f"; and {len(policies) - 4} more" if len(policies) > 4 else "")) if policies else "none -- protect a backup root before marking anything redundant"
             line("Policies", ptext, action=("Policies...", lambda: review_view.PoliciesDialog(app, review_view.store_for(app), app.show_hub)), view=True)
+            # Bulk batches (B10): previewed decisions over many groups, each undoable as a whole.
+            batches = review_view.store_for(app).batches()
+            in_force = sum(1 for b in batches if b["in_force"])
+            btext = (f"{len(batches):,} recorded, {in_force:,} still in force" if batches
+                     else "none -- check groups on the Decide page and use Bulk action...")
+            line("Bulk batches", btext, action=("Batches...", lambda: review_view.BatchesDialog(app, review_view.store_for(app), app.show_hub)), view=True)
 
     # -- files by type -----------------------------------------------------
     pending = [b for b in summary["buckets"] if b["files"] and b["action"]]

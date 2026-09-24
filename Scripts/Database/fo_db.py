@@ -97,6 +97,14 @@ open; the earlier p3 tables are unchanged. Phase3/routing.py derives every
 route from evidence, decisions and these events; Phase3/store.py is still
 the only writer.
 
+CHANGED IN B10 (PHASE 3, BUILD 4)
+---------------------------------
+APP_SCHEMA_VERSION is 11, so migration 011 (p3_bulk_batch, p3_bulk_member,
+an origin index on p3_decision) is applied on open; the earlier p3 tables
+are unchanged. A batch's membership is frozen at commit and never
+re-evaluated; Phase3/bulk.py previews and Phase3/store.py commits, still
+the only writer.
+
 CLI
 ---
     python fo_db.py init-project     --project-dir <dir> --name <n> [--source-root <path>]...
@@ -128,8 +136,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.7.0"
-APP_VERSION = "B9"
+MODULE_VERSION = "1.8.0"
+APP_VERSION = "B10"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -153,7 +161,7 @@ APP_VERSION = "B9"
 #: 10 -> B9 (Phase 3, Build 3): p3_review_event -- routing provenance
 #:      (deferrals with return triggers, skips, what the detector found);
 #:      see migrations/010_phase3_review_events.sql.
-APP_SCHEMA_VERSION = 10
+APP_SCHEMA_VERSION = 11
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"

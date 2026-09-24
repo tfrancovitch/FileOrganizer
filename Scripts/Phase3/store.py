@@ -24,6 +24,16 @@ return trigger, a skip, a manual restore -- each a person's operation of
 kind 'review' -- and the detector's rows (`system_events`): what it found
 stale or blocked and what it restored, under an operation whose actor kind
 is 'system_evidence'. A system operation never records a decision.
+
+Build 4 adds the bulk batch (`commit_bulk`): one operation of kind 'bulk'
+that records the batch row, its frozen membership with each member's
+disposition, and -- for the members the preview classed as 'decided' --
+the decisions themselves, each with origin_kind 'bulk_explicit_human' and
+origin_ref = the batch id, bound to the evidence the preview captured. The
+store commits exactly what the preview showed; it never re-evaluates.
+`undo_batch` withdraws the batch's still-active decisions (and restores
+its deferrals) in one operation of kind 'bulk_undo'; the batch and member
+rows stay as recorded.
 """
 from __future__ import annotations
 
@@ -35,10 +45,13 @@ from Phase2.core import utc_now
 
 from . import VERSION
 from . import evidence as ev_mod
+from . import routing as RT
 from .model import active_decisions, PolicyVersion
-from .registry import (decision_kind, policy_kind, event_kind, return_kind, LOCATION, GROUP, CONFIRM_EXPLICIT_OVERRIDE,
+from .registry import (decision_kind, policy_kind, event_kind, return_kind, origin_kind, bulk_action, disposition,
+                       LOCATION, GROUP, CONFIRM_EXPLICIT_OVERRIDE,
                        EVENT_DEFERRED, EVENT_SKIPPED, EVENT_RESTORED, RETURN_TIME, RETURN_EVIDENCE_CHANGE,
-                       RETURN_MANUAL, DEFER_DISPOSITIONS)
+                       RETURN_MANUAL, DEFER_DISPOSITIONS, ORIGIN_EXPLICIT_HUMAN, ORIGIN_BULK_EXPLICIT_HUMAN,
+                       DISP_DECIDED, MODE_PRESERVE)
 from .resolve import _policy_covers
 
 SYSTEM_ACTOR_KIND = "system_evidence"
@@ -103,11 +116,15 @@ class DecisionStore:
         or not, so the chain stays complete (F09: the re-apply supersedes the
         withdrawn decision). Superseding a withdrawn row changes nothing
         about what is active; it records what replaced what."""
-        rows = ev_mod.load_decisions(self.conn)
-        superseded = {d.supersedes for d in rows if d.supersedes}
-        heads = [int(d.decision_id) for d in rows
-                 if d.target_kind == target_kind and d.target_ref == str(target_ref)
-                 and d.decision_id not in superseded and decision_kind(d.kind).domain_key(d.value) == domain]
+        # The target's own rows only (indexed): a batch records thousands of
+        # decisions in one operation, and each one asks this question.
+        rows = self.conn.execute(
+            "SELECT d.decision_id, d.decision_kind, d.value_json FROM p3_decision d "
+            " WHERE d.target_kind = ? AND d.target_ref = ? "
+            "   AND NOT EXISTS (SELECT 1 FROM p3_decision x WHERE x.supersedes_decision_id = d.decision_id)",
+            (target_kind, str(target_ref))).fetchall()
+        heads = [int(r["decision_id"]) for r in rows
+                 if decision_kind(r["decision_kind"]).domain_key(json.loads(r["value_json"])) == domain]
         return max(heads, default=None)
 
     def history_for(self, target_kind, target_ref):
@@ -115,6 +132,7 @@ class DecisionStore:
         operation that recorded it and the one that withdrew it (if any)."""
         rows = self.conn.execute(
             "SELECT d.decision_id, d.decision_kind, d.value_json, d.supersedes_decision_id, d.rationale, "
+            "       d.origin_kind, d.origin_ref, "
             "       o.occurred_utc, o.actor_id, o.kind AS operation_kind, o.operation_id, "
             "       w.withdrawal_id, w.reason AS withdrawal_reason, wo.occurred_utc AS withdrawn_utc "
             "  FROM p3_decision d JOIN p3_operation o ON o.operation_id = d.operation_id "
@@ -144,9 +162,9 @@ class DecisionStore:
         row = self.conn.execute(
             "SELECT (SELECT COUNT(*) FROM p3_operation), (SELECT COUNT(*) FROM p3_decision), "
             "       (SELECT COUNT(*) FROM p3_decision_withdrawal), (SELECT COUNT(*) FROM p3_policy_version), "
-            "       (SELECT COUNT(*) FROM p3_review_event)").fetchone()
+            "       (SELECT COUNT(*) FROM p3_review_event), (SELECT COUNT(*) FROM p3_bulk_batch)").fetchone()
         return {"operations": row[0], "decisions": row[1], "withdrawals": row[2], "policy_versions": row[3],
-                "review_events": row[4]}
+                "review_events": row[4], "batches": row[5]}
 
     # -- review events (Build 3) ------------------------------------------------
 
@@ -193,25 +211,12 @@ class DecisionStore:
         if disposition not in DEFER_DISPOSITIONS:
             raise ValueError(f"unknown deferral disposition: {disposition!r}")
         rk = DEFER_DISPOSITIONS[disposition][0]
-        return_on = None
-        condition = DEFER_DISPOSITIONS[disposition][1]
-        detail = {"disposition": disposition}
-        if rk == RETURN_TIME:
-            when = str(until or "").strip()
-            if len(when) == 10:
-                when += "T00:00:00Z"
-            if len(when) < 19 or when[4] != "-" or when[7] != "-" or when[10] != "T":
-                raise ValueError("snoozing until a date needs the date as YYYY-MM-DD")
-            return_on = when
-            condition = f"until {when[:10]}"
-        elif rk == RETURN_EVIDENCE_CHANGE:
-            detail.update(ev_mod.binding_for(self.conn, target_kind, target_ref))
         if target_kind == GROUP and not ev_mod.group_members(self.conn, target_ref):
             raise ValueError("this content is not a current exact-duplicate group")
 
         def work():
             op = self._operation("review", command_id, note)
-            eid = self._event_row(op, target_kind, target_ref, EVENT_DEFERRED, rk, condition, return_on, detail)
+            eid = self._deferral_row(op, target_kind, target_ref, disposition, until)
             return {"review_event_id": eid, "operation_id": op, "return_kind": rk}
         return self._run(work)
 
@@ -269,9 +274,23 @@ class DecisionStore:
         to withdraw in the same operation -- Keep All withdrawing the
         redundant marks on the group's members is the case.
         """
-        spec = decision_kind(kind)
         if kind == "override_protection":
             raise ValueError("override_protection is recorded through record_override, with its own confirmation")
+        kind, target_kind, target_ref, value, evidence_binding = self._validate_decision(kind, target_kind, target_ref, value, evidence_binding)
+        withdraw_ids = [int(w) for w in withdraw]
+
+        def work():
+            op = self._operation("decision", command_id, rationale)
+            withdrawn = [self._withdraw_row(w, op, "withdrawn by a later decision in the same operation")
+                         for w in withdraw_ids]
+            decision_id, supersedes = self._decision_row(op, kind, target_kind, target_ref, value, evidence_binding, rationale)
+            return {"decision_id": decision_id, "operation_id": op,
+                    "supersedes_decision_id": supersedes, "withdrawn": withdrawn}
+        return self._run(work)
+
+    def _validate_decision(self, kind, target_kind, target_ref, value, evidence_binding):
+        """The registry's gate, and the evidence a decision must rest on."""
+        spec = decision_kind(kind)
         if target_kind not in spec.target_kinds:
             raise ValueError(f"{kind} cannot target a {target_kind}")
         value = spec.validate_value(value)
@@ -284,27 +303,31 @@ class DecisionStore:
             member_ids = {str(m["file_path_id"]) for m in evidence_binding.get("members", [])}
             if value not in member_ids:
                 raise ValueError("the canonical must be a current member of the group")
-        domain = spec.domain_key(value)
-        supersedes = self._chain_head(target_kind, target_ref, domain)
-        withdraw_ids = [int(w) for w in withdraw]
+        return kind, target_kind, target_ref, value, evidence_binding
 
-        def work():
-            op = self._operation("decision", command_id, rationale)
-            withdrawn = [self._withdraw_row(w, op, "withdrawn by a later decision in the same operation")
-                         for w in withdraw_ids]
-            cur = self.conn.execute(
-                "INSERT INTO p3_decision(project_id, operation_id, target_kind, target_ref, decision_kind, value_json, "
-                "origin_kind, origin_ref, evidence_binding_json, supersedes_decision_id, rationale) "
-                "VALUES(1,?,?,?,?,?,?,?,?,?,?)",
-                (op, target_kind, target_ref, kind, json.dumps(value, sort_keys=True), "explicit_human", None,
-                 json.dumps(evidence_binding or {}, sort_keys=True), supersedes, rationale))
-            return {"decision_id": int(cur.lastrowid), "operation_id": op,
-                    "supersedes_decision_id": supersedes, "withdrawn": withdrawn}
-        return self._run(work)
+    def _decision_row(self, operation_id, kind, target_kind, target_ref, value, evidence_binding, rationale,
+                      origin=ORIGIN_EXPLICIT_HUMAN, origin_ref=None):
+        """One decision row inside an open operation: supersedes the chain
+        head in its conflict domain. Returns (decision_id, supersedes)."""
+        origin_kind(origin)
+        domain = decision_kind(kind).domain_key(value)
+        supersedes = self._chain_head(target_kind, target_ref, domain)
+        cur = self.conn.execute(
+            "INSERT INTO p3_decision(project_id, operation_id, target_kind, target_ref, decision_kind, value_json, "
+            "origin_kind, origin_ref, evidence_binding_json, supersedes_decision_id, rationale) "
+            "VALUES(1,?,?,?,?,?,?,?,?,?,?)",
+            (operation_id, target_kind, str(target_ref), kind, json.dumps(value, sort_keys=True), origin,
+             str(origin_ref) if origin_ref is not None else None,
+             json.dumps(evidence_binding or {}, sort_keys=True), supersedes, rationale))
+        return int(cur.lastrowid), supersedes
 
     def _withdraw_row(self, decision_id, operation_id, reason):
-        active_ids = {int(d.decision_id) for d in self.active()}
-        if int(decision_id) not in active_ids:
+        active = self.conn.execute(
+            "SELECT 1 FROM p3_decision d WHERE d.decision_id = ? "
+            "   AND NOT EXISTS (SELECT 1 FROM p3_decision_withdrawal w WHERE w.decision_id = d.decision_id) "
+            "   AND NOT EXISTS (SELECT 1 FROM p3_decision x WHERE x.supersedes_decision_id = d.decision_id)",
+            (int(decision_id),)).fetchone()
+        if active is None:
             raise ValueError(f"decision {decision_id} is not active (already withdrawn or superseded)")
         self.conn.execute(
             "INSERT INTO p3_decision_withdrawal(decision_id, operation_id, reason) VALUES(?,?,?)",
@@ -355,6 +378,181 @@ class DecisionStore:
                 (op, LOCATION, str(file_path_id), "override_protection", json.dumps(value, sort_keys=True),
                  "explicit_human", None, json.dumps(binding, sort_keys=True), supersedes, rationale))
             return {"decision_id": int(cur.lastrowid), "operation_id": op, "supersedes_decision_id": supersedes}
+        return self._run(work)
+
+    # -- bulk batches (Build 4) ---------------------------------------------------
+
+    def commit_bulk(self, preview, note=None, command_id=None):
+        """Record a previewed batch: exactly what the preview showed, in one
+        operation of kind 'bulk' -- the batch row (scope, frozen query,
+        the counts as previewed), one member row per target with its
+        disposition, and a decision (origin bulk_explicit_human, origin_ref
+        = the batch id) for every 'decided' target, bound to the evidence
+        the preview captured; a deferral batch records deferred events
+        instead. Never re-evaluates. Returns {batch_id, operation_id,
+        decisions, events, members}."""
+        spec = bulk_action(preview.action)
+        if preview.mode != MODE_PRESERVE:
+            raise ValueError("only the preserve mode is recorded in this build")
+        if preview.record_mark is not None:
+            now_mark = int(self.conn.execute("SELECT MAX(operation_id) FROM p3_operation").fetchone()[0] or 0)
+            if now_mark != preview.record_mark:
+                raise ValueError("the decision record changed since this preview was made (operations "
+                                 f"{preview.record_mark} -> {now_mark}); preview again")
+        for cand in preview.candidates:
+            disposition(cand.disposition)
+        decided = [c for c in preview.candidates if c.disposition == DISP_DECIDED]
+        plan = []
+        for cand in decided:
+            for kind, tk, ref, value in cand.to_record:
+                binding = cand.bindings.get((kind, tk, ref))
+                plan.append((cand, self._validate_decision(kind, tk, ref, value, binding)))
+        events = []
+        for cand in decided:
+            for disp, until in cand.events_to_record:
+                events.append((cand, disp, until))
+        if not preview.candidates:
+            raise ValueError("nothing in scope")
+
+        def work():
+            op = self._operation("bulk", command_id, note)
+            cur = self.conn.execute(
+                "INSERT INTO p3_bulk_batch(project_id, operation_id, scope_kind, query_json, frozen, committed, action, "
+                "parameters_json, mode, preview_json, note) VALUES(1,?,?,?,1,1,?,?,?,?,?)",
+                (op, preview.scope_kind, json.dumps(preview.query, sort_keys=True) if preview.query is not None else None,
+                 preview.action, json.dumps(preview.parameters, sort_keys=True, default=str), preview.mode,
+                 json.dumps(preview.as_dict(), sort_keys=True, default=str), note))
+            batch_id = int(cur.lastrowid)
+            for cand in preview.candidates:
+                self.conn.execute(
+                    "INSERT INTO p3_bulk_member(batch_id, target_kind, target_ref, disposition, detail) VALUES(?,?,?,?,?)",
+                    (batch_id, cand.target_kind, str(cand.target_ref), cand.disposition, cand.detail or None))
+            ids = []
+            for _cand, (kind, tk, ref, value, binding) in plan:
+                did, _sup = self._decision_row(op, kind, tk, ref, value, binding, note, ORIGIN_BULK_EXPLICIT_HUMAN, batch_id)
+                ids.append(did)
+            eids = []
+            for cand, disp, until in events:
+                eids.append(self._deferral_row(op, cand.target_kind, cand.target_ref, disp, until))
+            return {"batch_id": batch_id, "operation_id": op, "decisions": len(ids), "decision_ids": ids,
+                    "events": len(eids), "members": len(preview.candidates), "action": spec.key}
+        return self._run(work)
+
+    def _deferral_row(self, operation_id, target_kind, target_ref, disposition_="defer_indefinitely", until=None):
+        """One deferred event inside an open operation (the store's defer(),
+        factored so a batch can record many under one operation)."""
+        if disposition_ not in DEFER_DISPOSITIONS:
+            raise ValueError(f"unknown deferral disposition: {disposition_!r}")
+        rk = DEFER_DISPOSITIONS[disposition_][0]
+        return_on = None
+        condition = DEFER_DISPOSITIONS[disposition_][1]
+        detail = {"disposition": disposition_}
+        if rk == RETURN_TIME:
+            when = str(until or "").strip()
+            if len(when) == 10:
+                when += "T00:00:00Z"
+            if len(when) < 19 or when[4] != "-" or when[7] != "-" or when[10] != "T":
+                raise ValueError("snoozing until a date needs the date as YYYY-MM-DD")
+            return_on = when
+            condition = f"until {when[:10]}"
+        elif rk == RETURN_EVIDENCE_CHANGE:
+            detail.update(ev_mod.binding_for(self.conn, target_kind, target_ref))
+        return self._event_row(operation_id, target_kind, target_ref, EVENT_DEFERRED, rk, condition, return_on, detail)
+
+    def batch_decisions(self, batch_id):
+        """Every decision the batch recorded, with whether each still speaks."""
+        rows = self.conn.execute(
+            "SELECT d.decision_id, d.decision_kind, d.target_kind, d.target_ref, d.value_json, w.withdrawal_id, "
+            "       (SELECT COUNT(*) FROM p3_decision x WHERE x.supersedes_decision_id = d.decision_id) AS superseded_by "
+            "  FROM p3_decision d LEFT JOIN p3_decision_withdrawal w ON w.decision_id = d.decision_id "
+            " WHERE d.origin_kind = ? AND d.origin_ref = ? ORDER BY d.decision_id",
+            (ORIGIN_BULK_EXPLICIT_HUMAN, str(int(batch_id)))).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["value"] = json.loads(d.pop("value_json"))
+            d["withdrawn"] = r["withdrawal_id"] is not None
+            d["superseded"] = bool(r["superseded_by"])
+            d["active"] = not d["withdrawn"] and not d["superseded"]
+            out.append(d)
+        return out
+
+    def batch_events(self, batch_id, opened=None):
+        """The deferrals a deferral batch recorded, with whether each is still open."""
+        row = self.conn.execute("SELECT operation_id FROM p3_bulk_batch WHERE batch_id=?", (int(batch_id),)).fetchone()
+        if row is None:
+            return []
+        if opened is None:
+            opened = RT.open_events(ev_mod.load_events(self.conn))
+        out = []
+        for e in self.conn.execute("SELECT * FROM p3_review_event WHERE operation_id=? AND event_kind=? ORDER BY review_event_id",
+                                   (row["operation_id"], EVENT_DEFERRED)):
+            slot = opened.get((e["target_kind"], str(e["target_ref"])), {})
+            is_open = any(x.review_event_id == str(e["review_event_id"]) for x in slot.get(EVENT_DEFERRED, []))
+            d = dict(e)
+            d["open"] = is_open
+            out.append(d)
+        return out
+
+    def batches(self):
+        """Every batch, newest first, with what it recorded and what still stands."""
+        rows = self.conn.execute(
+            "SELECT b.*, o.occurred_utc, o.actor_id, "
+            "       (SELECT COUNT(*) FROM p3_bulk_member m WHERE m.batch_id = b.batch_id) AS members "
+            "  FROM p3_bulk_batch b JOIN p3_operation o ON o.operation_id = b.operation_id "
+            " WHERE b.project_id = 1 ORDER BY b.batch_id DESC").fetchall()
+        out = []
+        opened = RT.open_events(ev_mod.load_events(self.conn)) if any(bulk_action(r["action"]).records_events for r in rows) else {}
+        for r in rows:
+            d = dict(r)
+            d["query"] = json.loads(d.pop("query_json")) if d.get("query_json") else None
+            d["parameters"] = json.loads(d.pop("parameters_json") or "{}")
+            d["preview"] = json.loads(d.pop("preview_json") or "{}")
+            decisions = self.batch_decisions(d["batch_id"])
+            d["decisions"] = len(decisions)
+            d["active_decisions"] = sum(1 for x in decisions if x["active"])
+            d["withdrawn_decisions"] = sum(1 for x in decisions if x["withdrawn"])
+            events = self.batch_events(d["batch_id"], opened) if bulk_action(d["action"]).records_events else []
+            d["events"] = len(events)
+            d["open_events"] = sum(1 for x in events if x["open"])
+            d["in_force"] = d["active_decisions"] + d["open_events"]
+            d["label"] = bulk_action(d["action"]).label
+            out.append(d)
+        return out
+
+    def batch(self, batch_id):
+        for b in self.batches():
+            if int(b["batch_id"]) == int(batch_id):
+                return b
+        return None
+
+    def batch_members(self, batch_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM p3_bulk_member WHERE batch_id = ? ORDER BY member_id", (int(batch_id),))]
+
+    def undo_batch(self, batch_id, reason=None, command_id=None):
+        """Reverse a batch: withdraw every decision it recorded that still
+        speaks, and restore every deferral it recorded that is still open --
+        one operation of kind 'bulk_undo'. A decision a person has since
+        superseded or withdrawn is left alone (their later intent stands).
+        The batch and its member rows stay untouched. Returns the counts."""
+        b = self.batch(batch_id)
+        if b is None:
+            raise ValueError(f"no batch {batch_id}")
+        active = [d["decision_id"] for d in self.batch_decisions(batch_id) if d["active"]]
+        open_events = [e for e in self.batch_events(batch_id) if e["open"]]
+        if not active and not open_events:
+            raise ValueError("nothing from this batch is still in force")
+        why = reason or f"batch #{int(batch_id)} undone"
+
+        def work():
+            op = self._operation("bulk_undo", command_id, why)
+            for did in active:
+                self._withdraw_row(did, op, why)
+            for e in open_events:
+                self._event_row(op, e["target_kind"], e["target_ref"], EVENT_RESTORED, RETURN_MANUAL, why, None, {},
+                                e["review_event_id"])
+            return {"batch_id": int(batch_id), "operation_id": op, "withdrawn": len(active), "restored": len(open_events)}
         return self._run(work)
 
     # -- policies --------------------------------------------------------------
@@ -456,7 +654,8 @@ def export_decision_journal(conn, path):
             lines.append(f"    note: {o['note']}")
         for d in conn.execute("SELECT * FROM p3_decision WHERE operation_id=? ORDER BY decision_id", (o["operation_id"],)):
             sup = f"  supersedes #{d['supersedes_decision_id']}" if d["supersedes_decision_id"] else ""
-            lines.append(f"    decision #{d['decision_id']}: {d['decision_kind']} on {d['target_kind']} {d['target_ref']} = {d['value_json']}{sup}")
+            origin = f"  (batch #{d['origin_ref']})" if d["origin_kind"] == ORIGIN_BULK_EXPLICIT_HUMAN else ""
+            lines.append(f"    decision #{d['decision_id']}: {d['decision_kind']} on {d['target_kind']} {d['target_ref']} = {d['value_json']}{sup}{origin}")
         for w in conn.execute("SELECT * FROM p3_decision_withdrawal WHERE operation_id=? ORDER BY withdrawal_id", (o["operation_id"],)):
             lines.append(f"    withdrew decision #{w['decision_id']}" + (f": {w['reason']}" if w["reason"] else ""))
         for v in conn.execute(
@@ -467,6 +666,12 @@ def export_decision_journal(conn, path):
             ref = f"  ends #{e['refers_to_review_event_id']}" if e["refers_to_review_event_id"] else ""
             trigger = f" [{e['return_kind']}: {e['return_condition']}]" if e["return_kind"] or e["return_condition"] else ""
             lines.append(f"    review event #{e['review_event_id']}: {e['event_kind']} on {e['target_kind']} {e['target_ref']}{trigger}{ref}")
+        for b in conn.execute("SELECT * FROM p3_bulk_batch WHERE operation_id=? ORDER BY batch_id", (o["operation_id"],)):
+            members = conn.execute("SELECT disposition, COUNT(*) FROM p3_bulk_member WHERE batch_id=? GROUP BY disposition ORDER BY disposition",
+                                   (b["batch_id"],)).fetchall()
+            summary = ", ".join(f"{n} {disp}" for disp, n in members)
+            lines.append(f"    bulk batch #{b['batch_id']}: {b['action']} over {b['scope_kind']}"
+                         + (f" {b['query_json']}" if b["query_json"] else "") + f" -- {summary}; mode {b['mode']}")
         lines.append("")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(lines))

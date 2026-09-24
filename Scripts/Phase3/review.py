@@ -25,6 +25,20 @@ decisions re-records decisions whose evidence moved. The detector runs when
 the page opens, so the record of what it found is current before the page
 draws.
 
+Build 4 (B10) adds the first multi-select the product has had: a check
+column on the group list (click it, or Space on the focused row), a running
+"N checked" count, and -- only once something is checked -- Bulk action...,
+which applies one decision to many groups after a categorized preview
+(`bulk.py`): what would be recorded, what already holds, what an explicit
+decision preserves, what would conflict, what the evidence blocks. The
+scope is the checked groups, or every current match of the Show filter,
+frozen at commit -- or, for a folder action, a reusable policy instead,
+which is the opposite thing and is named as such. Batches... lists every
+batch with Undo. The Add policy dialog now previews what a policy covers
+and changes today, and says that future matches will be evaluated against
+it, before it can be created. The letter keys act on the selected row only,
+checked or not; a check never changes what a keystroke does.
+
 Recording a decision is instant, so there is no estimate and no progress
 screen: that pattern belongs to the collection runs.
 
@@ -37,10 +51,12 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
+from . import bulk as BK
 from . import evidence as E
 from . import resolve as R
 from . import routing as RT
-from .registry import LOCATION, GROUP, DECISION_KINDS, POLICY_KINDS, SOURCE_ROOT, DEFER_DISPOSITIONS
+from .registry import (LOCATION, GROUP, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS,
+                       SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED)
 from .store import DecisionStore, new_command_id, export_decision_journal
 
 STATUS_WORDS = {R.PROTECTED: "Protected", R.KEEPER: "Keeper", R.REDUNDANT: "Redundant candidate", R.UNDECIDED: "Undecided"}
@@ -48,14 +64,13 @@ REVIEW_WORDS = {R.UNREVIEWED: "Unreviewed", R.IN_PROGRESS: "In progress", R.DEFE
                 R.RESOLVED: "Resolved", R.CONFLICT: "Conflict"}
 #: The Show box: the routes (synthesis §2, §6), then the lenses -- filters
 #: over the same groups, not separate workflows. "Queue" is the primary
-#: queue: groups no special condition has routed elsewhere.
-ROUTE_FILTERS = [("Queue", RT.UNRESOLVED), ("Conflicts & Exceptions", RT.CONFLICT), ("Needs Revalidation", RT.NEEDS_REVALIDATION),
-                 ("Blocked by Evidence", RT.BLOCKED), ("Deferred / Snoozed", RT.DEFERRED), ("Ready for Plan", RT.READY_FOR_PLAN),
-                 ("Resolved", RT.RESOLVED)]
-LENSES = ["High Reclaim", "Cross-Root", "Unknown Physical Identity", "Hard-Link Aliases",
-          "Filename Divergence", "Extension Divergence", "Policy Tie"]
-FILTERS = [name for name, _ in ROUTE_FILTERS] + ["All"] + [f"Lens: {l}" for l in LENSES]
-HIGH_RECLAIM_BYTES = 100 * 1024 * 1024
+#: queue: groups no special condition has routed elsewhere. The filter
+#: itself is a pure function in bulk.py (a snapshot batch freezes it).
+ROUTE_FILTERS = BK.ROUTE_FILTERS
+LENSES = BK.LENSES
+FILTERS = BK.FILTERS
+HIGH_RECLAIM_BYTES = BK.HIGH_RECLAIM_BYTES
+CHECKED, UNCHECKED = "\u2611", "\u2610"
 CONDITION_WORDS = {
     R.PROTECTED_VS_REDUNDANT: "protected vs redundant", R.CANONICAL_NO_LONGER_KEEPER: "canonical no longer a keeper",
     R.SAME_PRECEDENCE_POLICY_TIE: "policy tie", R.MINIMUM_FILE_LOCATIONS_KIND: "last copy", R.MINIMUM_PHYSICAL_COPIES_KIND: "last physical copy",
@@ -73,6 +88,7 @@ RULE_WORDS = {
 
 #: The group list's columns: key -> (heading, width, sort key on a GroupProjection)
 GROUP_COLUMNS = {
+    "check": ("\u2713", 30, lambda p: 0),                      # replaced by the checked set at sort time
     "file": ("File", 210, lambda p: _file_name(p.members[0].path).lower() if p.members else ""),
     "copies": ("Copies", 60, lambda p: p.location_count),
     "physical": ("Physical", 65, lambda p: p.physical_copies if p.physical_copies is not None else -1),
@@ -90,13 +106,8 @@ MEMBER_COLUMNS = [("status", "Status", 130), ("file", "File", 170), ("folder", "
                   ("policy", "Policy", 80)]
 
 
-def _file_name(path):
-    return str(path).replace("/", "\\").rsplit("\\", 1)[-1]
-
-
-def _folder(path):
-    s = str(path).replace("/", "\\")
-    return s.rsplit("\\", 1)[0] if "\\" in s else ""
+_file_name = BK.file_name
+_folder = BK.folder_of
 
 
 def human_bytes(value):
@@ -182,6 +193,7 @@ class ReviewPage:
     def __init__(self, app):
         self.app = app
         self.store = store_for(app)
+        self.ev = None
         self.proj = None
         self.routing = None
         self.filter_var = tk.StringVar(value=FILTERS[0])
@@ -189,6 +201,7 @@ class ReviewPage:
         self.selected_group = None
         self.selected_member = None
         self.rows_by_iid = {}
+        self.checked = set()                    # group ids a person has checked (Build 4)
 
     # -- layout ---------------------------------------------------------------
 
@@ -198,6 +211,7 @@ class ReviewPage:
         self.summary_var = tk.StringVar(value="")
         ttk.Label(tools, textvariable=self.summary_var, font=("Segoe UI", 9, "bold")).pack(side="left")
         ttk.Button(tools, text="Export journal...", command=self.export_journal).pack(side="right")
+        ttk.Button(tools, text="Batches...", command=self.open_batches).pack(side="right", padx=(6, 0))
         ttk.Button(tools, text="Policies...", command=self.open_policies).pack(side="right", padx=6)
         ttk.Label(tools, text="Show:").pack(side="right", padx=(0, 4))
         cb = ttk.Combobox(tools, textvariable=self.filter_var, values=FILTERS, state="readonly", width=26)
@@ -221,7 +235,12 @@ class ReviewPage:
         for key in cols:
             heading, width, _ = GROUP_COLUMNS[key]
             self.table.heading(key, text=heading, command=lambda k=key: self.sort_by(k))
-            self.table.column(key, width=width, minwidth=40, anchor="e" if key in ("copies", "physical", "aliases", "size", "potential", "eligible", "roots") else "w", stretch=False)
+            self.table.column(key, width=width, minwidth=28 if key == "check" else 40, stretch=False,
+                              anchor="center" if key == "check" else "e" if key in ("copies", "physical", "aliases", "size", "potential", "eligible", "roots") else "w")
+        # The check column: click it, or Space on the focused row. A check
+        # never changes what a keystroke does; the bulk path is the dialog.
+        self.table.bind("<Button-1>", self._table_click, add="+")
+        self.table.bind("<KeyPress-space>", lambda e: self.toggle_check())
         self.table.tag_configure("revalidate", foreground="#7a3e00")
         self.table.tag_configure("blocked", foreground="#555")
         sy = ttk.Scrollbar(host, orient="vertical", command=self.table.yview)
@@ -236,6 +255,14 @@ class ReviewPage:
         self.table.tag_configure("deferred", foreground="#7a5700")
         self.count_var = tk.StringVar(value="")
         ttk.Label(host, textvariable=self.count_var, foreground="#444").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        bar = ttk.Frame(host)
+        bar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.checked_var = tk.StringVar(value="Nothing checked")
+        ttk.Label(bar, textvariable=self.checked_var, font=("Segoe UI", 9, "bold")).pack(side="left")
+        ttk.Button(bar, text="Check all shown", command=self.check_all_shown).pack(side="left", padx=(10, 0))
+        ttk.Button(bar, text="Clear", command=self.clear_checks).pack(side="left", padx=(4, 0))
+        # Appears only once something is checked (plan necessity 2).
+        self.bulk_button = ttk.Button(bar, text="Bulk action...", command=self.bulk_action)
 
     def _build_detail(self, host):
         self.detail = host
@@ -289,8 +316,9 @@ class ReviewPage:
         acts2.pack(fill="x", pady=(4, 0))
         self.buttons["confirm"] = ttk.Button(acts2, text="Confirm decisions", command=self.confirm_decisions)
         self.buttons["confirm"].pack(side="left", padx=(0, 6))
-        ttk.Label(acts2, text="Keys: k keep · a keep all · c canonical · r redundant · d defer · s skip (skip records only that you passed by)",
-                  foreground="#666").pack(side="left")
+        ttk.Label(acts2, text="Keys: k keep · a keep all · c canonical · r redundant · d defer · s skip (skip records only that you passed by) · "
+                              "Space checks the group -- keys act on the selected row only",
+                  foreground="#666", wraplength=520, justify="left").pack(side="left")
 
         hist = ttk.Frame(host)
         hist.pack(fill="both", expand=True, pady=(10, 0))
@@ -325,11 +353,13 @@ class ReviewPage:
         """Re-derive everything from the record and redraw."""
         try:
             ev = E.load_evidence(self.app.conn)
+            self.ev = ev
             self.proj = R.resolve_all(ev)
             self.routing = RT.route_all(ev, self.proj, ev.now)
         except Exception as exc:                                    # noqa: BLE001
             messagebox.showerror("Duplicate decisions", str(exc), parent=self.app)
             return
+        self.checked &= {g.group_id for g in self.proj.groups}      # a check on a group that is gone is gone
         t = self.proj.totals
         c = self.routing.counts
         parts = [f"{t['groups']:,} groups", f"{c[RT.UNRESOLVED]:,} in the queue"]
@@ -359,34 +389,16 @@ class ReviewPage:
 
     def _filtered(self):
         f = self.filter_var.get()
-        groups = self.proj.groups
-        routes = dict(ROUTE_FILTERS)
-        if f in routes:
-            route = routes[f]
-            groups = RT.ordered(self.proj, self.routing, route)
-            if route == RT.CONFLICT and self.sort == ("potential", "desc"):
-                return groups                                      # the route's own order: reclaim at stake, then oldest
-        elif f.startswith("Lens: "):
-            lens = f[len("Lens: "):]
-            if lens == "High Reclaim":
-                groups = [g for g in groups if (g.potential_reclaim_bytes or 0) >= HIGH_RECLAIM_BYTES]
-            elif lens == "Cross-Root":
-                groups = [g for g in groups if len({m.root_key for m in g.members}) > 1]
-            elif lens == "Unknown Physical Identity":
-                groups = [g for g in groups if not g.physical_identity_complete]
-            elif lens == "Hard-Link Aliases":
-                groups = [g for g in groups if g.hardlink_aliases]
-            elif lens == "Filename Divergence":
-                groups = [g for g in groups if len({_file_name(m.path).lower() for m in g.members}) > 1]
-            elif lens == "Extension Divergence":
-                groups = [g for g in groups if len({_file_name(m.path).rsplit(".", 1)[-1].lower() if "." in _file_name(m.path) else "" for m in g.members}) > 1]
-            elif lens == "Policy Tie":
-                groups = [g for g in groups if len(g.policy_preferred) > 1 or any(c.kind == R.SAME_PRECEDENCE_POLICY_TIE for c in g.conflicts)]
+        groups = BK.filter_groups(self.proj, self.routing, f)
+        if dict(ROUTE_FILTERS).get(f) == RT.CONFLICT and self.sort == ("potential", "desc"):
+            return groups                                          # the route's own order: reclaim at stake, then oldest
         key, direction = self.sort
         if key == "state":
             sort_key = lambda p: RT.ROUTE_ORDER.index(self._route(p).primary)     # noqa: E731
         elif key == "conditions":
             sort_key = self._badges
+        elif key == "check":
+            sort_key = lambda p: p.group_id in self.checked                       # noqa: E731
         else:
             sort_key = GROUP_COLUMNS[key][2]
         # Identity first, presentation second: ties fall to display order, so
@@ -401,7 +413,8 @@ class ReviewPage:
             canonical = _file_name(v.path) if v else p.effective_canonical
             if p.canonical_origin == "policy":
                 canonical += " (policy)"
-        return [_file_name(p.members[0].path) if p.members else p.group_id,
+        return [CHECKED if p.group_id in self.checked else UNCHECKED,
+                _file_name(p.members[0].path) if p.members else p.group_id,
                 f"{p.location_count:,}",
                 "?" if p.physical_copies is None else f"{p.physical_copies:,}",
                 "?" if p.hardlink_aliases is None else f"{p.hardlink_aliases:,}",
@@ -426,6 +439,7 @@ class ReviewPage:
                    RT.DEFERRED: "deferred", RT.READY_FOR_PLAN: "resolved", RT.RESOLVED: "resolved"}.get(primary, "")
             iid = self.table.insert("", "end", iid=p.group_id, values=self._row_values(p), tags=(tag,))
             self.rows_by_iid[iid] = p
+        self._update_checked()
         f = self.filter_var.get()
         if not groups and f == "Queue":
             # A dynamic queue's empty state is not a milestone: new evidence
@@ -462,6 +476,71 @@ class ReviewPage:
         sel = self.table.selection()
         if sel:
             self.show_group(sel[0])
+
+    # -- the checked set (Build 4) ----------------------------------------------
+
+    def _table_click(self, event):
+        if self.table.identify_region(event.x, event.y) == "cell" and self.table.identify_column(event.x) == "#1":
+            row = self.table.identify_row(event.y)
+            if row:
+                self._toggle(row)
+
+    def toggle_check(self):
+        row = self.table.focus() or (self.table.selection()[0] if self.table.selection() else None)
+        if row:
+            self._toggle(row)
+
+    def _toggle(self, group_id):
+        if group_id in self.checked:
+            self.checked.discard(group_id)
+        else:
+            self.checked.add(group_id)
+        if self.table.exists(group_id):
+            self.table.set(group_id, "check", CHECKED if group_id in self.checked else UNCHECKED)
+        self._update_checked()
+
+    def check_all_shown(self):
+        self.checked |= set(self.table.get_children())
+        for iid in self.table.get_children():
+            self.table.set(iid, "check", CHECKED)
+        self._update_checked()
+
+    def clear_checks(self):
+        self.checked.clear()
+        for iid in self.table.get_children():
+            self.table.set(iid, "check", UNCHECKED)
+        self._update_checked()
+
+    def _update_checked(self):
+        n = len(self.checked)
+        shown = sum(1 for iid in self.table.get_children() if iid in self.checked)
+        if not n:
+            self.checked_var.set("Nothing checked")
+            self.bulk_button.pack_forget()
+        else:
+            self.checked_var.set(f"{n:,} checked" + (f" ({shown:,} shown)" if shown != n else ""))
+            if not self.bulk_button.winfo_manager():
+                self.bulk_button.pack(side="left", padx=(10, 0))
+
+    def shown_group_ids(self):
+        return list(self.table.get_children())
+
+    def bulk_action(self):
+        """One decision over many groups, after a preview (bulk.py)."""
+        if self.proj is None:
+            return
+        self.bulk_dialog = BulkDialog(self.app, self, self.store, self._bulk_done)
+
+    def _bulk_done(self):
+        self.checked.clear()
+        self.reload(select=self.selected_group)
+        try:
+            self.app.refresh_evidence_strip()
+        except Exception:                                           # noqa: BLE001
+            pass
+
+    def open_batches(self):
+        self.batches_dialog = BatchesDialog(self.app, self.store, lambda: self.reload(select=self.selected_group))
 
     # -- the selected group -----------------------------------------------------
 
@@ -542,6 +621,8 @@ class ReviewPage:
             if d["decision_kind"] == "canonical_location":
                 v = p.verdict(str(d["value"]))
                 what += f": {_file_name(v.path) if v else d['value']}"
+            if d.get("origin_kind") == ORIGIN_BULK_EXPLICIT_HUMAN:
+                what += f" (batch #{d['origin_ref']})"
             target = "the group" if kind == GROUP else _file_name((p.verdict(ref) or p.members[0]).path)
             state = "active" if d["active"] else "withdrawn" if d["withdrawn"] else "superseded"
             entries.append((d["occurred_utc"], 0, int(d["decision_id"]), what, target, d["actor_id"] or "", state, d, ()))
@@ -1020,8 +1101,15 @@ class PoliciesDialog:
 
 
 class AddPolicyDialog:
-    def __init__(self, parent, app, store, on_done):
+    """Create a reusable policy -- deliberately. Before it can be created the
+    dialog shows what it covers and changes today and says, in so many
+    words, that future matching evidence will be evaluated against it
+    (synthesis §2): a policy must not be made by someone who thinks it
+    only affects what is visible now."""
+
+    def __init__(self, parent, app, store, on_done, kind=None, folder=None):
         self.app, self.store, self.on_done = app, store, on_done
+        self.previewed = None                   # the inputs the preview was computed for
         win = tk.Toplevel(parent)
         self.win = win
         win.title("Add policy")
@@ -1031,7 +1119,7 @@ class AddPolicyDialog:
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Kind:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w")
         self.kinds = list(POLICY_KINDS)
-        self.kind_var = tk.StringVar(value=POLICY_KINDS[self.kinds[0]].label)
+        self.kind_var = tk.StringVar(value=POLICY_KINDS[kind].label if kind in POLICY_KINDS else POLICY_KINDS[self.kinds[0]].label)
         cb = ttk.Combobox(frame, textvariable=self.kind_var, values=[POLICY_KINDS[k].label for k in self.kinds], state="readonly", width=28)
         cb.grid(row=0, column=1, sticky="w", pady=2)
         cb.bind("<<ComboboxSelected>>", lambda e: self._kind_changed())
@@ -1042,7 +1130,7 @@ class AddPolicyDialog:
             "SELECT source_root_id, root_path, root_path_key FROM source_root WHERE project_id=1 AND is_active=1 ORDER BY root_ordinal, root_path")]
         self.root_var = tk.StringVar(value=self.roots[0]["root_path"] if self.roots else "")
         self.root_box = ttk.Combobox(frame, textvariable=self.root_var, values=[r["root_path"] for r in self.roots], state="readonly", width=60)
-        self.folder_var = tk.StringVar(value="")
+        self.folder_var = tk.StringVar(value=str(folder or ""))
         self.folder_row = ttk.Frame(frame)
         ttk.Entry(self.folder_row, textvariable=self.folder_var, width=52).pack(side="left")
         ttk.Button(self.folder_row, text="Browse...", command=lambda: self._browse(self.folder_var)).pack(side="left", padx=4)
@@ -1054,10 +1142,19 @@ class AddPolicyDialog:
         ttk.Label(frame, text="Why (optional):", font=("Segoe UI", 9, "bold")).grid(row=5, column=0, sticky="nw", pady=(8, 0))
         self.reason = tk.Text(frame, height=2, width=60, wrap="word")
         self.reason.grid(row=5, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        prow = ttk.Frame(frame)
+        prow.grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 2))
+        ttk.Label(prow, text="What it would do:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        ttk.Button(prow, text="Preview", command=self.preview).pack(side="left", padx=(8, 0))
+        self.preview_text = tk.Text(frame, height=7, width=78, wrap="word", state="disabled", background="#f6f6f6", relief="flat")
+        self.preview_text.grid(row=7, column=0, columnspan=3, sticky="ew")
         row = ttk.Frame(frame)
-        row.grid(row=6, column=0, columnspan=3, sticky="e", pady=(14, 0))
-        ttk.Button(row, text="Add policy", command=self._confirm).pack(side="right")
+        row.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        self.ok = ttk.Button(row, text="Create policy", command=self._confirm, state="disabled")
+        self.ok.pack(side="right")
         ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        for var in (self.root_var, self.folder_var, self.over_var):
+            var.trace_add("write", lambda *a: self._invalidate())
         self._kind_changed()
 
     def _kind(self):
@@ -1070,6 +1167,7 @@ class AddPolicyDialog:
     def _kind_changed(self):
         kind = self._kind()
         self.desc.configure(text=kind.description)
+        self._invalidate()
         self.root_box.grid_forget()
         self.folder_row.grid_forget()
         self.over_label.grid_forget()
@@ -1088,25 +1186,73 @@ class AddPolicyDialog:
         if path:
             var.set(path.replace("/", "\\"))
 
-    def _confirm(self):
+    def _inputs(self):
+        """(kind, scope, effect) as the store will take them, or None after a warning."""
         kind = self._kind()
         from .model import path_key
         if kind.scope_kind == SOURCE_ROOT:
             root = next((r for r in self.roots if r["root_path"] == self.root_var.get()), None)
             if root is None:
                 messagebox.showwarning("Add policy", "Choose a source root.", parent=self.win)
-                return
+                return None
             scope = {"root_key": root["root_path_key"] or path_key(root["root_path"]), "root_path": root["root_path"]}
         else:
             folder = self.folder_var.get().strip()
             if not folder:
                 messagebox.showwarning("Add policy", "Choose a folder.", parent=self.win)
-                return
+                return None
             scope = {"path_key": path_key(folder), "path": folder}
         effect = {}
         over = self.over_var.get().strip()
         if kind.key == "prefer_folder_subtree" and over:
             effect = {"over_path_key": path_key(over), "over": over}
+        return kind, scope, effect
+
+    def _key(self):
+        return (self.kind_var.get(), self.root_var.get(), self.folder_var.get().strip(), self.over_var.get().strip())
+
+    def _invalidate(self):
+        """Any change to what the policy says voids the preview: the button
+        that creates it is enabled only for the inputs previewed."""
+        if getattr(self, "ok", None) is None:
+            return
+        self.previewed = None
+        self.ok.configure(state="disabled")
+        self._show("Preview to see what this policy covers and changes today, before creating it.")
+
+    def _show(self, text):
+        self.preview_text.configure(state="normal")
+        self.preview_text.delete("1.0", "end")
+        self.preview_text.insert("1.0", text)
+        self.preview_text.configure(state="disabled")
+
+    def preview(self):
+        got = self._inputs()
+        if got is None:
+            return
+        kind, scope, effect = got
+        try:
+            self.impact = BK.policy_preview(self.app.conn, kind.key, scope, effect)
+        except ValueError as exc:
+            messagebox.showwarning("Add policy", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Add policy", f"The preview failed.\n\n{exc}", parent=self.win)
+            return
+        self._show("\n".join(self.impact["lines"]))
+        self.previewed = self._key()
+        self.ok.configure(state="normal")
+
+    def _confirm(self):
+        if self.previewed != self._key():
+            self._invalidate()
+            messagebox.showinfo("Add policy", "Preview first: what this policy covers and changes today, and that future matches "
+                                "will be evaluated against it.", parent=self.win)
+            return
+        got = self._inputs()
+        if got is None:
+            return
+        kind, scope, effect = got
         reason = self.reason.get("1.0", "end").strip() or None
         try:
             self.store.create_policy(kind.key, scope, effect, rationale=reason, command_id=new_command_id())
@@ -1118,3 +1264,356 @@ class AddPolicyDialog:
             return
         self.win.destroy()
         self.on_done()
+
+
+# ---------------------------------------------------------------------------
+# Bulk action: one decision, many groups, after a preview (Build 4)
+# ---------------------------------------------------------------------------
+
+class BulkDialog:
+    """The three choices the research asks for, in so many words: the N
+    checked groups; the N current matches of the Show filter (frozen at
+    commit); or a reusable policy instead, which affects future matches
+    too. The narrowest available option is the default. Nothing is
+    recorded without a preview, and the commit records exactly what the
+    preview showed."""
+
+    def __init__(self, app, page, store, on_done):
+        self.app, self.page, self.store, self.on_done = app, page, store, on_done
+        self.preview = None
+        self.previewed = None
+        win = tk.Toplevel(app)
+        self.win = win
+        win.title("Bulk action")
+        win.transient(app)
+        win.grab_set()
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="One decision, many groups -- after a preview", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Nothing is recorded until you confirm the preview. A batch never overwrites an explicit decision: the "
+                              "exceptions it meets are counted and kept in its record, not skipped in silence. Nothing here renames, "
+                              "moves or deletes a file.", wraplength=640, justify="left", foreground="#444").pack(anchor="w", pady=(2, 10))
+
+        arow = ttk.Frame(frame)
+        arow.pack(fill="x")
+        ttk.Label(arow, text="Action:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.actions = list(BULK_ACTIONS)
+        self.action_var = tk.StringVar(value=BULK_ACTIONS[self.actions[0]].label)
+        cb = ttk.Combobox(arow, textvariable=self.action_var, values=[BULK_ACTIONS[k].label for k in self.actions], state="readonly", width=36)
+        cb.pack(side="left", padx=(8, 0))
+        cb.bind("<<ComboboxSelected>>", lambda e: self._action_changed())
+        self.desc = ttk.Label(frame, text="", wraplength=640, justify="left", foreground="#444")
+        self.desc.pack(anchor="w", pady=(2, 6))
+
+        # parameters, shown per action
+        self.folder_row = ttk.Frame(frame)
+        ttk.Label(self.folder_row, text="Folder:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.folder_var = tk.StringVar(value="")
+        ttk.Entry(self.folder_row, textvariable=self.folder_var, width=58).pack(side="left", padx=(8, 4))
+        ttk.Button(self.folder_row, text="Browse...", command=self._browse).pack(side="left")
+        self.folder_var.trace_add("write", lambda *a: self._inputs_changed())
+        self.defer_row = ttk.Frame(frame)
+        self.defer_var = tk.StringVar(value="defer_indefinitely")
+        for key, (rk, label, why) in DEFER_DISPOSITIONS.items():
+            r = ttk.Frame(self.defer_row)
+            r.pack(fill="x")
+            ttk.Radiobutton(r, text=label, variable=self.defer_var, value=key, command=self._inputs_changed).pack(side="left")
+            ttk.Label(r, text=why, foreground="#666").pack(side="left", padx=(8, 0))
+        drow = ttk.Frame(self.defer_row)
+        drow.pack(fill="x", pady=(4, 0))
+        ttk.Label(drow, text="Date (YYYY-MM-DD):").pack(side="left")
+        self.date_var = tk.StringVar(value="")
+        ttk.Entry(drow, textvariable=self.date_var, width=14).pack(side="left", padx=(6, 0))
+        self.date_var.trace_add("write", lambda *a: self._inputs_changed())
+        self.mark_row = ttk.Frame(frame)
+        self.mark_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.mark_row, text="Also mark the other undecided copies redundant candidates (protected and kept copies stay)",
+                        variable=self.mark_var, command=self._inputs_changed).pack(side="left")
+
+        # scope: the three choices, narrowest first
+        ttk.Label(frame, text="Apply to:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(8, 2))
+        self.scope_var = tk.StringVar(value="checked" if page.checked else "matches")
+        self.scope_buttons = {}
+        for key in ("checked", "matches", "policy"):
+            b = ttk.Radiobutton(frame, text="", variable=self.scope_var, value=key, command=self._inputs_changed)
+            b.pack(anchor="w")
+            self.scope_buttons[key] = b
+
+        prow = ttk.Frame(frame)
+        prow.pack(fill="x", pady=(10, 2))
+        ttk.Label(prow, text="Preview:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.preview_button = ttk.Button(prow, text="Preview", command=self.run_preview)
+        self.preview_button.pack(side="left", padx=(8, 0))
+        self.preview_text = tk.Text(frame, height=11, width=86, wrap="word", state="disabled", background="#f6f6f6", relief="flat")
+        self.preview_text.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Note (optional):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(8, 2))
+        self.note = tk.Text(frame, height=2, width=86, wrap="word")
+        self.note.pack(fill="x")
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=(14, 0))
+        self.ok = ttk.Button(row, text="Record", command=self._confirm, state="disabled")
+        self.ok.pack(side="right")
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        self._action_changed()
+
+    # -- state ------------------------------------------------------------------
+
+    def _action(self):
+        label = self.action_var.get()
+        for k in self.actions:
+            if BULK_ACTIONS[k].label == label:
+                return BULK_ACTIONS[k]
+        return BULK_ACTIONS[self.actions[0]]
+
+    def _params(self):
+        spec = self._action()
+        params = {}
+        if spec.needs_folder:
+            params["folder"] = self.folder_var.get().strip()
+        if spec.key == "defer":
+            params["disposition"] = self.defer_var.get()
+            params["until"] = self.date_var.get().strip() or None
+        if spec.key == "accept_recommendation":
+            params["mark_others"] = bool(self.mark_var.get())
+        return params
+
+    def _key(self):
+        return (self._action().key, tuple(sorted(self._params().items())), self.scope_var.get(), self.page.filter_var.get(),
+                tuple(sorted(self.page.checked)))
+
+    def _action_changed(self):
+        spec = self._action()
+        self.desc.configure(text=spec.description)
+        for r in (self.folder_row, self.defer_row, self.mark_row):
+            r.pack_forget()
+        if spec.needs_folder:
+            self.folder_row.pack(fill="x", pady=(2, 0), after=self.desc)
+        if spec.key == "defer":
+            self.defer_row.pack(fill="x", after=self.desc)
+        if spec.key == "accept_recommendation":
+            self.mark_row.pack(fill="x", after=self.desc)
+        self._inputs_changed()
+
+    def _inputs_changed(self):
+        spec = self._action()
+        n_checked = len(self.page.checked)
+        shown = self.page.shown_group_ids()
+        show = self.page.filter_var.get()
+        self.scope_buttons["checked"].configure(
+            text=f"{n_checked:,} checked group{'s' if n_checked != 1 else ''}",
+            state="normal" if n_checked else "disabled")
+        self.scope_buttons["matches"].configure(
+            text=f"{len(shown):,} current match{'es' if len(shown) != 1 else ''} (Show: {show}) -- frozen at commit; a later match is not included",
+            state="normal" if shown else "disabled")
+        twin = POLICY_KINDS.get(spec.policy_twin) if spec.policy_twin else None
+        self.scope_buttons["policy"].configure(
+            text=(f"Create a reusable policy instead ({twin.label}: future matches too, no decision recorded)" if twin
+                  else "Create a reusable policy instead (no policy says this)"),
+            state="normal" if twin else "disabled")
+        if self.scope_var.get() == "checked" and not n_checked:
+            self.scope_var.set("matches")
+        if self.scope_var.get() == "policy" and not twin:
+            self.scope_var.set("checked" if n_checked else "matches")
+        if self.previewed != self._key():
+            self.preview, self.previewed = None, None
+            if self.scope_var.get() == "policy":
+                self._show("A policy is the opposite of a snapshot: it is evaluated against every current and future match. "
+                           "Continue to the policy dialog, which previews what it covers today before creating it.")
+                self.ok.configure(state="normal", text="Continue to the policy...")
+                self.preview_button.configure(state="disabled")
+            else:
+                self._show("Preview to see what would be recorded, what already holds, what is preserved, what would conflict "
+                           "and what the evidence blocks -- with examples.")
+                self.ok.configure(state="disabled", text="Record")
+                self.preview_button.configure(state="normal")
+
+    def _show(self, text):
+        self.preview_text.configure(state="normal")
+        self.preview_text.delete("1.0", "end")
+        self.preview_text.insert("1.0", text)
+        self.preview_text.configure(state="disabled")
+
+    def _browse(self):
+        start = self.folder_var.get() or ""
+        path = filedialog.askdirectory(parent=self.win, initialdir=start or None, title="Choose a folder")
+        if path:
+            self.folder_var.set(path.replace("/", "\\"))
+
+    # -- preview and commit ---------------------------------------------------------
+
+    def run_preview(self):
+        spec = self._action()
+        page = self.page
+        scope = self.scope_var.get()
+        try:
+            if scope == "checked":
+                pv = BK.preview(page.ev, page.proj, page.routing, spec.key, self._params(), SCOPE_EXPLICIT_SELECTION,
+                                selection=sorted(page.checked), conn=self.app.conn)
+            else:
+                query = BK.snapshot_query(show=page.filter_var.get())
+                pv = BK.preview(page.ev, page.proj, page.routing, spec.key, self._params(), SCOPE_QUERY_SNAPSHOT, query, conn=self.app.conn)
+        except ValueError as exc:
+            messagebox.showwarning("Bulk action", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Bulk action", f"The preview failed.\n\n{exc}", parent=self.win)
+            return
+        self.preview, self.previewed = pv, self._key()
+        self._show("\n".join(pv.lines()))
+        n = pv.decision_count if not spec.records_events else pv.event_count
+        if n:
+            self.ok.configure(state="normal", text=f"Record {n:,} {'deferral' if spec.records_events else 'decision'}{'s' if n != 1 else ''}")
+        else:
+            self.ok.configure(state="disabled", text="Nothing to record")
+
+    def _confirm(self):
+        spec = self._action()
+        if self.scope_var.get() == "policy":
+            folder = self.folder_var.get().strip()
+            self.win.destroy()
+            self.page.policy_dialog = AddPolicyDialog(self.app, self.app, self.store, lambda: self.page.reload(select=self.page.selected_group),
+                                                      kind=spec.policy_twin, folder=folder)
+            return
+        if self.preview is None or self.previewed != self._key():
+            self._inputs_changed()
+            messagebox.showinfo("Bulk action", "Preview first; the batch records exactly what the preview shows.", parent=self.win)
+            return
+        note = self.note.get("1.0", "end").strip() or None
+        try:
+            result = self.store.commit_bulk(self.preview, note=note, command_id=new_command_id())
+        except ValueError as exc:
+            messagebox.showwarning("Bulk action", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Bulk action", f"The batch was not recorded.\n\n{exc}", parent=self.win)
+            return
+        self.result = result
+        self.win.destroy()
+        exceptions = len(self.preview.candidates) - self.preview.counts[DISP_DECIDED]
+        recorded = (f"{result['events']:,} deferral(s)" if result["events"] and not result["decisions"]
+                    else f"{result['decisions']:,} decision(s)" + (f", {result['events']:,} deferral(s)" if result["events"] else ""))
+        messagebox.showinfo("Bulk action",
+                            f"Batch #{result['batch_id']} recorded: {recorded} over {result['members']:,} {self.preview.member_word}"
+                            + (f"; {exceptions:,} left as exceptions (see Batches...)" if exceptions else "")
+                            + ".\n\nUndo the whole batch any time from Batches...", parent=self.app)
+        self.on_done()
+
+
+# ---------------------------------------------------------------------------
+# Batches: every bulk batch, with Undo (Build 4)
+# ---------------------------------------------------------------------------
+
+class BatchesDialog:
+    def __init__(self, app, store, on_change):
+        self.app, self.store, self.on_change = app, store, on_change
+        self._labels = {}
+        win = tk.Toplevel(app)
+        self.win = win
+        win.title("Bulk batches")
+        win.transient(app)
+        win.geometry("900x560")
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Bulk batches", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="A batch is one previewed decision over many targets, its membership frozen at commit: a target that comes "
+                              "to match the same filter later is not a member. Undo withdraws what the batch recorded and still stands "
+                              "(a decision you have since changed by hand is left alone); the batch and its members stay in the record.",
+                  wraplength=860, justify="left", foreground="#444").pack(anchor="w", pady=(2, 8))
+        host = ttk.Frame(frame)
+        host.pack(fill="both", expand=True)
+        host.rowconfigure(0, weight=1)
+        host.columnconfigure(0, weight=1)
+        cols = ("id", "when", "action", "scope", "members", "recorded", "force", "note")
+        self.table = ttk.Treeview(host, columns=cols, show="headings", selectmode="browse", height=7)
+        for key, heading, width in (("id", "#", 40), ("when", "When (UTC)", 140), ("action", "Action", 200), ("scope", "Scope", 250),
+                                    ("members", "Members", 70), ("recorded", "Recorded", 70), ("force", "In force", 70), ("note", "Note", 200)):
+            self.table.heading(key, text=heading)
+            self.table.column(key, width=width, minwidth=40, anchor="e" if key in ("members", "recorded", "force") else "w", stretch=False)
+        sy = ttk.Scrollbar(host, orient="vertical", command=self.table.yview)
+        self.table.configure(yscrollcommand=sy.set)
+        self.table.grid(row=0, column=0, sticky="nsew")
+        sy.grid(row=0, column=1, sticky="ns")
+        self.table.bind("<<TreeviewSelect>>", lambda e: self._selected())
+        ttk.Label(frame, text="Members of the selected batch", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
+        mhost = ttk.Frame(frame)
+        mhost.pack(fill="both", expand=True)
+        mhost.rowconfigure(0, weight=1)
+        mhost.columnconfigure(0, weight=1)
+        self.members = ttk.Treeview(mhost, columns=("target", "disposition", "detail"), show="headings", selectmode="browse", height=7)
+        for key, heading, width in (("target", "Target", 320), ("disposition", "What became of it", 200), ("detail", "Detail", 330)):
+            self.members.heading(key, text=heading)
+            self.members.column(key, width=width, minwidth=40, anchor="w", stretch=False)
+        my = ttk.Scrollbar(mhost, orient="vertical", command=self.members.yview)
+        self.members.configure(yscrollcommand=my.set)
+        self.members.grid(row=0, column=0, sticky="nsew")
+        my.grid(row=0, column=1, sticky="ns")
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=(8, 0))
+        self.undo_button = ttk.Button(row, text="Undo batch", command=self.undo, state="disabled")
+        self.undo_button.pack(side="left")
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        self.refresh()
+
+    def refresh(self):
+        self.table.delete(*self.table.get_children())
+        self.batches = {str(b["batch_id"]): b for b in self.store.batches()}
+        for bid, b in self.batches.items():
+            scope = BK.describe_query(b["query"], b["parameters"]) if b["query"] else f"{len(b['parameters'].get('selection', [])):,} checked groups"
+            if b["parameters"].get("folder") and not b["query"]:
+                scope += f"; copies under {b['parameters']['folder']}"
+            recorded = b["decisions"] if not BULK_ACTIONS[b["action"]].records_events else b["events"]
+            self.table.insert("", "end", iid=bid, values=[
+                b["batch_id"], (b["occurred_utc"] or "")[:19].replace("T", " "), b["label"], scope,
+                f"{b['members']:,}", f"{recorded:,}", f"{b['in_force']:,}", b["note"] or ""])
+        first = next(iter(self.batches), None)
+        if first is not None:
+            self.table.selection_set(first)
+        self._selected()
+
+    def _label(self, target_kind, ref):
+        key = (target_kind, str(ref))
+        if key not in self._labels:
+            try:
+                if target_kind == LOCATION:
+                    r = self.app.conn.execute(
+                        "SELECT sr.root_path, fp.relative_path FROM file_path fp JOIN source_root sr ON sr.source_root_id = fp.source_root_id "
+                        " WHERE fp.file_path_id = ?", (int(ref),)).fetchone()
+                    self._labels[key] = E.full_path(r["root_path"], r["relative_path"]) if r else f"location {ref}"
+                else:
+                    r = self.app.conn.execute(
+                        "SELECT fp.relative_path FROM p2_current_duplicate_member m JOIN file_path fp ON fp.file_path_id = m.file_path_id "
+                        " WHERE m.content_id = ? ORDER BY fp.path_sort_key LIMIT 1", (int(ref),)).fetchone()
+                    self._labels[key] = (_file_name(r["relative_path"]) + " (group)") if r else f"group {ref} (no longer current)"
+            except Exception:                                       # noqa: BLE001
+                self._labels[key] = f"{target_kind} {ref}"
+        return self._labels[key]
+
+    def _selected(self):
+        sel = self.table.selection()
+        b = self.batches.get(sel[0]) if sel else None
+        self.members.delete(*self.members.get_children())
+        if b is not None:
+            for m in self.store.batch_members(b["batch_id"]):
+                self.members.insert("", "end", values=[self._label(m["target_kind"], m["target_ref"]),
+                                                       BK.DISPOSITION_WORDS.get(m["disposition"], m["disposition"]), m["detail"] or ""])
+        self.undo_button.configure(state="normal" if b is not None and b["in_force"] else "disabled")
+
+    def undo(self):
+        sel = self.table.selection()
+        b = self.batches.get(sel[0]) if sel else None
+        if b is None or not b["in_force"]:
+            return
+        if not messagebox.askyesno("Undo batch", f"Undo batch #{b['batch_id']} ({b['label']})?\n\n{b['in_force']:,} decision(s) or deferral(s) it "
+                                   "recorded still stand and will be withdrawn; the batch and its members stay in the record.", parent=self.win):
+            return
+        try:
+            self.store.undo_batch(b["batch_id"], command_id=new_command_id())
+        except ValueError as exc:
+            messagebox.showwarning("Undo batch", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Undo batch", f"The batch was not undone.\n\n{exc}", parent=self.win)
+            return
+        self.refresh()
+        self.on_change()
+

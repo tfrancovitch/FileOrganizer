@@ -1,10 +1,10 @@
-# Architecture — The File Organizer, B9 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B10 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
-current-duplicate projection) and the **Phase 3** section (decisions) at the
-end say what B7 and B8 added on top.
+current-duplicate projection) and the **Phase 3** section (decisions,
+routing, bulk) at the end say what B7, B8, B9 and B10 added on top.
 
 ---
 
@@ -24,7 +24,7 @@ end say what B7 and B8 added on top.
    |            engine            |                  |
    +--------------+--------------+------------------+
                   |
-          FileOrganizer.db           SQLite, schema 10 -- AUTHORITATIVE
+          FileOrganizer.db           SQLite, schema 11 -- AUTHORITATIVE
                   |
              fo_exports.py           renders every CSV and report FROM the DB
                   |
@@ -174,6 +174,7 @@ exact-duplicate projection, the FTS map); 009 is Phase 3's decision record;
 | `p2_derived_index`, `p2_current_duplicate_member`, `p2_current_duplicate_summary`, `p2_fts_text_map` | Phase 2: rebuildable projections and indexes |
 | `p3_operation`, `p3_decision`, `p3_decision_withdrawal`, `p3_policy`, `p3_policy_version` | Phase 3: the append-only decision record |
 | `p3_review_event` | Phase 3: routing provenance — deferrals with return triggers, skips, what the detector found, restores |
+| `p3_bulk_batch`, `p3_bulk_member` | Phase 3: a bulk batch — its scope, frozen query, the preview as confirmed, and every member with what became of it |
 
 Analyzer results keep **normalised promoted columns** (title, author,
 dimensions, duration, word count) *plus* the analyzer's own JSON detail. The
@@ -400,20 +401,28 @@ which is a per-run snapshot.
                   v                 (conflict > needs revalidation > blocked > deferred >
    one primary route per group      ready for plan > resolved > queue)
    + every condition that applies  -- DERIVED, never stored
+                  |
+        Phase3\bulk.py              bulk: the Show filter as one function, the frozen
+                  |                 query, and the preview -- every target through the
+                  v                 same resolver with the batch's decisions in place
+   decided / already satisfied / preserved / conflict / blocked / not applicable
                   ^
         Phase3\store.py             the only writer of p3_*: one operation = one transaction
-                  ^                 (decisions, withdrawals, policy versions, review events;
-                  |                  the detector's rows under a system operation)
+                  ^                 (decisions, withdrawals, policy versions, review events,
+                  |                  a batch with its members and decisions; the detector's
+                  |                  rows under a system operation)
         Phase3\review.py            the Decide page inside the one window
 ```
 
 Four authoritative families, all append-only: **operation** (one user
 action: actor, agent, session, command, time), **decision** (immutable:
 target, kind, typed value validated by `registry.py`, evidence binding by
-reference into Phase 1/2 ids, `supersedes`), **withdrawal** (a row, not a
-flag), **policy + version** (protect / prefer / avoid over a root or a
-folder; a change or a retirement is a new version). The product never
-UPDATEs or DELETEs a p3 row.
+reference into Phase 1/2 ids, `supersedes`, and — from B10 — an origin:
+`explicit_human`, or `bulk_explicit_human` with the batch id), **withdrawal**
+(a row, not a flag), **policy + version** (protect / prefer / avoid over a
+root or a folder; a change or a retirement is a new version). B9 added the
+review event and B10 the bulk batch (below). The product never UPDATEs or
+DELETEs a p3 row.
 
 What the page shows — keepers, the canonical, the protected set, redundant
 candidates, conflicts, plan-eligible reclaim — is recomputed from those
@@ -457,4 +466,46 @@ whose trigger, evaluated live, has not fired. The detector (`reconcile`)
 runs when the Decide page opens and after a scan or fingerprint run, writes
 the provenance rows for what it finds under a system operation
 (`actor_kind = system_evidence`), and never touches a decision.
+
+### Bulk decisions and the policy workflow (B10)
+
+One decision over many targets is a **batch**: the fourth authoritative
+family (`p3_bulk_batch`, `p3_bulk_member`). Its scope is either the exact
+groups a person checked or what the Show filter listed at one moment, and
+its membership is **frozen at commit** — the frozen query is recorded so
+the record can say what the batch was over, but nothing ever re-evaluates
+it: a target that comes to match later is not a member (a snapshot is not a
+policy). Every decision a batch records carries `origin_kind =
+bulk_explicit_human` and `origin_ref = the batch id`; every member carries
+its disposition, so the exceptions are in the record, not just in the
+preview.
+
+`bulk.py` is pure, like the resolver and the router. The preview plans
+what an action would record for each target, then judges each planned
+decision against what stands — an active decision in the same conflict
+domain, the group's explicit canonical, a Keep all in force, a mark on the
+recommended copy — and runs the group through `resolve_group` with the
+batch's decisions in place (all of a group's at once, so the last-copy
+floor is judged over the whole batch). An explicit, incompatible decision
+is preserved and counted, never overwritten; a hard-constraint conflict is
+not recorded; a blocked group receives no retention decision. The Show
+filter itself lives in `bulk.filter_groups`, one function the page draws
+from and a snapshot freezes.
+
+`store.commit_bulk` records exactly the preview — one operation of kind
+`bulk` with the batch row, every member and every decided decision, each
+bound to the evidence the preview captured — and refuses if the decision
+record moved since the preview. `store.undo_batch` withdraws what the
+batch recorded and still stands (a decision the person has since
+superseded is left alone) under one operation of kind `bulk_undo`. The
+policy side (`bulk.policy_preview`) resolves every group with the
+hypothetical policy in place and diffs it against the projection without,
+so the Add policy dialog can show what the policy covers and changes today
+and state that future matches will be evaluated against it, before the
+policy exists. Nothing here opens a source file.
+
+After a batch there are thousands of active decisions; `routing.route_all`
+indexes them by target once per pass (3,000 groups with 6,000 decisions
+route in 0.1 s), and the store's chain-head and withdrawal checks are
+targeted queries, not table loads.
 

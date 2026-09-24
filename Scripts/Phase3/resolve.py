@@ -203,6 +203,42 @@ def _index_decisions(decisions):
     return index
 
 
+def location_protection(policies, index, loc: Location):
+    """Step 1 for one location: (covering, in_force, overridden) -- the active
+    protection policies that cover it, those still in force after the
+    location's own override_protection decisions, and the (policy version,
+    decision) overrides that lifted the rest. Answers for any location,
+    group member or not: a policy's population is every location it covers."""
+    protect_policies = [p for p in policies if POLICY_KINDS.get(p.kind) and POLICY_KINDS[p.kind].effect == "protect"]
+    covering = [p for p in protect_policies if _policy_covers(p, loc)]
+    ldec = index.get((LOCATION, loc.location_id), {})
+    overrides = {}
+    for od in ldec.get("override_protection", []):
+        overrides[str(od.value.get("policy_version_id"))] = od
+    in_force = [p for p in covering if p.policy_version_id not in overrides]
+    overridden = tuple(sorted((p.policy_version_id, overrides[p.policy_version_id].decision_id)
+                              for p in covering if p.policy_version_id in overrides))
+    return covering, in_force, overridden
+
+
+def protected_locations(ev: Evidence) -> dict:
+    """Every location the model holds that an active protection policy covers
+    and no override lifts: location_id -> the policy version ids in force.
+    Protection is a pure effect of policy plus evidence (F05): a location that
+    appears under a protected folder after the policy was made is covered with
+    no decision recorded for it, and a location outside any duplicate group
+    is covered all the same."""
+    active = active_decisions(ev.decisions)
+    index = _index_decisions(active)
+    policies = active_policies(ev.policies)
+    out = {}
+    for lid in sorted(ev.locations):
+        _covering, in_force, _overridden = location_protection(policies, index, ev.locations[lid])
+        if in_force:
+            out[lid] = tuple(p.policy_version_id for p in in_force)
+    return out
+
+
 # -- the resolution -------------------------------------------------------------
 
 def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> GroupProjection:
@@ -222,17 +258,10 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
     group_defer = _latest(gdec.get("defer_review", []))
 
     # Step 1: hard constraints -- protection first, every time.
-    protect_policies = [p for p in policies if POLICY_KINDS.get(p.kind) and POLICY_KINDS[p.kind].effect == "protect"]
     verdicts = {}
     for m in members:
         ldec = index.get((LOCATION, m.location_id), {})
-        covering = [p for p in protect_policies if _policy_covers(p, m)]
-        overrides = {}
-        for od in ldec.get("override_protection", []):
-            overrides[str(od.value.get("policy_version_id"))] = od
-        in_force = [p for p in covering if p.policy_version_id not in overrides]
-        overridden = tuple(sorted((p.policy_version_id, overrides[p.policy_version_id].decision_id)
-                                  for p in covering if p.policy_version_id in overrides))
+        covering, in_force, overridden = location_protection(policies, index, m)
         must_keep = _latest(ldec.get("must_keep_location", []))
         redundant = _latest(ldec.get("redundant_location", []))
         defer = _latest(ldec.get("defer_review", []))
