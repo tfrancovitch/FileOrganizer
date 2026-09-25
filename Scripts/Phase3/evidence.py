@@ -412,14 +412,25 @@ def pair_binding(conn, pair_id) -> dict:
 
 def evidence_mark(conn) -> str:
     """Where the evidence stands, for a preview to be checked against at commit
-    (Build 6): the newest comparison of the image hashes and the newest
-    observation of any file. A re-analysis or a scan moves one of them."""
+    (Build 6 for pairs; Build 7 for every batch): the newest comparison of the
+    image hashes, the newest observation of any file, and the newest run that
+    wrote a location's current state -- a scan or a fingerprinting pass. A
+    re-analysis, a scan or a re-hash moves one of them.
+
+    The run is Build 7's addition. A rescan of files that did not change
+    writes no new observation (the scan refreshes the current state in place,
+    keeping the observation), and a location a scan finds gone is marked
+    missing in place too -- neither moved the Build 6 mark. Every scan and
+    every fingerprinting pass stamps the rows it refreshes with its run id."""
     try:
         gen = conn.execute("SELECT COALESCE(MAX(generation_id), 0) FROM visual_candidate_generation").fetchone()[0]
     except sqlite3.OperationalError:
         gen = 0
-    obs = conn.execute("SELECT COALESCE(MAX(current_observation_id), 0), COUNT(*) FROM file_state").fetchone()
-    return f"generation {int(gen or 0)}; observation {int(obs[0] or 0)}; locations {int(obs[1] or 0)}"
+    obs = conn.execute(
+        "SELECT COALESCE(MAX(current_observation_id), 0), COUNT(*), COALESCE(MAX(current_run_id), 0), "
+        "       COALESCE(MAX(content_run_id), 0), COALESCE(MAX(hash_run_id), 0) FROM file_state").fetchone()
+    run = max(int(obs[2] or 0), int(obs[3] or 0), int(obs[4] or 0))
+    return f"generation {int(gen or 0)}; observation {int(obs[0] or 0)}; locations {int(obs[1] or 0)}; run {run}"
 
 
 def pair_binding_from(ev, pair) -> dict:

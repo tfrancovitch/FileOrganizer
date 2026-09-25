@@ -142,6 +142,10 @@ def snapshot_query(show=None, folder=None, targets=GROUP, group_ids=None) -> dic
 def describe_query(query, parameters=None) -> str:
     q = query or {}
     parts = []
+    survey = (parameters or {}).get("survey")
+    if survey:
+        return (f"Survey Mode: {survey.get('control', 'a group control')} over a cluster of {len(survey.get('images', ())):,} "
+                f"images ({_n(len(survey.get('edges', ())), 'candidate pair')}) from Show: {survey.get('show', '?')}")
     if q.get("show"):
         parts.append(f"Show: {q['show']}")
     if q.get("group_ids"):
@@ -477,7 +481,8 @@ class BulkPreview:
     evaluated_utc: str = ""
     mode: str = MODE_PRESERVE
     record_mark: int | None = None  # the last operation id when previewed: the commit refuses if the record moved
-    evidence_mark: str | None = None    # (pairs, Build 6) the evidence it was judged on: a re-analysis or a scan voids it
+    evidence_mark: str | None = None    # the evidence it was judged on (pairs since Build 6, groups since Build 7): a scan,
+                                        # a re-hash or a re-analysis voids it
 
     @property
     def counts(self) -> dict:
@@ -515,7 +520,7 @@ class BulkPreview:
         if spec.records_events:
             out.append(f"  -> {c[DISP_DECIDED]:,} would be deferred")
         else:
-            kinds = " + ".join(decision_kind(k).label for k in spec.decision_kinds)
+            kinds = spec.kinds_text or " + ".join(decision_kind(k).label for k in spec.decision_kinds)
             out.append(f"  -> {c[DISP_DECIDED]:,} would receive a decision ({_n(self.decision_count, 'decision')}: {kinds})")
         out.append(f"  -> {c[DISP_SATISFIED]:,} already satisfy it")
         out.append(f"  -> {c[DISP_PRESERVED]:,} have an explicit incompatible decision, preserved (caution)")
@@ -542,9 +547,12 @@ def preview(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjecti
             query=None, selection=(), conn=None) -> BulkPreview:
     """The categorized preview of one bulk action over one scope. With a
     connection, the evidence binding of every decision that would be
-    recorded is captured now, so the commit records what was previewed --
-    if the evidence moves between preview and commit, the revalidation
-    detector will say so afterwards (synthesis §7)."""
+    recorded is captured now, so the commit records what was previewed,
+    and so are the two marks the commit checks: the decision record (any
+    new operation) and -- Build 7, the same mark pair batches carry since
+    Build 6 -- the evidence (a scan, a re-hash, a re-analysis). A group
+    preview judged on evidence that has moved is refused at commit, not
+    left to the revalidation detector afterwards."""
     _scope_kind(scope_kind)
     spec = bulk_action(action)
     params = dict(params or {})
@@ -570,7 +578,7 @@ def preview(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjecti
         groups = scope_groups(query, ev, proj, routing)
     candidates = plan(action, params, groups, ev, proj, routing)
     classify(candidates, ev, proj, routing)
-    mark = None
+    mark = emark = None
     if conn is not None:
         for cand in candidates:
             if cand.disposition != DISP_DECIDED:
@@ -578,7 +586,9 @@ def preview(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjecti
             for kind, tk, ref, _value in cand.to_record:
                 cand.bindings[(kind, tk, ref)] = ev_mod.binding_for(conn, tk, ref)
         mark = record_mark(conn)
-    return BulkPreview(action, params, scope_kind, query, len(groups), candidates, utc_now(), record_mark=mark)
+        emark = ev_mod.evidence_mark(conn)
+    return BulkPreview(action, params, scope_kind, query, len(groups), candidates, utc_now(), record_mark=mark,
+                       evidence_mark=emark)
 
 
 def record_mark(conn) -> int:
@@ -680,23 +690,52 @@ def pair_query_targets(query, ev: Evidence, proj: R.ProjectProjection, routing: 
     return [p.pair_id for p in pairs]
 
 
+def _id_order(x):
+    """Numeric ids in numeric order, anything else after them."""
+    return (0, int(x), "") if str(x).isdigit() else (1, 0, str(x))
+
+
 def _pair_label(ev: Evidence, pp) -> str:
     a, b = ev.locations.get(pp.a_id), ev.locations.get(pp.b_id)
     return f"{file_name(a.path) if a else pp.a_id} ~ {file_name(b.path) if b else pp.b_id}"
 
 
-def plan_pairs(action, pair_projections, ev: Evidence) -> list:
-    """One Candidate per pair: the same rows a fast action records on it."""
+def plan_pairs(action, pair_projections, ev: Evidence, params=None) -> list:
+    """One Candidate per pair: the same rows a fast action records on it.
+
+    Build 7 (Survey Mode's group controls): `pairs_equivalent_prefer` chooses
+    each pair's retention row from `params` -- the Canonical ("prefer") where
+    the pair includes it and its other image is not one of the "keepers",
+    Keep both otherwise; `pairs_defer` plans one deferral per pair
+    ("disposition", "until") and no decision."""
     spec = bulk_action(action)
     if spec.member_kind != VISUAL_PAIR:
         raise ValueError(f"{spec.label} is not an action on visual candidate pairs")
+    params = params or {}
+    prefer = str(params["prefer"]) if params.get("prefer") is not None else None
+    keepers = {str(k) for k in params.get("keepers") or ()}
+    if action == "pairs_equivalent_prefer" and prefer is None:
+        raise ValueError("Equivalent copy, prefer the Canonical needs the Canonical")
+    if spec.records_events:
+        disposition = params.get("disposition") or "defer_indefinitely"
+        if disposition not in DEFER_DISPOSITIONS or disposition not in DEFER_CHOICES[VISUAL_PAIR]:
+            raise ValueError(f"unknown deferral disposition for a pair: {disposition!r}")
     out = []
     for pp in pair_projections:
-        decisions = []
-        for kind in spec.decision_kinds:
-            value = decision_kind(kind).validate_value([pp.a_id, pp.b_id]) if kind == "keep_both" else True
-            decisions.append((kind, VISUAL_PAIR, pp.pair_id, value))
-        cand = Candidate(VISUAL_PAIR, pp.pair_id, tuple(decisions), "", _pair_label(ev, pp))
+        both = decision_kind("keep_both").validate_value([pp.a_id, pp.b_id])
+        decisions, events = [], ()
+        if action == "pairs_equivalent_prefer":
+            decisions.append(("equivalent_copy", VISUAL_PAIR, pp.pair_id, True))
+            if prefer in pp.members and (pp.b_id if prefer == pp.a_id else pp.a_id) not in keepers:
+                decisions.append(("canonical_location", VISUAL_PAIR, pp.pair_id, prefer))
+            else:
+                decisions.append(("keep_both", VISUAL_PAIR, pp.pair_id, both))
+        elif spec.records_events:
+            events = ((disposition, params.get("until")),)
+        else:
+            for kind in spec.decision_kinds:
+                decisions.append((kind, VISUAL_PAIR, pp.pair_id, both if kind == "keep_both" else True))
+        cand = Candidate(VISUAL_PAIR, pp.pair_id, tuple(decisions), "", _pair_label(ev, pp), events=events)
         if pp.exact_content:
             cand.disposition, cand.detail = DISP_NOT_APPLICABLE, EXACT_NOT_APPLICABLE
         out.append(cand)
@@ -711,7 +750,41 @@ def _first_blocker(route):
     return None
 
 
-def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection):
+def _neighbourhood(ev: Evidence, planned_ids):
+    """The model restricted to the pairs a batch's simulation can change
+    (Build 7: a six-pair cluster was re-resolving all 51,924 pairs of the
+    real collection, 1.3 s a preview).
+
+    Exact, by the resolver's own shape: a pair's conflicts come from its own
+    rows (protection, an explicit Keep, retention on Different) and from the
+    chain guard -- its keeper given up by ANOTHER pair. So only a pair that
+    shares an image with a planned pair (the first ring) can gain a
+    conflict: a pair elsewhere keeps its rows, and no planned row can give
+    up its keeper without containing that image. For a first-ring pair, every
+    pair that could give up its keeper shares that keeper, so the second
+    ring -- every pair touching an image of the first -- holds them all. A
+    second-ring pair can only LOSE conflicts in the restricted model (some
+    of its own neighbours are missing), never gain one, so no false conflict
+    is reported. The suite checks the answers against the whole model."""
+    import copy
+    first_images = set()
+    for pid in planned_ids:
+        p = ev.pairs.get(pid)
+        if p is not None:
+            first_images.update(p.members)
+    by_image = {}
+    for p in ev.pairs.values():
+        by_image.setdefault(p.a_id, []).append(p)
+        by_image.setdefault(p.b_id, []).append(p)
+    ring1 = {p.pair_id: p for lid in first_images for p in by_image.get(lid, ())}
+    images2 = {lid for p in ring1.values() for lid in p.members}
+    ring2 = {p.pair_id: p for lid in images2 for p in by_image.get(lid, ())}
+    sub = copy.copy(ev)
+    sub.pairs = {pid: ev.pairs[pid] for pid in ev.pairs if pid in ring2}      # the evidence's own order
+    return sub
+
+
+def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection, _whole=False):
     """Sort every pair candidate into its bucket, in place.
 
     Per pair, in this order: a pair that already says exactly this is
@@ -736,6 +809,20 @@ def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing:
         ref = cand.target_ref
         pp = proj.pair(ref)
         route = routing.pairs.get(ref)
+        if cand.events and not cand.decisions:
+            # Build 7, Defer Group: the per-pair deferral, fanned out -- only
+            # over pairs no relationship decision has settled.
+            disposition_, _until = cand.events[0]
+            if route is not None and route.has(RT.DEFERRED):
+                out = (DISP_SATISFIED, "already deferred")
+            elif pp is not None and pp.relationship is not None:
+                out = (DISP_NOT_APPLICABLE, f"already decided: {decision_kind(pp.relationship).label} "
+                                            f"(#{pp.relationship_decision_id})")
+            else:
+                out = (DISP_DECIDED, DEFER_DISPOSITIONS[disposition_][1])
+            cand.outcomes = (out,)
+            cand.disposition, cand.detail = out[0], ("deferral" if out[0] == DISP_DECIDED else out[1])
+            continue
         outcomes = [_classify_one(kind, tk, r, value, None, None, index, routing) for (kind, tk, r, value) in cand.decisions]
         if route is not None and not all(o[0] == DISP_SATISFIED for o in outcomes):
             blocking = [c for c in route.of(RT.CONFLICT) if c.severity == R.BLOCKING]
@@ -752,6 +839,13 @@ def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing:
                 keep = ev.locations.get(pp.canonical)
                 outcomes[i] = (DISP_PRESERVED, f"the pair prefers {file_name(keep.path) if keep else pp.canonical} "
                                                f"(#{pp.canonical_decision_id}); Keep both would undo that preference")
+            elif kind == "keep_both" and pp.relationship == PR.DIFFERENT:
+                # Build 7 (Keep All records retention alone): retention on a
+                # pair marked Different would contradict it.
+                outcomes[i] = (DISP_PRESERVED, f"Different (#{pp.relationship_decision_id}) stands; retention would contradict it")
+            elif kind == "canonical_location" and pp.keep_both:
+                outcomes[i] = (DISP_PRESERVED, f"Keep both (#{pp.keep_both_decision_id}) stands; preferring one image "
+                                               "would undo it, and a batch never withdraws")
             elif kind == "different" and (pp.canonical_decision_id or pp.keep_both_decision_id):
                 held = pp.canonical_decision_id or pp.keep_both_decision_id
                 outcomes[i] = (DISP_PRESERVED, f"a retention decision stands (#{held}); D by hand withdraws it, a batch never does")
@@ -773,8 +867,10 @@ def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing:
             ids[hid] = (cand, i)
             slot.setdefault(kind, []).append(Decision(hid, tk, ref, kind, value, "bulk_explicit_human", None, False, None, 10 ** 9 + n))
             extra[key] = slot
-        after = PR.resolve_pairs(ev, _Overlay(index, extra), [])
-        before = {p.pair_id: {(c.kind, c.location_ids) for c in p.conflicts if c.severity == R.BLOCKING} for p in proj.pairs}
+        sim = ev if _whole else _neighbourhood(ev, {cand.target_ref for cand, _i, _d in planned})
+        after = PR.resolve_pairs(sim, _Overlay(index, extra), [])
+        before = {p.pair_id: {(c.kind, c.location_ids) for c in p.conflicts if c.severity == R.BLOCKING}
+                  for p in (proj.pairs if _whole else (proj.pair(pid) for pid in sim.pairs)) if p is not None}
         members = {}
         for cand, i, _d in planned:
             members.setdefault(cand.target_ref, []).append((cand, i))
@@ -809,18 +905,27 @@ def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing:
 
 
 def preview_pairs(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection, action, scope_kind,
-                  query=None, selection=(), conn=None) -> BulkPreview:
+                  query=None, selection=(), conn=None, params=None) -> BulkPreview:
     """The categorized preview of one bulk action over visual candidate pairs:
     the pairs a person checked, or what a Show list (optionally within a
     folder) lists now -- frozen at commit. With a connection, each decided
     pair's evidence binding is captured, and so are the marks the commit
     checks: the decision record (any new operation) and the evidence (a
-    re-analysis, a scan) must both be where the preview found them."""
+    scan, a re-hash, a re-analysis) must both be where the preview found them.
+
+    `params` (Build 7) carries a Survey Mode group control's inputs -- the
+    Canonical ("prefer") and the Keepers, a deferral's return trigger, and a
+    "survey" note of the cluster it was over -- into the plan and the batch
+    record."""
     _scope_kind(scope_kind)
     spec = bulk_action(action)
     if spec.member_kind != VISUAL_PAIR:
         raise ValueError(f"{spec.label} is not an action on visual candidate pairs")
+    extra = dict(params or {})
     params = {"targets": VISUAL_PAIR}
+    for key, value in extra.items():
+        if value is not None and key not in ("targets", "selection"):
+            params[key] = sorted((str(v) for v in value), key=_id_order) if key == "keepers" else value
     if scope_kind == SCOPE_EXPLICIT_SELECTION:
         ids = [str(p) for p in selection]
         if not ids:
@@ -837,7 +942,7 @@ def preview_pairs(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingPr
             raise ValueError("Exact copies are answered by the duplicate review: no relationship batch is offered over them")
         ids = pair_query_targets(query, ev, proj, routing)
     pps = [proj.pair(i) for i in ids if proj.pair(i) is not None]
-    candidates = plan_pairs(action, pps, ev)
+    candidates = plan_pairs(action, pps, ev, params)
     classify_pairs(candidates, ev, proj, routing)
     mark = emark = None
     if conn is not None:

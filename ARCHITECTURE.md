@@ -1,11 +1,11 @@
-# Architecture — The File Organizer, B12 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B13 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
-routing, bulk, similar images, bulk over pairs) at the end say what B7 and
-B8–B12 added on top.
+routing, bulk, similar images, bulk over pairs, Survey Mode) at the end say
+what B7 and B8–B13 added on top.
 
 ---
 
@@ -631,4 +631,54 @@ bindings are built from the loaded model (`evidence.pair_binding_from`, the
 same shape `pair_binding` reads) so a preview of thousands of pairs costs no
 per-pair query. Undo is B10's `undo_batch`: one operation withdrawing what
 the batch recorded and still stands.
+
+**Evidence mark, every batch (B13).** Group and copy previews (`bulk.preview`)
+carry the evidence mark too; `store.commit_bulk` has one check for every
+target kind. The mark also records the newest run that wrote a location's
+current state (`file_state.current_run_id` / `content_run_id` /
+`hash_run_id`), because a rescan of unchanged files keeps each observation
+(`fo_state.touch_unchanged`) and a vanished file is marked missing in place
+-- neither moved the B12 mark.
+
+**The simulation's neighbourhood (B13).** `classify_pairs` resolves only the
+pairs within two image-hops of the batch (`bulk._neighbourhood`): a pair's
+conflicts come from its own rows and from the chain guard (its keeper given
+up by another pair), so nothing further away can change. Same answers as the
+whole model (checked on random graphs); a six-pair preview on the real
+collection went from 1.3 s to milliseconds.
+
+### Survey Mode (B13)
+
+A small cluster of look-alikes, looked at together; each decision still names
+one pair. Nothing records a cluster.
+
+```
+   Similar Images page: Show list
+        |  survey.cluster_map: connected components of the list's OPEN pairs
+        |    (not Resolved / Ready for Plan / byte-identical), in list order
+        v
+   isolated pair (2)      survey cluster (3-8)           oversized (> 8)
+   = Compare Mode         = survey_view.SurveyWindow      reported: size, folders
+                                 |
+        survey.cluster_edges: every current non-exact candidate pair among the
+        images in view (Exclude removes an image from the view -- records nothing)
+                                 |
+        survey.group_action -> one Build 6 batch over those pairs:
+          Keep All                      pairs_keep_both
+          Mark Remaining Equivalent     pairs_equivalent_keep_both | pairs_equivalent_prefer
+          Mark Selected as Related      pairs_related_keep_both  (pairs with exactly one
+                                          image selected)
+          Defer Group                   pairs_defer (undecided pairs only)
+                                 |
+        bulk.preview_pairs (explicit selection, "survey" noted in the parameters)
+          -> store.commit_bulk -> store.undo_batch
+```
+
+The three new actions are registry entries marked `survey_only` (not offered
+by either Bulk dialog). `plan_pairs` chooses each pair's retention for
+`pairs_equivalent_prefer` (the Canonical where the pair has it and its other
+image is not a Keeper, Keep both otherwise) and plans one deferral per pair
+for `pairs_defer`. Per-image Compare opens the page's Compare Mode
+(`open_compare`), unchanged: two images that are not a candidate pair are
+shown with no pair decision on offer.
 

@@ -1,7 +1,7 @@
 r"""Similar Images -- the Image Game (Phase 3, Build 5), inside the one window.
 
-One visual candidate pair at a time (A/B Compare; Survey Mode is a later
-build): two large previews side by side, zoom and pan linked by default
+One visual candidate pair at a time (A/B Compare; a small cluster at once
+is Survey Mode, Build 7 -- survey_view.py): two large previews side by side, zoom and pan linked by default
 (unlink, and re-sync, on request), Fit and 100% -- full resolution is
 always one key away, never thumbnails only -- and each image's evidence
 under it: path, resolution, format, size, modified time, the capture date
@@ -49,6 +49,12 @@ them with both images in one folder -- frozen at commit, never a standing
 rule -- and records, pair by pair, the same rows a key would. Batches...
 lists every batch with Undo. The letter keys still act on the pair in view
 only; a check never changes what a key does.
+
+Build 7 (B13) adds Survey Mode...: the pair in view's cluster -- the images a
+chain of open pairs in the Show list joins, 3-8 of them -- tiled in their own
+window, with group controls that are Build 6 batches over that cluster's
+candidate pairs (survey.py, survey_view.py). This page's Compare Mode is
+unchanged; Survey Mode opens it for any two images.
 """
 from __future__ import annotations
 
@@ -416,6 +422,7 @@ class SimilarImagesPage:
         self.bulk_button = ttk.Button(bar2, text="Bulk action...", command=self.bulk_action)
         self.bulk_button.pack(side="left")
         ttk.Button(bar2, text="Batches...", command=self.open_batches).pack(side="left", padx=(6, 0))
+        ttk.Button(bar2, text="Survey Mode...", command=self.survey_mode).pack(side="left", padx=(6, 0))
         ttk.Label(host, text="Decisions on this pair", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=(10, 2))
         self.history = ttk.Treeview(host, columns=("when", "what", "state"), show="headings", height=6, selectmode="none")
         for key, heading, width in (("when", "When (UTC)", 120), ("what", "What", 160), ("state", "State", 70)):
@@ -712,6 +719,14 @@ class SimilarImagesPage:
         self.checked.clear()
         self.undo_stack.clear()                  # a batch is undone from Batches..., as a whole
         self.refresh_record(select=self.selected)
+
+    def survey_mode(self):
+        """Survey Mode (Build 7): the pair in view's cluster in this Show list,
+        or the list's first cluster of 3-8 images."""
+        from .survey_view import open_survey                # the window imports this module
+        if self.proj is None:
+            return
+        self.survey_window = open_survey(self.app, self)
 
     def open_batches(self):
         self.batches_dialog = BatchesDialog(self.app, self.store, lambda: self.refresh_record(select=self.selected))

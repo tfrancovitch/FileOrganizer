@@ -8,9 +8,27 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B12 changes a file either.
+a later phase; nothing in B8–B13 changes a file either.
 
 ---
+
+## B13 — Phase 3, Build 7: Survey Mode
+
+Some look-alikes come in small crowds — three to eight copies of one picture
+scattered over several folders. **Survey Mode…** on the **Similar Images**
+page shows the crowd the pair in view belongs to, all at once: tiles with
+linked zoom, and per image **Keeper**, **Canonical**, **Select**,
+**Compare** (the page's side-by-side view) and **Exclude** (out of the view
+only — it records nothing). Four group controls — **Keep All**, **Mark
+Remaining Equivalent**, **Mark Selected as Related Variant**, **Defer
+Group** — each preview first and then record, pair by pair, on the
+candidate pairs among the images in view; nothing is ever recorded between
+two images that are not a candidate pair, and a decision you already made
+is left alone. A crowd larger than eight is reported (its size and folders),
+not squeezed in. Also in B13: a scan or a re-hash between a duplicate-group
+bulk preview and its commit now refuses the commit, as it already did for
+pairs. `CHANGELOG-B13.md` has the detail; `PHASE3_BUILD7_HANDBACK.md` reports
+against the Build 7 handoff.
 
 ## B12 — Phase 3, Build 6: bulk review of similar images
 
@@ -532,6 +550,39 @@ found later is not in it. **Batches…** lists every batch (pairs named as
 *a.jpg ~ b.jpg*) and undoes a whole batch; a pair you have changed by hand
 since keeps your change.
 
+**Survey Mode (from B13).** **Survey Mode…** opens the cluster of the pair in
+view: the images a chain of still-open pairs in the current Show list joins
+together. It shows clusters of 3–8 images; a pair joined to no other is an
+*isolated pair* (answer it here), and a cluster of more than eight is
+reported with its size and folders (answer it pair by pair, or with Bulk
+action… where it sits in one folder). The window's first line says how many
+of each the Show list holds. Click a tile to make it **Active**; the mouse
+wheel and a drag zoom and pan every tile together (untick *Link zoom and pan*
+to move one). Per image:
+
+| Control | What it does |
+|---|---|
+| **Keeper** | this image is kept by Mark Remaining Equivalent — never the one a pair gives up |
+| **Canonical** | the preferred copy: Mark Remaining Equivalent prefers it on each pair that includes it |
+| **Select** | the image(s) Mark Selected as Related Variant is about |
+| **Compare** | the Active image and this one, side by side on the page (no decision is offered if they are not a candidate pair) |
+| **Exclude** | takes the image out of the view and out of the group controls — **records nothing** |
+
+Group controls — each shows a preview (what would be recorded, what already
+holds, what an earlier decision of yours keeps, what is in conflict or
+blocked), then **Record**:
+
+| Control | Records, on each candidate pair among the images in view |
+|---|---|
+| **Keep All** | Keep both (the relationship stays each pair's own question) |
+| **Mark Remaining Equivalent** | Equivalent copy + Keep both — or, with a Canonical, the Canonical preferred on its pairs (unless the other image is a Keeper). A pair already answered is left as it is |
+| **Mark Selected as Related Variant** | Related variant + Keep both on the pairs joining a selected image to one **not** selected; a pair between two selected images is left alone |
+| **Defer Group** | a deferral (with the return you choose) on each pair not yet answered |
+
+**Undo the last group action** (or **Batches…**) undoes it as a whole;
+**Previous / Next cluster** move through the list. The cluster itself is
+never recorded: every decision names one pair.
+
 ### Stopping a run
 
 Cancel is honoured between files, never during one, so nothing is left
@@ -593,8 +644,9 @@ folder — never next to your originals.
   recompressed, resized, recoloured and lightly edited copies; a crop or a
   heavy edit is usually too different for it. A folder of generated
   variations (a batch of AI images from one prompt) can yield thousands of
-  look-alike pairs: B12's bulk action answers a folder of them at once; a
-  mid-size crowd still takes one pair at a time until Survey Mode.
+  look-alike pairs: B12's bulk action answers a folder of them at once, and
+  Survey Mode (B13) a crowd of 3–8 across folders; a crowd of more than
+  eight across folders still takes one pair at a time.
 
 ---
 

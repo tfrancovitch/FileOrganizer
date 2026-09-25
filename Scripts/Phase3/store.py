@@ -471,12 +471,13 @@ class DecisionStore:
                 raise ValueError("the decision record changed since this preview was made (operations "
                                  f"{preview.record_mark} -> {now_mark}); preview again")
         if getattr(preview, "evidence_mark", None) is not None:
-            # Build 6: a pair batch is judged on evidence as well as on the
-            # record. A re-analysis or a scan adds no operation, so the record
-            # guard alone would not see it; the evidence mark does.
+            # A batch is judged on evidence as well as on the record (pairs
+            # since Build 6, groups since Build 7 -- one check for every target
+            # kind). A scan, a re-hash or a re-analysis adds no operation, so
+            # the record guard alone would not see it; the evidence mark does.
             now_evidence = ev_mod.evidence_mark(self.conn)
             if now_evidence != preview.evidence_mark:
-                raise ValueError("the evidence changed since this preview was made (a re-analysis or a scan: "
+                raise ValueError("the evidence changed since this preview was made (a scan, a re-hash or a re-analysis: "
                                  f"{preview.evidence_mark} -> {now_evidence}); preview again")
         for cand in preview.candidates:
             disposition(cand.disposition)

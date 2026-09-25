@@ -1589,7 +1589,8 @@ class BatchesDialog:
         self.batches = {str(b["batch_id"]): b for b in self.store.batches()}
         for bid, b in self.batches.items():
             noun = "pairs" if BULK_ACTIONS[b["action"]].member_kind == VISUAL_PAIR else "groups"
-            scope = BK.describe_query(b["query"], b["parameters"]) if b["query"] else f"{len(b['parameters'].get('selection', [])):,} checked {noun}"
+            scope = (BK.describe_query(b["query"], b["parameters"]) if (b["query"] or b["parameters"].get("survey"))
+                     else f"{len(b['parameters'].get('selection', [])):,} checked {noun}")
             if b["parameters"].get("folder") and not b["query"]:
                 scope += f"; copies under {b['parameters']['folder']}"
             recorded = b["decisions"] if not BULK_ACTIONS[b["action"]].records_events else b["events"]

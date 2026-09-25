@@ -308,3 +308,8 @@ decisions land together), nothing opened but the two images, read-only.
 A bulk batch over pairs (B12) is a point interaction too: a preview, then
 one operation of kind `bulk` holding the batch, its members and their
 decisions; nothing is opened at all.
+Survey Mode (B13) is the same: tiles of 3-8 images decoded read-only for
+the view, and each group control a preview then one `bulk` operation.
+Excluding an image from the view records nothing. A scan, a re-hash or a
+re-analysis between any bulk preview and its commit (groups included,
+from B13) makes the commit refuse.

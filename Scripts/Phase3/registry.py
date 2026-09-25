@@ -340,6 +340,8 @@ class BulkAction:
     policy_twin: str | None         # the policy kind that says the same about the future, if one exists
     records_events: bool            # a deferral records review events, not decisions
     description: str
+    survey_only: bool = False       # (Build 7) a Survey Mode group control's action: not offered by the Bulk dialogs
+    kinds_text: str | None = None   # the preview's words for what it records, when one action records a choice of rows
 
 
 BULK_ACTIONS = {a.key: a for a in (
@@ -374,6 +376,23 @@ BULK_ACTIONS = {a.key: a for a in (
     BulkAction("pairs_different", "Different", VISUAL_PAIR, ("different",), False, None, False,
                "Each pair in scope is a false positive -- what D records on one pair. A pair that carries a retention "
                "decision is preserved (D by hand withdraws it; a batch never withdraws)."),
+    # -- Build 7: Survey Mode's group controls. Each is a batch over the
+    # candidate pairs inside one displayed cluster -- the same pipeline,
+    # scoped to a cluster; never a group-level decision. Mark Remaining
+    # Equivalent without a Canonical and Mark Selected as Related Variant
+    # are the two Build 6 actions above; these three are the rest.
+    BulkAction("pairs_keep_both", "Keep both (Keep All)", VISUAL_PAIR, ("keep_both",), False, None, False,
+               "Each candidate pair in the cluster: Keep both -- retention only; the relationship stays each pair's own "
+               "question. A pair that prefers one image, or is marked Different, is preserved.", survey_only=True),
+    BulkAction("pairs_equivalent_prefer", "Equivalent copy, prefer the Canonical", VISUAL_PAIR,
+               ("equivalent_copy", "canonical_location", "keep_both"), False, None, False,
+               "Each candidate pair in the cluster with no relationship yet: Equivalent copy. A pair that includes the "
+               "Canonical prefers it (the other image becomes that pair's redundant candidate) -- unless the other image "
+               "is a Keeper; every other pair keeps both.", survey_only=True,
+               kinds_text="Equivalent copy + Set canonical (pairs with the Canonical) or Keep both"),
+    BulkAction("pairs_defer", "Defer", VISUAL_PAIR, (), False, None, True,
+               "Park each undecided candidate pair in the cluster with one return trigger -- the per-pair deferral, "
+               "fanned out; no 'group deferred' state exists.", survey_only=True),
 )}
 
 
@@ -386,9 +405,10 @@ def bulk_action(key):
 
 def bulk_actions_for(member_kinds):
     """The bulk actions whose members are of these kinds, in registry order
-    (the Decide page offers its five; the Similar Images page its three)."""
+    (the Decide page offers its five; the Similar Images page its three).
+    Survey Mode's own actions are its group controls, not offered here."""
     kinds = set(member_kinds)
-    return [a for a in BULK_ACTIONS.values() if a.member_kind in kinds]
+    return [a for a in BULK_ACTIONS.values() if a.member_kind in kinds and not a.survey_only]
 
 
 # -- policies ------------------------------------------------------------------
