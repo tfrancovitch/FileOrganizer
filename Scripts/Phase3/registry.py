@@ -35,6 +35,12 @@ research's rule that relationship and retention are separate decisions:
 A fast action ("Equivalent -> Prefer Left") records two rows in one
 operation; each is its own decision, supersedable on its own. Nothing here
 is a group of images: every relationship names exactly one pair.
+
+Build 6 adds three bulk actions over pairs (`pairs_related_keep_both`,
+`pairs_equivalent_keep_both`, `pairs_different`): the same rows V, E and D
+record on one pair, applied pair by pair to a frozen population. None has a
+policy twin -- the research rules out a standing rule for relationship or
+retention decisions (P3.R4).
 """
 from __future__ import annotations
 
@@ -328,7 +334,7 @@ def disposition(key):
 class BulkAction:
     key: str
     label: str
-    member_kind: str                # what one batch member is: a group, or one copy
+    member_kind: str                # what one batch member is: a group, one copy, or (Build 6) one visual pair
     decision_kinds: tuple           # the decision kinds it records (empty for a deferral)
     needs_folder: bool              # the action takes a folder (copies under it)
     policy_twin: str | None         # the policy kind that says the same about the future, if one exists
@@ -353,6 +359,21 @@ BULK_ACTIONS = {a.key: a for a in (
                "redundant; Avoid folder only ranks such copies below others in the recommendation."),
     BulkAction("defer", "Defer", GROUP, (), False, None, True,
                "Park every group in scope with one return trigger. A group already parked is left as it is."),
+    # -- Build 6: visual candidate pairs. The same two rows a fast action on
+    # the Similar Images page records, pair by pair; never a group-level
+    # object and never a policy (P3.R4: no dynamic policy for relationship
+    # or retention decisions -- a frozen batch only).
+    BulkAction("pairs_related_keep_both", "Related variant, keep both", VISUAL_PAIR, ("related_variant", "keep_both"),
+               False, None, False,
+               "Each pair in scope: Related variant (meaningfully related, not interchangeable) and Keep both -- two "
+               "decisions per pair, exactly what V records on one pair. For a folder of variations of one prompt or scene."),
+    BulkAction("pairs_equivalent_keep_both", "Equivalent copy, keep both", VISUAL_PAIR, ("equivalent_copy", "keep_both"),
+               False, None, False,
+               "Each pair in scope: Equivalent copy and Keep both -- what E records on one pair. Nothing becomes a "
+               "redundant candidate; which copy to prefer stays a pair-by-pair choice."),
+    BulkAction("pairs_different", "Different", VISUAL_PAIR, ("different",), False, None, False,
+               "Each pair in scope is a false positive -- what D records on one pair. A pair that carries a retention "
+               "decision is preserved (D by hand withdraws it; a batch never withdraws)."),
 )}
 
 
@@ -361,6 +382,13 @@ def bulk_action(key):
         return BULK_ACTIONS[key]
     except KeyError:
         raise ValueError(f"unknown bulk action: {key!r}")
+
+
+def bulk_actions_for(member_kinds):
+    """The bulk actions whose members are of these kinds, in registry order
+    (the Decide page offers its five; the Similar Images page its three)."""
+    kinds = set(member_kinds)
+    return [a for a in BULK_ACTIONS.values() if a.member_kind in kinds]
 
 
 # -- policies ------------------------------------------------------------------

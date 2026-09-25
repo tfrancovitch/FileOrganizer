@@ -40,23 +40,35 @@ Nothing on this page writes a source file. A preview is a read: the file is
 opened read-only through Pillow and decoded in memory. A cloud-only file
 (checked live from its attributes, not only from the last scan) is never
 opened -- the product does not download a file to show it.
+
+Build 6 (B12) adds the bulk path, for a collection whose look-alikes come in
+crowds (a folder of variations of one prompt): a check column on the list
+(click it, or Space), and Bulk action..., which previews one relationship
+action over the checked pairs, the pairs the Show list holds, or those of
+them with both images in one folder -- frozen at commit, never a standing
+rule -- and records, pair by pair, the same rows a key would. Batches...
+lists every batch with Undo. The letter keys still act on the pair in view
+only; a check never changes what a key does.
 """
 from __future__ import annotations
 
+import csv
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 from Phase2 import visual as V
 from Phase2.core import utc_now
 
+from . import bulk as BK
 from . import evidence as E
 from . import resolve as R
 from . import routing as RT
 from .model import active_decisions
 from .pairs import EQUIVALENT, RELATED, DIFFERENT, resolve_pairs
-from .registry import LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS
-from .review import store_for, run_detector, DeferDialog, human_bytes
+from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT,
+                       DISP_DECIDED, bulk_actions_for)
+from .review import store_for, run_detector, DeferDialog, BatchesDialog, human_bytes, CHECKED, UNCHECKED
 from .store import new_command_id
 
 #: The extensions the image analyzer hashes (ImageHash.IMAGE_EXTENSIONS) --
@@ -65,20 +77,18 @@ PREVIEWABLE = {".jpg", ".jpeg", ".jfif", ".png", ".gif", ".bmp", ".tiff", ".tif"
                ".webp", ".ico", ".heic", ".heif", ".avif", ".jp2"}
 
 #: Show: the routes, then the lenses. "Visual Similarity Review" is the
-#: pairs' primary queue.
-PAIR_FILTERS = [(RT.PAIR_QUEUE_WORD, RT.UNRESOLVED), ("Conflicts & Exceptions", RT.CONFLICT),
-                ("Needs Revalidation", RT.NEEDS_REVALIDATION), ("Blocked by Evidence", RT.BLOCKED),
-                ("Deferred / Snoozed", RT.DEFERRED), ("Ready for Plan", RT.READY_FOR_PLAN), ("Resolved", RT.RESOLVED)]
-LENS_STRONG = "Strong near-copies"
-LENS_CROSS_ROOT = "Cross-root pairs"
-#: A folder of generated variations (one prompt, many images) is a crowd of
-#: look-alikes inside ONE folder; copies that are really the same picture
-#: kept twice are likelier to sit in different folders.
-LENS_ACROSS_FOLDERS = "Across folders"
-LENS_EXACT = "Exact copies (compare on request)"
-LENS_ALL = "All pairs"
-LENSES = [LENS_STRONG, LENS_ACROSS_FOLDERS, LENS_CROSS_ROOT, LENS_EXACT, LENS_ALL]
-FILTERS = [w for w, _r in PAIR_FILTERS] + LENSES
+#: pairs' primary queue. The filter itself is a pure function in bulk.py (a
+#: snapshot batch freezes exactly what it lists -- Build 6); these names
+#: stay here for the page.
+PAIR_FILTERS = BK.PAIR_ROUTE_FILTERS
+LENS_STRONG = BK.LENS_STRONG
+LENS_CROSS_ROOT = BK.LENS_CROSS_ROOT
+LENS_ACROSS_FOLDERS = BK.LENS_ACROSS_FOLDERS
+LENS_EXACT = BK.LENS_EXACT
+LENS_ALL = BK.LENS_ALL
+LENSES = BK.PAIR_LENSES
+FILTERS = BK.PAIR_FILTERS
+filter_pairs = BK.filter_pairs
 
 KEYMAP = (
     ("a", "equivalent_left", "Equivalent -> Prefer Left"),
@@ -130,32 +140,6 @@ def _short(text, limit=54):
 
 def is_previewable(path):
     return os.path.splitext(str(path or ""))[1].lower() in PREVIEWABLE
-
-
-def filter_pairs(proj, routing, ev, show):
-    """The pairs one Show choice lists, in its order. A pure function."""
-    routes = dict(PAIR_FILTERS)
-
-    def exact(p):
-        return any(c.kind == RT.EXACT_CONTENT for c in routing.pairs[p.pair_id].conditions)
-    if show in routes:
-        pairs = RT.ordered_pairs(proj, routing, routes[show])
-        if routes[show] == RT.RESOLVED:
-            pairs = [p for p in pairs if not exact(p)]
-        return pairs
-    if show == LENS_EXACT:
-        return [p for p in proj.pairs if p.exact_content]
-    if show == LENS_STRONG:
-        return [p for p in proj.pairs if not p.exact_content and p.distance is not None and p.distance <= V.STRONG_DISTANCE]
-    if show == LENS_CROSS_ROOT:
-        def roots(p):
-            return {ev.locations[i].root_key for i in p.members if i in ev.locations}
-        return [p for p in proj.pairs if not p.exact_content and len(roots(p)) > 1]
-    if show == LENS_ACROSS_FOLDERS:
-        def folders(p):
-            return {_folder(ev.locations[i].path).lower() for i in p.members if i in ev.locations}
-        return [p for p in proj.pairs if not p.exact_content and len(folders(p)) > 1]
-    return list(proj.pairs)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +352,7 @@ class SimilarImagesPage:
         self.status_var = tk.StringVar(value="")
         self.facts = {}
         self.generation = None
+        self.checked = set()                    # pair ids a person has checked (Build 6)
 
     # -- layout ---------------------------------------------------------------
 
@@ -396,13 +381,20 @@ class SimilarImagesPage:
 
     def _build_list(self, host):
         host.rowconfigure(0, weight=3)
-        host.rowconfigure(4, weight=1)
+        host.rowconfigure(5, weight=1)
         host.columnconfigure(0, weight=1)
-        cols = ("status", "measure", "left", "right")
+        cols = ("check", "status", "measure", "left", "right")
         self.table = ttk.Treeview(host, columns=cols, show="headings", selectmode="browse")
-        for key, heading, width in (("status", "Status", 84), ("measure", "Bits", 38), ("left", "Image", 124), ("right", "Look-alike", 124)):
+        for key, heading, width in (("check", "\u2713", 26), ("status", "Status", 84), ("measure", "Bits", 36),
+                                    ("left", "Image", 116), ("right", "Look-alike", 116)):
             self.table.heading(key, text=heading)
-            self.table.column(key, width=width, minwidth=40, stretch=False, anchor="e" if key == "measure" else "w")
+            self.table.column(key, width=width, minwidth=26 if key == "check" else 40, stretch=False,
+                              anchor="center" if key == "check" else "e" if key == "measure" else "w")
+        # The check column (Build 6): click it, or Space on the focused row.
+        # A check never changes what a letter key does -- the letters act on
+        # the pair in view; the bulk path is the dialog and its preview.
+        self.table.bind("<Button-1>", self._table_click, add="+")
+        self.table.bind("<KeyPress-space>", lambda e: (self.toggle_check(), "break")[1])
         sy = ttk.Scrollbar(host, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=sy.set)
         self.table.grid(row=0, column=0, sticky="nsew")
@@ -413,13 +405,24 @@ class SimilarImagesPage:
             self.table.tag_configure(tag, foreground=colour)
         self.count_var = tk.StringVar(value="")
         ttk.Label(host, textvariable=self.count_var, foreground="#444", wraplength=320, justify="left").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(host, text="Decisions on this pair", font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=(10, 2))
+        bar = ttk.Frame(host)
+        bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.checked_var = tk.StringVar(value="Nothing checked")
+        ttk.Label(bar, textvariable=self.checked_var, font=("Segoe UI", 9, "bold")).pack(side="left")
+        ttk.Button(bar, text="Check all shown", command=self.check_all_shown).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text="Clear", command=self.clear_checks).pack(side="left", padx=(4, 0))
+        bar2 = ttk.Frame(host)
+        bar2.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.bulk_button = ttk.Button(bar2, text="Bulk action...", command=self.bulk_action)
+        self.bulk_button.pack(side="left")
+        ttk.Button(bar2, text="Batches...", command=self.open_batches).pack(side="left", padx=(6, 0))
+        ttk.Label(host, text="Decisions on this pair", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=(10, 2))
         self.history = ttk.Treeview(host, columns=("when", "what", "state"), show="headings", height=6, selectmode="none")
         for key, heading, width in (("when", "When (UTC)", 120), ("what", "What", 160), ("state", "State", 70)):
             self.history.heading(key, text=heading)
             self.history.column(key, width=width, minwidth=40, stretch=False, anchor="w")
         self.history.tag_configure("inactive", foreground="#888")
-        self.history.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        self.history.grid(row=5, column=0, columnspan=2, sticky="nsew")
 
     def _build_compare(self, host):
         self.compare_host = host
@@ -648,7 +651,70 @@ class SimilarImagesPage:
             a, b = self.ev.locations.get(p.a_id), self.ev.locations.get(p.b_id)
             measure = "" if p.distance is None else f"{p.distance}"
             self.table.insert("", "end", iid=p.pair_id, tags=(tag,), values=[
+                CHECKED if p.pair_id in self.checked else UNCHECKED,
                 r.word, measure, _file_name(a.path) if a else p.a_id, _file_name(b.path) if b else p.b_id])
+        self._update_checked()
+
+    # -- the checked set and the bulk path (Build 6) -------------------------------
+
+    def _table_click(self, event):
+        if self.table.identify_region(event.x, event.y) == "cell" and self.table.identify_column(event.x) == "#1":
+            row = self.table.identify_row(event.y)
+            if row:
+                self._toggle(row)
+                return "break"
+        return None
+
+    def toggle_check(self):
+        """Space: check or uncheck the pair in focus."""
+        row = self.table.focus() or (self.table.selection()[0] if self.table.selection() else None)
+        if row:
+            self._toggle(row)
+
+    def _toggle(self, pair_id):
+        if pair_id in self.checked:
+            self.checked.discard(pair_id)
+        else:
+            self.checked.add(pair_id)
+        if self.table.exists(pair_id):
+            self.table.set(pair_id, "check", CHECKED if pair_id in self.checked else UNCHECKED)
+        self._update_checked()
+
+    def check_all_shown(self):
+        """Every pair the Show list holds -- all of it, not just the rows drawn."""
+        self.checked |= set(getattr(self, "shown", []))
+        self._redraw_checks()
+
+    def clear_checks(self):
+        self.checked.clear()
+        self._redraw_checks()
+
+    def _redraw_checks(self):
+        for row in self.table.get_children():
+            self.table.set(row, "check", CHECKED if row in self.checked else UNCHECKED)
+        self._update_checked()
+
+    def _update_checked(self):
+        n = len(self.checked)
+        shown = set(getattr(self, "shown", []))
+        self.checked_var.set("Nothing checked" if not n else
+                             f"{n:,} checked" + (f" ({len(self.checked & shown):,} shown)" if (self.checked - shown) else ""))
+
+    def bulk_action(self):
+        """One decision over many pairs, after a preview (Build 6)."""
+        if self.filter_var.get() in BK.NO_PAIR_BULK and not self.checked:
+            messagebox.showinfo("Bulk action", "Exact copies are answered by the Duplicate decisions page: no relationship "
+                                "batch is offered over them.", parent=self.app)
+            return
+        self.bulk_dialog = PairBulkDialog(self.app, self, self.store, self._bulk_done)
+
+    def _bulk_done(self):
+        self.checked.clear()
+        self.undo_stack.clear()                  # a batch is undone from Batches..., as a whole
+        self.refresh_record(select=self.selected)
+
+    def open_batches(self):
+        self.batches_dialog = BatchesDialog(self.app, self.store, lambda: self.refresh_record(select=self.selected))
 
     def _select_row(self, pair_id):
         """Select a shown pair's row, bringing it into the listed window first."""
@@ -1176,3 +1242,221 @@ class SimilarImagesPage:
         group = self._group_of_pair()
         if group is not None:
             self.app.show_decide(content_id=group.group_id)
+
+
+# ---------------------------------------------------------------------------
+# Bulk over pairs (Build 6): one decision, many pairs -- after a preview
+# ---------------------------------------------------------------------------
+
+class PairBulkDialog:
+    """A relationship decision over many pairs, the research's frozen
+    query-result batch: the checked pairs, the pairs the Show list holds now,
+    or those of them with both images in one folder -- frozen at commit, a
+    later match not included. Never a policy: nothing here applies itself to
+    pairs found later. Each pair gets the same two rows a key records on it;
+    what stands is preserved, conflicts and blocked pairs are left out and
+    counted; nothing is recorded without a preview, and the commit records
+    exactly what the preview showed."""
+
+    def __init__(self, app, page, store, on_done):
+        self.app, self.page, self.store, self.on_done = app, page, store, on_done
+        self.preview = None
+        self.previewed = None
+        self.actions = bulk_actions_for([VISUAL_PAIR])
+        win = tk.Toplevel(app)
+        self.win = win
+        win.title("Bulk action -- similar images")
+        win.transient(app)
+        win.grab_set()
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="One decision, many pairs -- after a preview", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Each pair in scope gets exactly what one key records on it. A pair you have already answered "
+                              "differently, deferred, or that is in conflict or blocked is left alone and counted. The batch covers "
+                              "the pairs listed now; a pair found later is not included -- this is never a standing rule. Nothing "
+                              "here renames, moves or deletes a file.", wraplength=660, justify="left", foreground="#444").pack(anchor="w", pady=(2, 10))
+        ttk.Label(frame, text="Action:", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.action_var = tk.StringVar(value=self.actions[0].key)
+        for a in self.actions:
+            ttk.Radiobutton(frame, text=a.label, variable=self.action_var, value=a.key, command=self._inputs_changed).pack(anchor="w")
+        self.desc = ttk.Label(frame, text="", wraplength=660, justify="left", foreground="#444")
+        self.desc.pack(anchor="w", pady=(2, 8))
+
+        ttk.Label(frame, text="Apply to:", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.scope_var = tk.StringVar(value="checked" if page.checked else "folder")
+        self.scope_buttons = {}
+        for key in ("checked", "shown", "folder"):
+            b = ttk.Radiobutton(frame, text="", variable=self.scope_var, value=key, command=self._inputs_changed)
+            b.pack(anchor="w")
+            self.scope_buttons[key] = b
+        frow = ttk.Frame(frame)
+        frow.pack(fill="x", padx=(22, 0), pady=(2, 0))
+        ttk.Label(frow, text="Folder:").pack(side="left")
+        self.folder_var = tk.StringVar(value=self._pair_folder() or "")
+        ttk.Entry(frow, textvariable=self.folder_var, width=56).pack(side="left", padx=(6, 4))
+        ttk.Button(frow, text="Browse...", command=self._browse).pack(side="left")
+        ttk.Button(frow, text="This pair's folder", command=self._use_pair_folder).pack(side="left", padx=(4, 0))
+        self.folder_var.trace_add("write", lambda *a: self._inputs_changed())
+        self.sub_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(frame, text="Include subfolders (both images anywhere beneath the folder; off: both directly in it)",
+                        variable=self.sub_var, command=self._inputs_changed).pack(anchor="w", padx=(22, 0))
+
+        prow = ttk.Frame(frame)
+        prow.pack(fill="x", pady=(10, 2))
+        self.preview_button = ttk.Button(prow, text="Preview", command=self.run_preview)
+        self.preview_button.pack(side="left")
+        self.save_button = ttk.Button(prow, text="Save the preview list...", command=self.save_list, state="disabled")
+        self.save_button.pack(side="left", padx=(8, 0))
+        self.preview_text = tk.Text(frame, height=13, width=92, wrap="word", state="disabled", background="#f6f6f6", relief="flat")
+        self.preview_text.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Note (optional):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(8, 2))
+        self.note = tk.Text(frame, height=2, width=92, wrap="word")
+        self.note.pack(fill="x")
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=(14, 0))
+        self.ok = ttk.Button(row, text="Record", command=self._confirm, state="disabled")
+        self.ok.pack(side="right")
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        self._inputs_changed()
+
+    # -- state ------------------------------------------------------------------
+
+    def _action(self):
+        for a in self.actions:
+            if a.key == self.action_var.get():
+                return a
+        return self.actions[0]
+
+    def _pair_folder(self):
+        lid = self.page.left_id
+        loc = self.page.ev.locations.get(str(lid)) if (lid is not None and self.page.ev is not None) else None
+        return _folder(loc.path) if loc else None
+
+    def _use_pair_folder(self):
+        folder = self._pair_folder()
+        if folder:
+            self.folder_var.set(folder)
+            self.scope_var.set("folder")
+            self._inputs_changed()
+
+    def _browse(self):
+        path = filedialog.askdirectory(parent=self.win, initialdir=self.folder_var.get() or None, title="Choose a folder")
+        if path:
+            self.folder_var.set(path.replace("/", "\\"))
+
+    def _query(self):
+        scope = self.scope_var.get()
+        if scope == "folder":
+            return BK.pair_snapshot_query(self.page.filter_var.get(), self.folder_var.get().strip(), bool(self.sub_var.get()))
+        return BK.pair_snapshot_query(self.page.filter_var.get())
+
+    def _key(self):
+        return (self.action_var.get(), self.scope_var.get(), self.page.filter_var.get(), self.folder_var.get().strip(),
+                bool(self.sub_var.get()), tuple(sorted(self.page.checked)))
+
+    def _inputs_changed(self):
+        self.desc.configure(text=self._action().description)
+        page = self.page
+        show = page.filter_var.get()
+        n_checked = len(page.checked)
+        n_shown = len(getattr(page, "shown", []))
+        no_bulk = show in BK.NO_PAIR_BULK
+        self.scope_buttons["checked"].configure(text=f"{n_checked:,} checked pair{'s' if n_checked != 1 else ''}",
+                                                state="normal" if n_checked else "disabled")
+        self.scope_buttons["shown"].configure(
+            text=f"{n_shown:,} pair{'s' if n_shown != 1 else ''} listed now (Show: {show}) -- frozen at commit",
+            state="normal" if n_shown and not no_bulk else "disabled")
+        self.scope_buttons["folder"].configure(
+            text=f"the pairs listed now (Show: {show}) with both images in this folder -- frozen at commit",
+            state="normal" if n_shown and not no_bulk else "disabled")
+        if self.scope_var.get() == "checked" and not n_checked:
+            self.scope_var.set("folder")
+        if self.previewed != self._key():
+            self.preview, self.previewed = None, None
+            self._show("Preview to see, pair by pair, what would be recorded, what already holds, what an explicit decision "
+                       "keeps, what would conflict and what the evidence blocks -- with examples.")
+            self.ok.configure(state="disabled", text="Record")
+            self.save_button.configure(state="disabled")
+
+    def _show(self, text):
+        self.preview_text.configure(state="normal")
+        self.preview_text.delete("1.0", "end")
+        self.preview_text.insert("1.0", text)
+        self.preview_text.configure(state="disabled")
+
+    # -- preview, save, commit ---------------------------------------------------------
+
+    def run_preview(self):
+        page = self.page
+        scope = self.scope_var.get()
+        try:
+            if scope == "folder" and not self.folder_var.get().strip():
+                raise ValueError("choose the folder both images must be in")
+            if scope == "checked":
+                pv = BK.preview_pairs(page.ev, page.proj, page.routing, self._action().key, SCOPE_EXPLICIT_SELECTION,
+                                      selection=sorted(page.checked), conn=self.app.conn)
+            else:
+                pv = BK.preview_pairs(page.ev, page.proj, page.routing, self._action().key, SCOPE_QUERY_SNAPSHOT,
+                                      self._query(), conn=self.app.conn)
+        except ValueError as exc:
+            messagebox.showwarning("Bulk action", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Bulk action", f"The preview failed.\n\n{exc}", parent=self.win)
+            return
+        self.preview, self.previewed = pv, self._key()
+        self._show("\n".join(pv.lines()))
+        self.save_button.configure(state="normal" if pv.candidates else "disabled")
+        n = pv.decision_count
+        if n:
+            self.ok.configure(state="normal", text=f"Record {n:,} decision{'s' if n != 1 else ''} "
+                                                   f"on {pv.counts[DISP_DECIDED]:,} pair{'s' if pv.counts[DISP_DECIDED] != 1 else ''}")
+        else:
+            self.ok.configure(state="disabled", text="Nothing to record")
+
+    def save_list(self):
+        """Every pair in the preview with what would become of it and why, as CSV
+        in the project's Exports folder (formula-safe cells)."""
+        if self.preview is None:
+            return
+        exports = self.app.project_dir / "Exports"
+        exports.mkdir(exist_ok=True)
+        path = filedialog.asksaveasfilename(parent=self.win, title="Save the preview list", initialdir=str(exports),
+                                            initialfile="BulkPreview.csv", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        self.saved_path = self.write_list(path)
+
+    def write_list(self, path):
+        from Phase2.gui import csv_cell
+        with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+            w = csv.writer(handle)
+            for row in BK.preview_table(self.preview):
+                w.writerow([csv_cell(x) for x in row])
+        return path
+
+    def _confirm(self):
+        if self.preview is None or self.previewed != self._key():
+            self._inputs_changed()
+            messagebox.showinfo("Bulk action", "Preview first; the batch records exactly what the preview shows.", parent=self.win)
+            return
+        note = self.note.get("1.0", "end").strip() or None
+        try:
+            result = self.store.commit_bulk(self.preview, note=note, command_id=new_command_id())
+        except ValueError as exc:
+            self.preview, self.previewed = None, None
+            self.ok.configure(state="disabled", text="Record")
+            messagebox.showwarning("Bulk action", str(exc), parent=self.win)
+            return
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Bulk action", f"The batch was not recorded.\n\n{exc}", parent=self.win)
+            return
+        self.result = result
+        self.win.destroy()
+        c = self.preview.counts
+        left = len(self.preview.candidates) - c[DISP_DECIDED]
+        messagebox.showinfo("Bulk action",
+                            f"Batch #{result['batch_id']} recorded: {result['decisions']:,} decision(s) on {c[DISP_DECIDED]:,} "
+                            f"pair(s) of {result['members']:,}" + (f"; {left:,} left as they were (see Batches...)" if left else "")
+                            + ".\n\nUndo the whole batch any time from Batches...", parent=self.app)
+        self.on_done()

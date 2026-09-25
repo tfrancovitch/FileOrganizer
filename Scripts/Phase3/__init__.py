@@ -3,6 +3,7 @@ r"""The File Organizer Phase 3 -- Decide / Plan.
 Builds 1-2 (B8): Core Persistence and Exact-Duplicate Decisions.
 Build 3 (B9): Review Routing. Build 4 (B10): Bulk / Policy.
 Build 5 (B11): the Image Game -- visual candidate pairs.
+Build 6 (B12): Bulk Visual Review -- frozen batches over visual pairs.
 
 Phase 3 converts evidence into attributable human intent, and that intent
 into an inspectable projection of what SHOULD happen -- without touching a

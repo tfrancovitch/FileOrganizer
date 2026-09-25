@@ -34,6 +34,16 @@ recorded for it (`resolve.protected_locations`).
 The Show filter the Decide page draws its list from lives here too, as a
 pure function (`filter_groups`), so that "apply to the N current matches"
 freezes exactly the list the person was looking at.
+
+Build 6 extends the batch to visual candidate pairs (`preview_pairs`): the
+population is the Similar Images page's Show list (`filter_pairs`, moved
+here for the same reason), optionally narrowed to a folder, or the pairs a
+person checked; each member gets the same two rows a fast action records
+(a relationship, and Keep both where the action says so), judged pair by
+pair against what stands and then simulated through the pair resolver with
+the whole batch in place, so the chain guard sees everything the batch
+would record. Never a policy (P3.R4: no dynamic policy for relationship or
+retention decisions), never a group-level decision.
 """
 from __future__ import annotations
 
@@ -42,11 +52,14 @@ from dataclasses import dataclass, field, asdict
 from Phase2.core import utc_now
 
 from . import BULK_QUERY_SCHEMA
+from Phase2 import visual as V
+
 from . import evidence as ev_mod
+from . import pairs as PR
 from . import resolve as R
 from . import routing as RT
 from .model import Evidence, Decision, PolicyVersion, active_decisions, under, path_key
-from .registry import (LOCATION, GROUP, decision_kind, policy_kind, bulk_action, scope_kind as _scope_kind,
+from .registry import (LOCATION, GROUP, VISUAL_PAIR, decision_kind, policy_kind, bulk_action, scope_kind as _scope_kind,
                        SOURCE_ROOT, SCOPE_EXPLICIT_SELECTION, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        DISP_DECIDED, DISP_SATISFIED, DISP_PRESERVED, DISP_CONFLICT, DISP_BLOCKED, DISP_NOT_APPLICABLE,
                        DISPOSITIONS, MODE_PRESERVE)
@@ -133,14 +146,18 @@ def describe_query(query, parameters=None) -> str:
         parts.append(f"Show: {q['show']}")
     if q.get("group_ids"):
         parts.append(f"{len(q['group_ids'])} groups")
-    if q.get("folder"):
+    if q.get("folder") and q.get("targets") == VISUAL_PAIR:
+        parts.append(f"both images under {q['folder']}" + (" (subfolders included)" if q.get("subfolders", True)
+                                                           else " (that folder only)"))
+    elif q.get("folder"):
         parts.append(f"copies under {q['folder']}")
     if q.get("root"):
         parts.append(f"root {q['root']}")
     if q.get("extension"):
         parts.append(f"extension {q['extension']}")
     if not parts and parameters and parameters.get("selection"):
-        parts.append(_n(len(parameters["selection"]), "checked group"))
+        parts.append(_n(len(parameters["selection"]), "checked pair" if q.get("targets") == VISUAL_PAIR
+                        or parameters.get("targets") == VISUAL_PAIR else "checked group"))
     return "; ".join(parts) or "every current group"
 
 
@@ -181,6 +198,8 @@ def query_targets(query, ev: Evidence, proj: R.ProjectProjection, routing: RT.Ro
     returned at commit, recorded, and a later match (F04's future.tmp) is
     not a member."""
     q = query or {}
+    if q.get("targets") == VISUAL_PAIR:
+        return VISUAL_PAIR, pair_query_targets(q, ev, proj, routing)
     groups = scope_groups(q, ev, proj, routing)
     criteria = {k: q[k] for k in ("folder", "folder_key", "root", "extension") if q.get(k)}
     if q.get("targets") == LOCATION or criteria:
@@ -305,6 +324,9 @@ class _Overlay:
         if key in self.extra:
             return self.extra[key]
         return self.base.get(key, default)
+
+    def __contains__(self, key):
+        return key in self.extra or key in self.base
 
 
 def _same_value(a, b):
@@ -455,6 +477,7 @@ class BulkPreview:
     evaluated_utc: str = ""
     mode: str = MODE_PRESERVE
     record_mark: int | None = None  # the last operation id when previewed: the commit refuses if the record moved
+    evidence_mark: str | None = None    # (pairs, Build 6) the evidence it was judged on: a re-analysis or a scan voids it
 
     @property
     def counts(self) -> dict:
@@ -473,7 +496,11 @@ class BulkPreview:
 
     @property
     def member_word(self) -> str:
-        return "copies" if bulk_action(self.action).member_kind == LOCATION else "groups"
+        return {LOCATION: "copies", VISUAL_PAIR: "pairs"}.get(bulk_action(self.action).member_kind, "groups")
+
+    @property
+    def member_singular(self) -> str:
+        return {LOCATION: "copy", VISUAL_PAIR: "pair"}.get(bulk_action(self.action).member_kind, "group")
 
     def samples(self, disposition, n=3):
         return [(c.label, c.detail) for c in self.candidates if c.disposition == disposition][:n]
@@ -484,7 +511,7 @@ class BulkPreview:
         spec = bulk_action(self.action)
         c = self.counts
         n = len(self.candidates)
-        out = [f"{_n(n, 'copy' if spec.member_kind == LOCATION else 'group')} in scope ({describe_query(self.query, self.parameters)})"]
+        out = [f"{_n(n, self.member_singular)} in scope ({describe_query(self.query, self.parameters)})"]
         if spec.records_events:
             out.append(f"  -> {c[DISP_DECIDED]:,} would be deferred")
         else:
@@ -506,6 +533,7 @@ class BulkPreview:
         return {"action": self.action, "parameters": self.parameters, "scope_kind": self.scope_kind, "query": self.query,
                 "scope_size": self.scope_size, "members": len(self.candidates), "counts": self.counts,
                 "decisions": self.decision_count, "events": self.event_count, "mode": self.mode,
+                "evidence_mark": self.evidence_mark,
                 "evaluated_utc": self.evaluated_utc,
                 "samples": {d: self.samples(d) for d in DISPOSITIONS if self.counts.get(d)}}
 
@@ -559,6 +587,279 @@ def record_mark(conn) -> int:
     batch is never applied over a record the person did not see."""
     row = conn.execute("SELECT MAX(operation_id) FROM p3_operation").fetchone()
     return int(row[0] or 0)
+
+
+# -- Build 6: bulk over visual candidate pairs ----------------------------------------------
+
+#: The Similar Images page's Show list: the routes, then the lenses. It lives
+#: here, one pure function, so a snapshot freezes exactly what was listed.
+PAIR_ROUTE_FILTERS = [(RT.PAIR_QUEUE_WORD, RT.UNRESOLVED), ("Conflicts & Exceptions", RT.CONFLICT),
+                      ("Needs Revalidation", RT.NEEDS_REVALIDATION), ("Blocked by Evidence", RT.BLOCKED),
+                      ("Deferred / Snoozed", RT.DEFERRED), ("Ready for Plan", RT.READY_FOR_PLAN), ("Resolved", RT.RESOLVED)]
+LENS_STRONG = "Strong near-copies"
+LENS_CROSS_ROOT = "Cross-root pairs"
+#: A folder of generated variations (one prompt, many images) is a crowd of
+#: look-alikes inside ONE folder; copies that are really the same picture
+#: kept twice are likelier to sit in different folders.
+LENS_ACROSS_FOLDERS = "Across folders"
+LENS_EXACT = "Exact copies (compare on request)"
+LENS_ALL = "All pairs"
+PAIR_LENSES = [LENS_STRONG, LENS_ACROSS_FOLDERS, LENS_CROSS_ROOT, LENS_EXACT, LENS_ALL]
+PAIR_FILTERS = [w for w, _r in PAIR_ROUTE_FILTERS] + PAIR_LENSES
+#: Byte-identical pairs route around relationship decisions (Build 5 §6):
+#: a relationship batch is never offered over them.
+NO_PAIR_BULK = (LENS_EXACT,)
+
+EXACT_NOT_APPLICABLE = "byte-identical: the exact-duplicate review answers this pair"
+
+
+def filter_pairs(proj, routing, ev, show):
+    """The pairs one Show choice lists, in its order. A pure function."""
+    routes = dict(PAIR_ROUTE_FILTERS)
+
+    def exact(p):
+        return any(c.kind == RT.EXACT_CONTENT for c in routing.pairs[p.pair_id].conditions)
+    if show in routes:
+        pairs = RT.ordered_pairs(proj, routing, routes[show])
+        if routes[show] == RT.RESOLVED:
+            pairs = [p for p in pairs if not exact(p)]
+        return pairs
+    if show == LENS_EXACT:
+        return [p for p in proj.pairs if p.exact_content]
+    if show == LENS_STRONG:
+        return [p for p in proj.pairs if not p.exact_content and p.distance is not None and p.distance <= V.STRONG_DISTANCE]
+    if show == LENS_CROSS_ROOT:
+        def roots(p):
+            return {ev.locations[i].root_key for i in p.members if i in ev.locations}
+        return [p for p in proj.pairs if not p.exact_content and len(roots(p)) > 1]
+    if show == LENS_ACROSS_FOLDERS:
+        def folders(p):
+            return {folder_of(ev.locations[i].path).lower() for i in p.members if i in ev.locations}
+        return [p for p in proj.pairs if not p.exact_content and len(folders(p)) > 1]
+    return list(proj.pairs)
+
+
+def pair_in_folder(pair, ev: Evidence, folder_key, subfolders=True) -> bool:
+    """Both images of the pair in the folder -- anywhere beneath it, or (with
+    `subfolders` off) directly in it. One image in and one out is not in."""
+    key = path_key(folder_key)
+    for lid in pair.members:
+        loc = ev.locations.get(str(lid))
+        if loc is None:
+            return False
+        if subfolders:
+            if not under(loc.path_key, key):
+                return False
+        elif path_key(folder_of(loc.path)) != key:
+            return False
+    return True
+
+
+def pair_snapshot_query(show=None, folder=None, subfolders=True) -> dict:
+    """The frozen query a pair batch records: the Show list and, optionally,
+    the folder both images must be in."""
+    q = {"schema": BULK_QUERY_SCHEMA, "targets": VISUAL_PAIR}
+    if show:
+        q["show"] = str(show)
+    if folder:
+        q["folder"] = str(folder)
+        q["folder_key"] = path_key(folder)
+        q["subfolders"] = bool(subfolders)
+    return q
+
+
+def pair_query_targets(query, ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection) -> list:
+    """The pair ids a pair query matches NOW, in the list's order. A frozen
+    batch never asks again: its members are what this returned at commit."""
+    q = query or {}
+    pairs = filter_pairs(proj, routing, ev, q["show"]) if q.get("show") else list(proj.pairs)
+    if q.get("folder_key") or q.get("folder"):
+        key = q.get("folder_key") or path_key(q["folder"])
+        subfolders = q.get("subfolders", True)
+        pairs = [p for p in pairs if pair_in_folder(p, ev, key, subfolders)]
+    return [p.pair_id for p in pairs]
+
+
+def _pair_label(ev: Evidence, pp) -> str:
+    a, b = ev.locations.get(pp.a_id), ev.locations.get(pp.b_id)
+    return f"{file_name(a.path) if a else pp.a_id} ~ {file_name(b.path) if b else pp.b_id}"
+
+
+def plan_pairs(action, pair_projections, ev: Evidence) -> list:
+    """One Candidate per pair: the same rows a fast action records on it."""
+    spec = bulk_action(action)
+    if spec.member_kind != VISUAL_PAIR:
+        raise ValueError(f"{spec.label} is not an action on visual candidate pairs")
+    out = []
+    for pp in pair_projections:
+        decisions = []
+        for kind in spec.decision_kinds:
+            value = decision_kind(kind).validate_value([pp.a_id, pp.b_id]) if kind == "keep_both" else True
+            decisions.append((kind, VISUAL_PAIR, pp.pair_id, value))
+        cand = Candidate(VISUAL_PAIR, pp.pair_id, tuple(decisions), "", _pair_label(ev, pp))
+        if pp.exact_content:
+            cand.disposition, cand.detail = DISP_NOT_APPLICABLE, EXACT_NOT_APPLICABLE
+        out.append(cand)
+    return out
+
+
+def _first_blocker(route):
+    for r in (RT.BLOCKED, RT.NEEDS_REVALIDATION):
+        if route.has(r):
+            c = route.of(r)[0]
+            return ("needs revalidation: " if r == RT.NEEDS_REVALIDATION else "") + c.detail
+    return None
+
+
+def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection):
+    """Sort every pair candidate into its bucket, in place.
+
+    Per pair, in this order: a pair that already says exactly this is
+    satisfied (a no-op, whatever else is true of it); a pair in Conflicts
+    (the chain guard, protection, ...) is a conflict; a pair Blocked or
+    Needs Revalidation is blocked -- its route, the same computation the
+    page shows, decides these; then what stands is preserved: a different
+    relationship, a preference Keep both would undo, a retention row
+    Different would contradict, a deferral made by hand. The first row
+    gates the second, as a fast action's two rows go together. Then the
+    whole batch is simulated through the pair resolver: a conflict the
+    batch's rows would create -- the chain guard included -- keeps the pair
+    it falls on out of the batch. Nothing is dropped: every member lands in
+    a bucket, with the reason."""
+    active = active_decisions(ev.decisions)
+    index = R._index_decisions(active)
+    pending = []
+    for cand in candidates:
+        if cand.disposition:
+            cand.outcomes = tuple((cand.disposition, cand.detail) for _ in cand.decisions) or ((cand.disposition, cand.detail),)
+            continue
+        ref = cand.target_ref
+        pp = proj.pair(ref)
+        route = routing.pairs.get(ref)
+        outcomes = [_classify_one(kind, tk, r, value, None, None, index, routing) for (kind, tk, r, value) in cand.decisions]
+        if route is not None and not all(o[0] == DISP_SATISFIED for o in outcomes):
+            blocking = [c for c in route.of(RT.CONFLICT) if c.severity == R.BLOCKING]
+            blocked = _first_blocker(route)
+            if blocking:
+                outcomes = [(DISP_CONFLICT, "the pair already needs a person: " + blocking[0].detail) if o[0] != DISP_SATISFIED else o
+                            for o in outcomes]
+            elif blocked:
+                outcomes = [(DISP_BLOCKED, blocked) if o[0] != DISP_SATISFIED else o for o in outcomes]
+        for i, (kind, _tk, _r, _value) in enumerate(cand.decisions):
+            if outcomes[i][0] != DISP_DECIDED or pp is None:
+                continue
+            if kind == "keep_both" and pp.redundant_candidate is not None:
+                keep = ev.locations.get(pp.canonical)
+                outcomes[i] = (DISP_PRESERVED, f"the pair prefers {file_name(keep.path) if keep else pp.canonical} "
+                                               f"(#{pp.canonical_decision_id}); Keep both would undo that preference")
+            elif kind == "different" and (pp.canonical_decision_id or pp.keep_both_decision_id):
+                held = pp.canonical_decision_id or pp.keep_both_decision_id
+                outcomes[i] = (DISP_PRESERVED, f"a retention decision stands (#{held}); D by hand withdraws it, a batch never does")
+        if route is not None and route.has(RT.DEFERRED):
+            why = "deferred by hand: " + route.of(RT.DEFERRED)[0].detail
+            outcomes = [(DISP_PRESERVED, why) if o[0] == DISP_DECIDED else o for o in outcomes]
+        if len(outcomes) > 1 and outcomes[0][0] not in (DISP_DECIDED, DISP_SATISFIED):
+            outcomes = [outcomes[0]] + [(outcomes[0][0], f"{outcomes[0][1]} (gates the rest)") for _ in outcomes[1:]]
+        pending.append((cand, outcomes))
+
+    # The whole batch through the pair resolver at once.
+    planned = [(cand, i, d) for cand, outcomes in pending for i, d in enumerate(cand.decisions) if outcomes[i][0] == DISP_DECIDED]
+    if planned:
+        extra, ids = {}, {}
+        for n, (cand, i, (kind, tk, ref, value)) in enumerate(planned):
+            key = (tk, ref)
+            slot = extra.get(key) or {k: list(v) for k, v in index.get(key, {}).items()}
+            hid = f"planned-{n}"
+            ids[hid] = (cand, i)
+            slot.setdefault(kind, []).append(Decision(hid, tk, ref, kind, value, "bulk_explicit_human", None, False, None, 10 ** 9 + n))
+            extra[key] = slot
+        after = PR.resolve_pairs(ev, _Overlay(index, extra), [])
+        before = {p.pair_id: {(c.kind, c.location_ids) for c in p.conflicts if c.severity == R.BLOCKING} for p in proj.pairs}
+        members = {}
+        for cand, i, _d in planned:
+            members.setdefault(cand.target_ref, []).append((cand, i))
+        outcome_of = {id(cand): outcomes for cand, outcomes in pending}
+        for p in after:
+            for c in p.conflicts:
+                if c.severity != R.BLOCKING or (c.kind, c.location_ids) in before.get(p.pair_id, set()):
+                    continue
+                # The pair the conflict falls on, when it is in the batch; a
+                # pair outside it: the batch rows the conflict names.
+                hits = members.get(p.pair_id) or [ids[d] for d in c.decision_ids if d in ids]
+                for cand, i in hits:
+                    outs = outcome_of[id(cand)]
+                    for j in range(len(outs)):                     # a pair's rows go together
+                        if outs[j][0] == DISP_DECIDED:
+                            outs[j] = (DISP_CONFLICT, "the batch would create a conflict: " + c.message)
+
+    for cand, outcomes in pending:
+        cand.outcomes = tuple(outcomes)
+        disps = [o[0] for o in outcomes]
+        if DISP_DECIDED in disps:
+            cand.disposition = DISP_DECIDED
+            others = [f"{decision_kind(d[0]).label}: {why}" for d, (disp, why) in zip(cand.decisions, outcomes) if disp != DISP_DECIDED]
+            n = disps.count(DISP_DECIDED)
+            cand.detail = "; ".join([f"{n} decision{'s' if n != 1 else ''}"] + others)
+        else:
+            for want in _PRIORITY:
+                if want in disps:
+                    cand.disposition = want
+                    cand.detail = next(why for disp, why in outcomes if disp == want)
+                    break
+
+
+def preview_pairs(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection, action, scope_kind,
+                  query=None, selection=(), conn=None) -> BulkPreview:
+    """The categorized preview of one bulk action over visual candidate pairs:
+    the pairs a person checked, or what a Show list (optionally within a
+    folder) lists now -- frozen at commit. With a connection, each decided
+    pair's evidence binding is captured, and so are the marks the commit
+    checks: the decision record (any new operation) and the evidence (a
+    re-analysis, a scan) must both be where the preview found them."""
+    _scope_kind(scope_kind)
+    spec = bulk_action(action)
+    if spec.member_kind != VISUAL_PAIR:
+        raise ValueError(f"{spec.label} is not an action on visual candidate pairs")
+    params = {"targets": VISUAL_PAIR}
+    if scope_kind == SCOPE_EXPLICIT_SELECTION:
+        ids = [str(p) for p in selection]
+        if not ids:
+            raise ValueError("nothing is checked")
+        params["selection"] = ids
+        query = None
+    else:
+        if not query:
+            raise ValueError("a snapshot needs the query that lists its matches")
+        query = dict(query)
+        query.setdefault("schema", BULK_QUERY_SCHEMA)
+        query["targets"] = VISUAL_PAIR
+        if query.get("show") in NO_PAIR_BULK:
+            raise ValueError("Exact copies are answered by the duplicate review: no relationship batch is offered over them")
+        ids = pair_query_targets(query, ev, proj, routing)
+    pps = [proj.pair(i) for i in ids if proj.pair(i) is not None]
+    candidates = plan_pairs(action, pps, ev)
+    classify_pairs(candidates, ev, proj, routing)
+    mark = emark = None
+    if conn is not None:
+        for cand in candidates:
+            if cand.disposition != DISP_DECIDED:
+                continue
+            binding = ev_mod.pair_binding_from(ev, ev.pairs[cand.target_ref])
+            for kind, tk, ref, _value in cand.to_record:
+                cand.bindings[(kind, tk, ref)] = binding
+        mark = record_mark(conn)
+        emark = ev_mod.evidence_mark(conn)
+    return BulkPreview(action, params, scope_kind, query, len(pps), candidates, utc_now(), record_mark=mark, evidence_mark=emark)
+
+
+def preview_table(pv: BulkPreview) -> list:
+    """Every member of a preview, one row each -- what would become of it and
+    why: the list a person reads to decide whether a folder is uniform enough
+    to batch."""
+    rows = [("target_kind", "target", "label", "disposition", "detail")]
+    for c in pv.candidates:
+        rows.append((c.target_kind, c.target_ref, c.label, DISPOSITION_WORDS.get(c.disposition, c.disposition), c.detail))
+    return rows
 
 
 # -- the policy workflow: what a policy would cover and change today ------------------------

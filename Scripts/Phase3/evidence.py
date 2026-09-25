@@ -410,6 +410,39 @@ def pair_binding(conn, pair_id) -> dict:
     }
 
 
+def evidence_mark(conn) -> str:
+    """Where the evidence stands, for a preview to be checked against at commit
+    (Build 6): the newest comparison of the image hashes and the newest
+    observation of any file. A re-analysis or a scan moves one of them."""
+    try:
+        gen = conn.execute("SELECT COALESCE(MAX(generation_id), 0) FROM visual_candidate_generation").fetchone()[0]
+    except sqlite3.OperationalError:
+        gen = 0
+    obs = conn.execute("SELECT COALESCE(MAX(current_observation_id), 0), COUNT(*) FROM file_state").fetchone()
+    return f"generation {int(gen or 0)}; observation {int(obs[0] or 0)}; locations {int(obs[1] or 0)}"
+
+
+def pair_binding_from(ev, pair) -> dict:
+    """The same binding `pair_binding` reads from the database, built from a
+    loaded model (Build 6: a batch previews thousands of pairs at once; the
+    commit guard refuses if the evidence moved after this model was read)."""
+    members = []
+    for lid in pair.members:
+        loc = ev.locations.get(str(lid))
+        obs = loc.observation_id if loc is not None else None
+        members.append({"file_path_id": int(lid), "observation_id": int(obs) if obs is not None and str(obs).isdigit() else obs})
+    return {
+        "schema": EVIDENCE_BINDING_SCHEMA,
+        "target_kind": VISUAL_PAIR,
+        "pair_id": int(pair.pair_id) if str(pair.pair_id).isdigit() else pair.pair_id,
+        "method": pair.method,
+        "distance": pair.distance,
+        "hash_bits": pair.bits,
+        "compared_observations": [pair.a_observation_id, pair.b_observation_id],
+        "members": members,
+    }
+
+
 def binding_for(conn, target_kind, target_ref) -> dict:
     if target_kind == VISUAL_PAIR:
         return pair_binding(conn, target_ref)

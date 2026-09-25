@@ -8,9 +8,25 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8, B9, B10 or B11 changes a file either.
+a later phase; nothing in B8–B12 changes a file either.
 
 ---
+
+## B12 — Phase 3, Build 6: bulk review of similar images
+
+A folder of variations — many images from one prompt or one shoot — makes
+thousands of look-alike pairs, too many to answer one at a time. B12 lets
+you answer them once: on the **Similar Images** page, **Bulk action…**
+applies *Related variant, keep both*, *Equivalent copy, keep both* or
+*Different* to the pairs listed now — all of them, those with both images
+in one folder (subfolders included or not), or the ones you checked —
+after a **preview** that says, pair by pair, what would be recorded, what
+already holds, what an earlier decision of yours keeps, what is in
+conflict and what the evidence blocks. Each pair gets exactly what one key
+would record on it. The batch covers the pairs listed now; a picture added
+later is **not** swept in — it waits in the queue for you. **Batches…**
+undoes a whole batch. `CHANGELOG-B12.md` has the detail;
+`PHASE3_BUILD6_HANDBACK.md` reports against the Build 6 handoff.
 
 ## B11 — Phase 3, Build 5: similar images, one pair at a time
 
@@ -179,7 +195,8 @@ a release gate.
   decision to many groups after a preview, as a batch you can undo whole
   (from B10)
 - Compares every analyzed picture with its look-alikes by perceptual hash and
-  records, pair by pair, what you say they are to each other (from B11)
+  records, pair by pair, what you say they are to each other (from B11) — or,
+  after a preview, over a whole folder of them at once (from B12)
 
 ## What it deliberately does not do
 
@@ -488,6 +505,33 @@ copies* — or **Compare images…** on the Duplicate decisions page — opens
 them side by side anyway; **[** / **]** there set the exact-duplicate
 group's canonical.
 
+**Bulk (from B12).** Check pairs in the list (click the first column, or
+Space on the focused row; **Check all shown** / **Clear**) — the letter keys
+still act on the pair in view only. **Bulk action…** offers:
+
+| Action | What each pair in scope receives |
+|---|---|
+| **Related variant, keep both** | what **V** records: related variant + keep both |
+| **Equivalent copy, keep both** | what **E** records: equivalent copy + keep both |
+| **Different** | what **D** records: different |
+
+Apply to: the **N checked pairs**, the **N pairs listed now** (the Show
+list), or the pairs listed now **with both images in a folder** — type it,
+**Browse…**, or **This pair's folder**; *Include subfolders* is on by
+default (off: both images directly in that folder). Exact copies are never
+a bulk population. **Preview** first: how many pairs would receive the
+decision, already say it, carry an earlier decision of yours that the batch
+keeps (another relationship, a preferred copy, a retention row, a
+deferral), are in conflict (for example the chain guard), or are blocked
+(an image cloud-only, changed since it was compared, or a decision whose
+evidence moved) — with examples; **Save the preview list…** writes every
+pair and its reason to a CSV in the project's `Exports\` folder. **Record**
+writes exactly the preview — and refuses if anything was recorded, re-analyzed
+or rescanned since, asking for a fresh preview. The batch is frozen: a pair
+found later is not in it. **Batches…** lists every batch (pairs named as
+*a.jpg ~ b.jpg*) and undoes a whole batch; a pair you have changed by hand
+since keeps your change.
+
 ### Stopping a run
 
 Cancel is honoured between files, never during one, so nothing is left
@@ -549,7 +593,8 @@ folder — never next to your originals.
   recompressed, resized, recoloured and lightly edited copies; a crop or a
   heavy edit is usually too different for it. A folder of generated
   variations (a batch of AI images from one prompt) can yield thousands of
-  look-alike pairs: they are reviewed one pair at a time in this build.
+  look-alike pairs: B12's bulk action answers a folder of them at once; a
+  mid-size crowd still takes one pair at a time until Survey Mode.
 
 ---
 

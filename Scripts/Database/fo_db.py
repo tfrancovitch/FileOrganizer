@@ -114,6 +114,12 @@ written by Phase2/visual.py at the end of an image analysis (or on demand
 when the Similar Images page finds them out of date). A pair's identity is
 its two file locations, so a decision on it survives re-analysis.
 
+CHANGED IN B12 (PHASE 3, BUILD 6)
+---------------------------------
+No schema change: APP_SCHEMA_VERSION stays 12. Bulk batches over visual
+candidate pairs use the tables migration 011 made (p3_bulk_member already
+records a target kind per member).
+
 CLI
 ---
     python fo_db.py init-project     --project-dir <dir> --name <n> [--source-root <path>]...
@@ -145,8 +151,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.9.0"
-APP_VERSION = "B11"
+MODULE_VERSION = "1.9.1"
+APP_VERSION = "B12"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).

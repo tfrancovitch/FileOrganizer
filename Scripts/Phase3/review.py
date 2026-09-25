@@ -56,7 +56,8 @@ from . import evidence as E
 from . import resolve as R
 from . import routing as RT
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS, DEFER_CHOICES,
-                       SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED)
+                       SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED,
+                       bulk_actions_for)
 from .store import DecisionStore, new_command_id, export_decision_journal
 
 STATUS_WORDS = {R.PROTECTED: "Protected", R.KEEPER: "Keeper", R.REDUNDANT: "Redundant candidate", R.UNDECIDED: "Undecided"}
@@ -1325,7 +1326,7 @@ class BulkDialog:
         arow = ttk.Frame(frame)
         arow.pack(fill="x")
         ttk.Label(arow, text="Action:", font=("Segoe UI", 9, "bold")).pack(side="left")
-        self.actions = list(BULK_ACTIONS)
+        self.actions = [a.key for a in bulk_actions_for([GROUP, LOCATION])]      # the pairs' are the Similar Images page's
         self.action_var = tk.StringVar(value=BULK_ACTIONS[self.actions[0]].label)
         cb = ttk.Combobox(arow, textvariable=self.action_var, values=[BULK_ACTIONS[k].label for k in self.actions], state="readonly", width=36)
         cb.pack(side="left", padx=(8, 0))
@@ -1587,7 +1588,8 @@ class BatchesDialog:
         self.table.delete(*self.table.get_children())
         self.batches = {str(b["batch_id"]): b for b in self.store.batches()}
         for bid, b in self.batches.items():
-            scope = BK.describe_query(b["query"], b["parameters"]) if b["query"] else f"{len(b['parameters'].get('selection', [])):,} checked groups"
+            noun = "pairs" if BULK_ACTIONS[b["action"]].member_kind == VISUAL_PAIR else "groups"
+            scope = BK.describe_query(b["query"], b["parameters"]) if b["query"] else f"{len(b['parameters'].get('selection', [])):,} checked {noun}"
             if b["parameters"].get("folder") and not b["query"]:
                 scope += f"; copies under {b['parameters']['folder']}"
             recorded = b["decisions"] if not BULK_ACTIONS[b["action"]].records_events else b["events"]
@@ -1608,6 +1610,12 @@ class BatchesDialog:
                         "SELECT sr.root_path, fp.relative_path FROM file_path fp JOIN source_root sr ON sr.source_root_id = fp.source_root_id "
                         " WHERE fp.file_path_id = ?", (int(ref),)).fetchone()
                     self._labels[key] = E.full_path(r["root_path"], r["relative_path"]) if r else f"location {ref}"
+                elif target_kind == VISUAL_PAIR:
+                    rows = self.app.conn.execute(
+                        "SELECT fp.relative_path FROM visual_candidate vc JOIN file_path fp "
+                        "    ON fp.file_path_id IN (vc.a_file_path_id, vc.b_file_path_id) "
+                        " WHERE vc.candidate_id = ? ORDER BY fp.file_path_id", (int(ref),)).fetchall()
+                    self._labels[key] = (" ~ ".join(_file_name(r["relative_path"]) for r in rows) + f" (pair #{ref})") if rows else f"pair {ref}"
                 else:
                     r = self.app.conn.execute(
                         "SELECT fp.relative_path FROM p2_current_duplicate_member m JOIN file_path fp ON fp.file_path_id = m.file_path_id "

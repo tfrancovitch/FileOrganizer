@@ -305,3 +305,6 @@ and **Find similar images again** on that page compares on request —
 neither is a run. Answering a pair on that page is a point interaction
 like the Decide page's: one operation per answer (a fast action's two
 decisions land together), nothing opened but the two images, read-only.
+A bulk batch over pairs (B12) is a point interaction too: a preview, then
+one operation of kind `bulk` holding the batch, its members and their
+decisions; nothing is opened at all.

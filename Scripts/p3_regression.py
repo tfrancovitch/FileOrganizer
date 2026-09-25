@@ -530,8 +530,8 @@ def test_project(tmp: Path):
     check("app_meta carries the Phase 3 contracts",
           conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1"
           and conn.execute("SELECT value FROM app_meta WHERE key='phase3.bulk_schema'").fetchone()[0] == "fileorganizer.p3.bulk/1")
-    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B11', schema 12 everywhere",
-          fo_db.APP_VERSION == "B11" and __import__("Phase2").VERSION == "B11" and fo_db.APP_SCHEMA_VERSION == 12
+    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B12', schema 12 everywhere",
+          fo_db.APP_VERSION == "B12" and __import__("Phase2").VERSION == "B12" and fo_db.APP_SCHEMA_VERSION == 12
           and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 12 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 12)
 
     # -- migrating a schema-8 database ---------------------------------------
@@ -557,7 +557,7 @@ def test_project(tmp: Path):
     c9, _ = fo_db.open_project(str(old_dir), app_version=fo_db.APP_VERSION)
     check("a schema-8 project opens and migrates to 12", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 12)
     check("migrations 009, 010, 011 and 012 recorded with this build's version",
-          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12) ORDER BY version")] == ["B11"] * 4)
+          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12) ORDER BY version")] == ["B12"] * 4)
     same = all(c9.execute(f"SELECT * FROM {t}").fetchall() == rows for t, rows in snapshot8.items() if t != "schema_migration")
     check("every pre-existing row is untouched by the migration", same)
     check("a pre-migration backup was made", any(paths.backup_dir and Path(paths.backup_dir).glob("*")))
@@ -621,7 +621,7 @@ def test_project(tmp: Path):
     op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (d1["operation_id"],)).fetchone()
     check("the operation carries actor, actor kind, agent kind and version, session and command ids, time, note",
           op["actor_id"] == "tester" and op["actor_kind"] == "explicit_human" and op["agent_kind"] == "dashboard"
-          and op["agent_version"] == "B11" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
+          and op["agent_version"] == "B12" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
           and op["occurred_utc"].endswith("Z") and op["note"] == "the working copy")
     g = R.resolve_all(E.load_evidence(conn)).group(report_group)
     check("the gate in a real project: the protected backup mark is a conflict; Downloads is eligible only once the conflict clears",
@@ -1117,11 +1117,12 @@ def test_bulk_model():
                                                             REG.DISP_CONFLICT, REG.DISP_BLOCKED, REG.DISP_NOT_APPLICABLE)
 
     # -- the registry -------------------------------------------------------------
-    check("five bulk actions: keep all, accept the recommendation, keep under a folder, mark under a folder, defer",
-          set(REG.BULK_ACTIONS) == {"keep_all", "accept_recommendation", "keep_under", "redundant_under", "defer"})
+    check("the Decide page's five bulk actions (keep all, accept the recommendation, keep / mark under a folder, defer), and Build 6's three over pairs",
+          set(REG.BULK_ACTIONS) == {"keep_all", "accept_recommendation", "keep_under", "redundant_under", "defer",
+                                    "pairs_related_keep_both", "pairs_equivalent_keep_both", "pairs_different"})
     check("every bulk action names registered decision kinds and, where it has one, a registered policy twin",
           all(all(k in REG.DECISION_KINDS for k in a.decision_kinds) and (a.policy_twin is None or a.policy_twin in REG.POLICY_KINDS)
-              and a.member_kind in (LOCATION, GROUP) for a in REG.BULK_ACTIONS.values()))
+              and a.member_kind in (LOCATION, GROUP, REG.VISUAL_PAIR) for a in REG.BULK_ACTIONS.values()))
     check("the folder actions have policy twins (protect / avoid the folder); the others have none, honestly",
           REG.BULK_ACTIONS["keep_under"].policy_twin == "protect_folder_subtree" and REG.BULK_ACTIONS["redundant_under"].policy_twin == "avoid_folder_subtree"
           and all(REG.BULK_ACTIONS[k].policy_twin is None for k in ("keep_all", "accept_recommendation", "defer")))

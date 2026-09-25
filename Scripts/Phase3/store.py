@@ -41,6 +41,12 @@ the Image Game's fast actions ("Equivalent -> Prefer Left" is a
 relationship row and a retention row, each its own decision, landing
 together or not at all) -- and `withdraw_many` withdraws several in one
 operation (the Image Game's Undo of such an action).
+
+Build 6 commits batches over visual candidate pairs through the same
+`commit_bulk`; such a preview also carries an evidence mark (the newest
+comparison of the image hashes and the newest observation), and the commit
+refuses when the evidence moved since -- a re-analysis or a scan adds no
+operation, so the record guard alone would not see it.
 """
 from __future__ import annotations
 
@@ -127,7 +133,7 @@ class DecisionStore:
         # decisions in one operation, and each one asks this question.
         rows = self.conn.execute(
             "SELECT d.decision_id, d.decision_kind, d.value_json FROM p3_decision d "
-            " WHERE d.target_kind = ? AND d.target_ref = ? "
+            " WHERE d.project_id = 1 AND d.target_kind = ? AND d.target_ref = ? "      # the index's own prefix (B12)
             "   AND NOT EXISTS (SELECT 1 FROM p3_decision x WHERE x.supersedes_decision_id = d.decision_id)",
             (target_kind, str(target_ref))).fetchall()
         heads = [int(r["decision_id"]) for r in rows
@@ -145,7 +151,7 @@ class DecisionStore:
             "  FROM p3_decision d JOIN p3_operation o ON o.operation_id = d.operation_id "
             "  LEFT JOIN p3_decision_withdrawal w ON w.decision_id = d.decision_id "
             "  LEFT JOIN p3_operation wo ON wo.operation_id = w.operation_id "
-            " WHERE d.target_kind = ? AND d.target_ref = ? ORDER BY d.decision_id",
+            " WHERE d.project_id = 1 AND d.target_kind = ? AND d.target_ref = ? ORDER BY d.decision_id",
             (target_kind, str(target_ref))).fetchall()
         superseded = {r["supersedes_decision_id"] for r in rows if r["supersedes_decision_id"] is not None}
         out = []
@@ -464,6 +470,14 @@ class DecisionStore:
             if now_mark != preview.record_mark:
                 raise ValueError("the decision record changed since this preview was made (operations "
                                  f"{preview.record_mark} -> {now_mark}); preview again")
+        if getattr(preview, "evidence_mark", None) is not None:
+            # Build 6: a pair batch is judged on evidence as well as on the
+            # record. A re-analysis or a scan adds no operation, so the record
+            # guard alone would not see it; the evidence mark does.
+            now_evidence = ev_mod.evidence_mark(self.conn)
+            if now_evidence != preview.evidence_mark:
+                raise ValueError("the evidence changed since this preview was made (a re-analysis or a scan: "
+                                 f"{preview.evidence_mark} -> {now_evidence}); preview again")
         for cand in preview.candidates:
             disposition(cand.disposition)
         decided = [c for c in preview.candidates if c.disposition == DISP_DECIDED]

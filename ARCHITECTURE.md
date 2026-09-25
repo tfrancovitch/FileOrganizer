@@ -1,11 +1,11 @@
-# Architecture — The File Organizer, B11 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B12 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
-routing, bulk, similar images) at the end say what B7, B8, B9, B10 and B11
-added on top.
+routing, bulk, similar images, bulk over pairs) at the end say what B7 and
+B8–B12 added on top.
 
 ---
 
@@ -590,4 +590,45 @@ memory, EXIF orientation applied; a pyramid of reduced copies serves a
 zoomed-out view and 100% is the decoded original. A file whose attributes
 say cloud-only — checked live, not only from the last scan — is never
 opened.
+
+### Bulk over visual pairs (B12)
+
+A crowd of look-alikes (a folder of variations of one prompt) is decided
+once over a **frozen batch** of pairs — B10's query-result snapshot, whose
+tables already record a target kind per member — never as a standing rule:
+the research rules out a dynamic policy for relationship and retention
+decisions (P3.R4), because a rule that re-applies itself would let a
+folder's membership expand what a person decided without their looking.
+
+```
+   Similar Images page: Show list (bulk.filter_pairs -- moved from the page)
+        + optional folder (both images in it; subfolders or not)  or  checked pairs
+                  |
+        bulk.preview_pairs      plan_pairs: per pair, the rows V / E / D record
+                  |             classify_pairs: satisfied -> the pair's route
+                  |               (Conflicts; Blocked / Needs Revalidation) ->
+                  |               explicit intent preserved (another relationship,
+                  |               a preference Keep both would undo, retention
+                  |               Different would contradict, a deferral) ->
+                  |               the whole batch through pairs.resolve_pairs
+                  |               (a conflict it would create keeps that pair out)
+                  v
+   decided / already satisfied / preserved / conflict / blocked / not applicable
+                  |
+        store.commit_bulk       one 'bulk' operation: batch, members, decisions
+                                (origin bulk_explicit_human, the batch id, bound
+                                to the pair's evidence); refuses if the record
+                                OR the evidence moved since the preview
+```
+
+Nothing new in the schema or the decision vocabulary: three bulk actions in
+the registry (`pairs_related_keep_both`, `pairs_equivalent_keep_both`,
+`pairs_different`) record kinds Build 5 registered, the same rows a key
+records on one pair. The preview's evidence mark (`evidence.evidence_mark`:
+the newest generation and the newest observation) is new, because a
+re-analysis or a scan adds no operation for the record guard to see. The
+bindings are built from the loaded model (`evidence.pair_binding_from`, the
+same shape `pair_binding` reads) so a preview of thousands of pairs costs no
+per-pair query. Undo is B10's `undo_batch`: one operation withdrawing what
+the batch recorded and still stands.
 
