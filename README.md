@@ -8,9 +8,24 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B14 changes a file either.
+a later phase; nothing in B8–B15 changes a file either — not even the plan B15 builds.
 
 ---
+
+## B15 — Phase 3, Build 8: the Plan Builder
+
+The **Plan** page turns the decisions you have already made into a plan:
+*remove this copy*, *keep that one (and why)*. It shows what each step
+relies on, what the project's evidence says about it, and what blocks it.
+Then you can freeze it with a fingerprint. It carries nothing out and never
+reads or changes a file. A locked plan records what you reviewed, not the
+state of the disk, and whatever carries it out one day must check the files
+again first. Where your decisions disagree about an image (one pair gives it
+up while another keeps it), the plan shows that removal as **blocked** and
+names both decisions. It never picks a side. If a decision a locked plan
+rests on changes later, the plan is marked **obsolete**, with the reason; it
+is never quietly rewritten. `CHANGELOG-B15.md` has the detail;
+`PHASE3_B15_HANDBACK.md` reports against the Build 8 handoff.
 
 ## B14 — Phase 3 maintenance: a faster Similar Images page
 
@@ -596,6 +611,48 @@ blocked), then **Record**:
 **Undo the last group action** (or **Batches…**) undoes it as a whole;
 **Previous / Next cluster** move through the list. The cluster itself is
 never recorded: every decision names one pair.
+
+### 4c. Plan (from B15)
+
+**Plan** in the navigation. The first line says how many duplicate groups and
+similar-image pairs your decisions have made ready for a plan (a copy to
+remove, a copy to keep), and how many you deferred (left out).
+
+**Build a new revision** turns them into proposed logical actions:
+
+| Action | Means |
+|---|---|
+| **Remove location** | this copy should no longer exist -- *how* is not decided here |
+| **Preserve (no action)** | this copy stays, and why: a keeper, protected, the group's canonical, preferred by a pair |
+| Move / Rename location, Update source metadata | in the vocabulary; no decision asks for them yet (a metadata update would show as an unsupported action -- no writer exists yet) |
+
+Each revision is **previewed** against the project's evidence (nothing on
+disk is read). Every step lists what was checked now:
+- **The decisions:** they are current, and no conflict stands.
+- **The evidence:** the fingerprints are current and the copy was present at
+  the last scan.
+- **Retention:** a keeper is decided and present; the copy is not protected
+  (or its protection was explicitly overridden); and **no other decision keeps
+  it**.
+- **Counts:** enough copies would remain.
+
+It also lists what only a live check could answer later (the file still
+exists as observed, its bytes still match, permissions, a way back), which is
+not checked here. A step is **Ready**, **Blocked** (with the check that
+failed), **Blocked (unknown evidence)** (a required check could not be
+answered from the evidence -- unknown never counts as a pass), or
+**Preserved**. The preview shows **Plan-Eligible Reclaimable Bytes** (after
+your keepers, protections and decisions) beside Phase 2's **Potentially
+Reclaimable Exact-Duplicate Bytes** (before any decision): two different
+numbers under two names.
+
+**Lock revision** freezes it: the decisions and evidence must be where the
+preview found them (otherwise build again), and the revision gets a SHA-256
+fingerprint and becomes immutable. Building again makes the next revision;
+**Compare with previous** says what changed. When a decision, a policy or the
+evidence a locked revision rests on changes, the revision shows **Obsolete**
+with the reason, and is never rewritten. A change elsewhere in the project
+does not touch it.
 
 ### Stopping a run
 

@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F12_Hard_Precondition_Unknown",
+  "title": "Hard Precondition Unknown Blocks",
+  "purpose": "Unknown physical identity remains Unknown and blocks an execution-sensitive Plan item."
+}

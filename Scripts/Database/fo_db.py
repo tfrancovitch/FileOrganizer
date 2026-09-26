@@ -151,8 +151,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.9.3"
-APP_VERSION = "B14"
+MODULE_VERSION = "1.10.0"
+APP_VERSION = "B15"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -181,7 +181,11 @@ APP_VERSION = "B14"
 #: 12 -> B11 (Phase 3, Build 5): visual_candidate_generation,
 #:      visual_candidate -- Phase 2 evidence (perceptual-hash candidate
 #:      pairs with stable identity); see migrations/012_visual_candidates.sql.
-APP_SCHEMA_VERSION = 12
+#: 13 -> B15 (Phase 3, Build 8): p3_plan, p3_plan_revision, p3_plan_event,
+#:      p3_plan_item, p3_plan_item_decision, p3_plan_item_policy,
+#:      p3_plan_dependency, p3_plan_precondition -- proposed intent, frozen
+#:      and fingerprinted; see migrations/013_phase3_plans.sql.
+APP_SCHEMA_VERSION = 13
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"

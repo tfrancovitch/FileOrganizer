@@ -470,3 +470,133 @@ def policy_kind(key):
         return POLICY_KINDS[key]
     except KeyError:
         raise ValueError(f"unknown policy kind: {key!r}")
+
+
+# -- Build 8: the Plan Builder (P3.R7, scoped by P3.R10 §15) ---------------------
+#
+# A Plan records proposed LOGICAL intent. Nothing here names an execution
+# method (P3-A88): remove_location is "this location should no longer
+# exist"; how, reversibly, is Phase 4's, which does not exist yet.
+
+PLAN_STATES = ("draft", "previewed", "review_ready", "locked", "handed_off", "obsolete", "superseded", "archived")
+PLAN_EVENT_KINDS = ("previewed", "locked", "obsolete", "superseded", "archived")
+
+#: R7 §8's vocabulary, narrowed to R10 §15's minimum. replace_with_hardlink
+#: is deliberately absent (R7 §21: never a default cleanup strategy).
+ACTION_REMOVE, ACTION_MOVE, ACTION_RENAME, ACTION_METADATA, ACTION_PRESERVE = (
+    "remove_location", "move_location", "rename_location", "update_source_metadata", "no_op_preserve")
+ACTION_KINDS = (ACTION_REMOVE, ACTION_MOVE, ACTION_RENAME, ACTION_METADATA, ACTION_PRESERVE)
+ACTION_WORDS = {ACTION_REMOVE: "Remove location", ACTION_MOVE: "Move location", ACTION_RENAME: "Rename location",
+                ACTION_METADATA: "Update source metadata", ACTION_PRESERVE: "Preserve (no action)"}
+IMPACT_CLASSES = ("low", "medium", "high", "critical")
+ACTION_IMPACT = {ACTION_REMOVE: "high", ACTION_MOVE: "medium", ACTION_RENAME: "medium", ACTION_METADATA: "medium",
+                 ACTION_PRESERVE: "low"}
+
+PRECONDITION_CLASSES = ("identity", "retention", "evidence", "environment", "collision", "concurrency", "reversibility")
+SEVERITIES = ("hard", "warning", "informational")
+RESULTS = ("pass", "fail", "unknown", "not_applicable", "unsupported")
+#: Level 1 (checked now, from project evidence only -- zero source reads) and
+#: Level 2 (declared for Phase 4's Live Preflight; not evaluated here).
+STAGE_EVIDENCE, STAGE_LIVE = "evidence_preview", "live_preflight"
+
+#: R7 §37's baseline vocabulary with each condition's class, plus one Build 8
+#: addition: no_retaining_decision (the question B13 carried forward).
+PRECONDITIONS = {
+    "target_exists": "identity",
+    "target_observation_current": "identity",
+    "target_content_matches": "identity",
+    "keeper_exists": "retention",
+    "keeper_content_matches": "identity",
+    "minimum_location_count_satisfied": "retention",
+    "minimum_physical_copy_count_satisfied": "retention",
+    "target_not_protected": "retention",
+    "no_retaining_decision": "retention",
+    "decision_current": "evidence",
+    "policy_version_current": "evidence",
+    "no_current_conflict": "evidence",
+    "required_coverage_complete": "evidence",
+    "source_root_available": "environment",
+    "source_local_if_required": "environment",
+    "destination_available": "collision",
+    "destination_collision_absent": "collision",
+    "filesystem_capability_supported": "environment",
+    "permissions_sufficient": "environment",
+    "free_space_sufficient": "environment",
+    "action_lock_available": "concurrency",
+    "no_conflicting_run": "concurrency",
+    "rollback_ready": "reversibility",
+}
+POSTCONDITIONS = ("source_removed", "destination_exists", "destination_content_matches", "keeper_still_exists",
+                  "minimum_retention_satisfied", "desired_metadata_observed", "project_state_updated",
+                  "rollback_record_exists", "verified_reclaim_recorded")
+
+#: What each action kind declares: (key, severity, stage), in evaluation
+#: order. Evidence-stage conditions are checked by the Phase 3 Evidence
+#: Preview; live-stage ones are declared for Phase 4 and never evaluated here.
+_LIVE_COMMON = (("target_exists", "hard", STAGE_LIVE), ("target_content_matches", "hard", STAGE_LIVE),
+                ("source_root_available", "hard", STAGE_LIVE), ("permissions_sufficient", "hard", STAGE_LIVE),
+                ("action_lock_available", "hard", STAGE_LIVE), ("no_conflicting_run", "hard", STAGE_LIVE),
+                ("rollback_ready", "hard", STAGE_LIVE))
+ACTION_PRECONDITIONS = {
+    ACTION_REMOVE: (
+        ("target_exists", "hard", STAGE_EVIDENCE),
+        ("decision_current", "hard", STAGE_EVIDENCE),
+        ("no_current_conflict", "hard", STAGE_EVIDENCE),
+        ("required_coverage_complete", "hard", STAGE_EVIDENCE),
+        ("target_not_protected", "hard", STAGE_EVIDENCE),
+        ("no_retaining_decision", "hard", STAGE_EVIDENCE),
+        ("keeper_exists", "hard", STAGE_EVIDENCE),
+        ("minimum_location_count_satisfied", "hard", STAGE_EVIDENCE),
+        ("minimum_physical_copy_count_satisfied", "hard", STAGE_EVIDENCE),
+        ("source_local_if_required", "warning", STAGE_EVIDENCE),
+    ) + _LIVE_COMMON + (("keeper_content_matches", "hard", STAGE_LIVE),),
+    ACTION_MOVE: (
+        ("target_exists", "hard", STAGE_EVIDENCE),
+        ("decision_current", "hard", STAGE_EVIDENCE),
+        ("no_current_conflict", "hard", STAGE_EVIDENCE),
+        ("destination_collision_absent", "hard", STAGE_EVIDENCE),
+    ) + _LIVE_COMMON + (("destination_available", "hard", STAGE_LIVE), ("free_space_sufficient", "hard", STAGE_LIVE),
+                        ("filesystem_capability_supported", "hard", STAGE_LIVE)),
+    ACTION_RENAME: (
+        ("target_exists", "hard", STAGE_EVIDENCE),
+        ("decision_current", "hard", STAGE_EVIDENCE),
+        ("no_current_conflict", "hard", STAGE_EVIDENCE),
+        ("destination_collision_absent", "hard", STAGE_EVIDENCE),
+    ) + _LIVE_COMMON + (("destination_available", "hard", STAGE_LIVE), ("filesystem_capability_supported", "hard", STAGE_LIVE)),
+    ACTION_METADATA: (
+        ("target_exists", "hard", STAGE_EVIDENCE),
+        ("decision_current", "hard", STAGE_EVIDENCE),
+        ("filesystem_capability_supported", "hard", STAGE_EVIDENCE),    # the known writer profile: none yet
+    ) + _LIVE_COMMON,
+    ACTION_PRESERVE: (),
+}
+ACTION_POSTCONDITIONS = {
+    ACTION_REMOVE: ("source_removed", "keeper_still_exists", "minimum_retention_satisfied", "rollback_record_exists",
+                    "verified_reclaim_recorded"),
+    ACTION_MOVE: ("destination_exists", "destination_content_matches", "project_state_updated", "rollback_record_exists"),
+    ACTION_RENAME: ("destination_exists", "destination_content_matches", "project_state_updated", "rollback_record_exists"),
+    ACTION_METADATA: ("desired_metadata_observed", "rollback_record_exists"),
+    ACTION_PRESERVE: (),
+}
+#: The known Phase 4 capability profile, as far as Phase 3 can know it: no
+#: source-metadata writer exists (R10 §16 -- format certification is later
+#: work), so an update_source_metadata item plans correctly and stays blocked.
+METADATA_WRITERS = ()
+
+#: An item's state, from its evidence-stage results: a hard 'fail' blocks, a
+#: hard 'unknown' blocks as evidence (P3-A91: Unknown is not Pass), a hard
+#: 'unsupported' is an unsupported action; warnings never block.
+ITEM_READY, ITEM_BLOCKED, ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE = (
+    "ready", "blocked", "blocked_evidence", "unsupported_action", "preserve")
+ITEM_STATES = (ITEM_READY, ITEM_BLOCKED, ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE)
+LINK_JUSTIFIES, LINK_RETAINS = "justifies", "retains"
+
+#: The disclosure every preview makes (P3.R7 §14, required wording).
+PREVIEW_DISCLOSURE = ("This preview evaluates the Plan against Project Evidence. Phase 4 must re-check live "
+                      "filesystem conditions before execution.")
+
+
+def action_kind(key):
+    if key not in ACTION_KINDS:
+        raise ValueError(f"unknown plan action kind: {key!r}")
+    return key

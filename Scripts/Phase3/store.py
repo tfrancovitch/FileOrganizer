@@ -66,6 +66,7 @@ from .registry import (decision_kind, policy_kind, event_kind, return_kind, orig
                        RETURN_MANUAL, DEFER_DISPOSITIONS, DEFER_CHOICES, ORIGIN_EXPLICIT_HUMAN, ORIGIN_BULK_EXPLICIT_HUMAN,
                        DISP_DECIDED, MODE_PRESERVE)
 from .resolve import _policy_covers
+from .registry import action_kind, PLAN_EVENT_KINDS, LINK_JUSTIFIES, LINK_RETAINS
 
 SYSTEM_ACTOR_KIND = "system_evidence"
 DETECTOR_AGENT = "routing_detector"
@@ -740,6 +741,232 @@ class DecisionStore:
 
 
 # -- a human-readable copy of the record, on disk (Axiom 19) --------------------
+
+    # -- plans (Build 8) ---------------------------------------------------------
+    #
+    # A revision is written once, in one 'plan_build' operation, and never
+    # edited: locking adds its fingerprint and a lock event; drift adds an
+    # obsolete event. Nothing here reads or writes a source file.
+
+    def _marks(self):
+        record = int(self.conn.execute("SELECT MAX(operation_id) FROM p3_operation").fetchone()[0] or 0)
+        return record, ev_mod.evidence_mark(self.conn)
+
+    def record_plan_revision(self, draft, name=None, plan_id=None, note=None, command_id=None):
+        """Freeze a built draft as a new revision: the plan (created when
+        `plan_id` is None), the revision (status 'previewed', with the record
+        and evidence marks it was built on and the preview's summary), every
+        item with its decision / policy links, dependencies and preconditions,
+        and a 'previewed' event. Earlier revisions of the plan that are
+        neither locked nor obsolete become 'superseded'. Returns
+        {plan_id, plan_revision_id, revision_no, operation_id, items}."""
+        from . import plans as PL
+        if not PL.acyclic(draft.items):
+            raise ValueError("the plan's dependency graph has a cycle")
+        for it in draft.items:
+            action_kind(it.action_kind)
+
+        def work():
+            op = self._operation("plan_build", command_id, note)
+            pid = plan_id
+            if pid is None:
+                pid = int(self.conn.execute("INSERT INTO p3_plan(project_id, operation_id, name, note) VALUES(1,?,?,?)",
+                                            (op, name or "Plan", note)).lastrowid)
+            elif self.conn.execute("SELECT 1 FROM p3_plan WHERE plan_id = ?", (int(pid),)).fetchone() is None:
+                raise ValueError(f"no plan {pid}")
+            prev = self.conn.execute(
+                "SELECT plan_revision_id, revision_no, status FROM p3_plan_revision WHERE plan_id = ? "
+                "ORDER BY revision_no DESC", (int(pid),)).fetchall()
+            revision_no = (int(prev[0]["revision_no"]) + 1) if prev else 1
+            record, evidence = self._marks()
+            basis = {"record_mark": record, "evidence_mark": evidence, "routing_version": RT.ROUTING_VERSION,
+                     "built_utc": utc_now()}
+            rid = int(self.conn.execute(
+                "INSERT INTO p3_plan_revision(plan_id, revision_no, operation_id, status, locked, obsolete, "
+                "supersedes_plan_revision_id, basis_json, summary_json) VALUES(?,?,?,?,0,0,?,?,?)",
+                (int(pid), revision_no, op, "previewed", int(prev[0]["plan_revision_id"]) if prev else None,
+                 json.dumps(basis, sort_keys=True), json.dumps(draft.summary, sort_keys=True, default=str))).lastrowid)
+            for r in prev:
+                if r["status"] in ("draft", "previewed", "review_ready"):
+                    self.conn.execute("UPDATE p3_plan_revision SET status = 'superseded' WHERE plan_revision_id = ?",
+                                      (int(r["plan_revision_id"]),))
+                    self._plan_event(r["plan_revision_id"], op, "superseded", {"by_revision": rid})
+            ids = {}
+            for it in draft.items:
+                ids[it.item_no] = int(self.conn.execute(
+                    "INSERT INTO p3_plan_item(plan_revision_id, item_no, action_kind, target_kind, target_ref, source_kind, "
+                    "source_ref, desired_effect_json, evidence_binding_json, estimated_effect_json, postconditions_json, "
+                    "impact_class, state, blocked_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (rid, it.item_no, it.action_kind, it.target_kind, str(it.target_ref), it.source_kind,
+                     str(it.source_ref) if it.source_ref is not None else None,
+                     json.dumps({**it.desired_effect, "sources": [[k, str(r)] for k, r in it.sources]}, sort_keys=True),
+                     json.dumps(it.evidence_binding, sort_keys=True), json.dumps(it.estimated_effect, sort_keys=True),
+                     json.dumps(list(it.postconditions)), it.impact_class, it.state, it.blocked_reason)).lastrowid)
+            for it in draft.items:
+                iid = ids[it.item_no]
+                for role, dids in ((LINK_JUSTIFIES, it.decision_ids), (LINK_RETAINS, it.retaining_ids)):
+                    for did in dids:
+                        self.conn.execute("INSERT OR IGNORE INTO p3_plan_item_decision(plan_item_id, decision_id, role) "
+                                          "VALUES(?,?,?)", (iid, int(did), role))
+                for pv in it.policy_version_ids:
+                    self.conn.execute("INSERT OR IGNORE INTO p3_plan_item_policy(plan_item_id, policy_version_id) VALUES(?,?)",
+                                      (iid, int(pv)))
+                for dep in it.depends_on:
+                    self.conn.execute("INSERT INTO p3_plan_dependency(plan_item_id, depends_on_item_id) VALUES(?,?)",
+                                      (iid, ids[dep]))
+                for c in it.preconditions:
+                    self.conn.execute(
+                        "INSERT INTO p3_plan_precondition(plan_item_id, condition_key, condition_class, severity, stage, "
+                        "parameters_json, result, detail) VALUES(?,?,?,?,?,?,?,?)",
+                        (iid, c.key, c.klass, c.severity, c.stage, json.dumps(c.params, sort_keys=True, default=str),
+                         c.result, c.detail or None))
+            self._plan_event(rid, op, "previewed", {"items": len(draft.items), "summary": draft.summary})
+            return {"plan_id": int(pid), "plan_revision_id": rid, "revision_no": revision_no, "operation_id": op,
+                    "items": len(draft.items)}
+        return self._run(work)
+
+    def _plan_event(self, revision_id, operation_id, kind, detail=None):
+        if kind not in PLAN_EVENT_KINDS:
+            raise ValueError(f"unknown plan event kind: {kind!r}")
+        self.conn.execute("INSERT INTO p3_plan_event(plan_revision_id, operation_id, event_kind, detail_json) VALUES(?,?,?,?)",
+                          (int(revision_id), int(operation_id), kind, json.dumps(detail or {}, sort_keys=True, default=str)))
+
+    def plan_revision(self, revision_id):
+        """(revision row as a dict, [PlanItem]) -- read back exactly as frozen."""
+        from . import plans as PL
+        row = self.conn.execute("SELECT r.*, p.name FROM p3_plan_revision r JOIN p3_plan p ON p.plan_id = r.plan_id "
+                                "WHERE r.plan_revision_id = ?", (int(revision_id),)).fetchone()
+        if row is None:
+            return None, []
+        rev = dict(row)
+        rev["basis"] = json.loads(rev.pop("basis_json") or "{}")
+        rev["summary"] = json.loads(rev.pop("summary_json") or "{}")
+        rev["events"] = [dict(r, detail=json.loads(r["detail_json"] or "{}")) for r in self.conn.execute(
+            "SELECT e.*, o.occurred_utc, o.actor_kind FROM p3_plan_event e JOIN p3_operation o ON o.operation_id = e.operation_id "
+            "WHERE e.plan_revision_id = ? ORDER BY e.plan_event_id", (int(revision_id),))]
+        rows = self.conn.execute("SELECT * FROM p3_plan_item WHERE plan_revision_id = ? ORDER BY item_no",
+                                 (int(revision_id),)).fetchall()
+        by_id = {int(r["plan_item_id"]): int(r["item_no"]) for r in rows}
+        links, pols, deps, pres = {}, {}, {}, {}
+        marks = ",".join("?" for _ in by_id) or "NULL"
+        args = tuple(by_id)
+        for r in self.conn.execute(f"SELECT * FROM p3_plan_item_decision WHERE plan_item_id IN ({marks})", args):
+            links.setdefault(int(r["plan_item_id"]), {}).setdefault(r["role"], []).append(str(r["decision_id"]))
+        for r in self.conn.execute(f"SELECT * FROM p3_plan_item_policy WHERE plan_item_id IN ({marks})", args):
+            pols.setdefault(int(r["plan_item_id"]), []).append(str(r["policy_version_id"]))
+        for r in self.conn.execute(f"SELECT * FROM p3_plan_dependency WHERE plan_item_id IN ({marks})", args):
+            deps.setdefault(int(r["plan_item_id"]), []).append(by_id[int(r["depends_on_item_id"])])
+        for r in self.conn.execute(f"SELECT * FROM p3_plan_precondition WHERE plan_item_id IN ({marks}) "
+                                   "ORDER BY plan_precondition_id", args):
+            pres.setdefault(int(r["plan_item_id"]), []).append(PL.Precondition(
+                r["condition_key"], r["condition_class"], r["severity"], r["stage"], json.loads(r["parameters_json"] or "{}"),
+                r["result"], r["detail"] or ""))
+        items = []
+        for r in rows:
+            iid = int(r["plan_item_id"])
+            effect = json.loads(r["desired_effect_json"] or "{}")
+            sources = tuple((k, str(ref)) for k, ref in effect.pop("sources", []))
+            items.append(PL.PlanItem(
+                int(r["item_no"]), r["action_kind"], r["target_kind"], r["target_ref"], sources, effect,
+                decision_ids=PL._ids(links.get(iid, {}).get(LINK_JUSTIFIES, [])),
+                retaining_ids=PL._ids(links.get(iid, {}).get(LINK_RETAINS, [])),
+                policy_version_ids=PL._ids(pols.get(iid, [])),
+                evidence_binding=json.loads(r["evidence_binding_json"] or "{}"),
+                preconditions=pres.get(iid, []), postconditions=tuple(json.loads(r["postconditions_json"] or "[]")),
+                depends_on=tuple(sorted(deps.get(iid, []))), estimated_effect=json.loads(r["estimated_effect_json"] or "{}"),
+                impact_class=r["impact_class"], state=r["state"], blocked_reason=r["blocked_reason"]))
+        return rev, items
+
+    def plans(self):
+        """Every plan with its revisions, newest revision first."""
+        out = []
+        for p in self.conn.execute("SELECT p.*, o.occurred_utc FROM p3_plan p JOIN p3_operation o ON o.operation_id = p.operation_id "
+                                   "WHERE p.project_id = 1 ORDER BY p.plan_id DESC"):
+            d = dict(p)
+            d["revisions"] = [dict(r, summary=json.loads(r["summary_json"] or "{}")) for r in self.conn.execute(
+                "SELECT r.plan_revision_id, r.revision_no, r.status, r.fingerprint, r.locked, r.obsolete, r.summary_json, "
+                "       o.occurred_utc FROM p3_plan_revision r JOIN p3_operation o ON o.operation_id = r.operation_id "
+                " WHERE r.plan_id = ? ORDER BY r.revision_no DESC", (int(d["plan_id"]),))]
+            out.append(d)
+        return out
+
+    def revisions_depending_on(self, decision_ids):
+        """The dependency index (R7 §33): locked, standing revisions that any
+        of these decisions feeds -- one indexed lookup, not a scan."""
+        ids = [int(i) for i in decision_ids if str(i).isdigit()]
+        if not ids:
+            return []
+        marks = ",".join("?" for _ in ids)
+        return [int(r[0]) for r in self.conn.execute(
+            f"SELECT DISTINCT i.plan_revision_id FROM p3_plan_item_decision l JOIN p3_plan_item i ON i.plan_item_id = l.plan_item_id "
+            f"  JOIN p3_plan_revision r ON r.plan_revision_id = i.plan_revision_id "
+            f" WHERE l.decision_id IN ({marks}) AND r.locked = 1 AND r.obsolete = 0 ORDER BY 1", ids)]
+
+    def lock_plan_revision(self, revision_id, note=None, command_id=None):
+        """Lock a previewed revision (P3.R7 §29): (1) verify the Phase 3
+        blockers still stand as previewed -- the decision record and the
+        evidence must be where the preview found them, else build again;
+        (2) canonicalize the frozen payload; (3) compute its SHA-256;
+        (4) mark it immutable (locked); (5) record the lock event; (6) capture
+        the exact dependency set in that event. No source file is read.
+        Returns {plan_revision_id, fingerprint, operation_id}."""
+        from . import plans as PL
+        rev, items = self.plan_revision(revision_id)
+        if rev is None:
+            raise ValueError(f"no plan revision {revision_id}")
+        if rev["status"] not in ("previewed", "review_ready"):
+            raise ValueError(f"revision {rev['revision_no']} is {rev['status']}: only a previewed revision can be locked")
+        record, evidence = self._marks()
+        if record != rev["basis"].get("record_mark") or evidence != rev["basis"].get("evidence_mark"):
+            raise ValueError("the decision record or the evidence changed since this revision was previewed "
+                             f"(operations {rev['basis'].get('record_mark')} -> {record}); build a new revision")
+        fp = PL.fingerprint(items)
+        deps = {"decisions": sorted({d for it in items for d in it.decision_ids + it.retaining_ids}, key=PL._id_order),
+                "policy_versions": sorted({p for it in items for p in it.policy_version_ids}, key=PL._id_order),
+                "evidence_bindings": sum(1 for it in items if it.evidence_binding), "record_mark": record,
+                "evidence_mark": evidence}
+
+        def work():
+            op = self._operation("plan_lock", command_id, note)
+            self.conn.execute("UPDATE p3_plan_revision SET status = 'locked', locked = 1, fingerprint = ? "
+                              "WHERE plan_revision_id = ?", (fp, int(revision_id)))
+            self._plan_event(revision_id, op, "locked", {"fingerprint": fp, "dependencies": deps})
+            return {"plan_revision_id": int(revision_id), "fingerprint": fp, "operation_id": op}
+        return self._run(work)
+
+    def mark_plans_obsolete(self, findings, note=None):
+        """The detector's verdicts: {revision_id: [(code, words, detail)]}. One
+        system operation; each revision gets an 'obsolete' event with the
+        reasons and becomes status obsolete -- its items, links and
+        fingerprint are never touched (P3-A97)."""
+        if not findings:
+            return {"operation_id": None, "revisions": []}
+
+        def work():
+            op = self._operation("plan_obsolete", None, note, actor_kind=SYSTEM_ACTOR_KIND, actor_id=DETECTOR_AGENT,
+                                 agent_kind=DETECTOR_AGENT)
+            for rid, reasons in sorted(findings.items()):
+                self.conn.execute("UPDATE p3_plan_revision SET status = 'obsolete', obsolete = 1 WHERE plan_revision_id = ?",
+                                  (int(rid),))
+                self._plan_event(rid, op, "obsolete", {"reason": reasons[0][1],
+                                                       "reasons": [{"code": c, "words": w, "detail": d} for c, w, d in reasons]})
+            return {"operation_id": op, "revisions": sorted(int(r) for r in findings)}
+        return self._run(work)
+
+    def reconcile_plans(self, ev, proj, routing):
+        """Part of the revalidation detector (routing.reconcile): each locked,
+        standing revision against its OWN dependencies (plans.obsolescence);
+        those whose dependencies moved become obsolete. Returns the ids."""
+        from . import plans as PL
+        findings = {}
+        for (rid,) in self.conn.execute("SELECT plan_revision_id FROM p3_plan_revision WHERE locked = 1 AND obsolete = 0 "
+                                        "ORDER BY plan_revision_id").fetchall():
+            _rev, items = self.plan_revision(rid)
+            reasons = PL.obsolescence(items, ev, proj, routing)
+            if reasons:
+                findings[int(rid)] = reasons
+        return self.mark_plans_obsolete(findings, note="routing detector: plan dependencies changed")["revisions"]
+
 
 def export_decision_journal(conn, path):
     """Every operation with its rows, oldest first, as UTF-8 text. The

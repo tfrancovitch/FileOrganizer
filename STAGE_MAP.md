@@ -317,3 +317,8 @@ After any of these the Similar Images page reads only what the record gained
 and re-derives only the pairs it can reach (B14); a policy change makes it
 reload everything. Opening the page runs the detector once and reuses its
 model.
+Building, previewing, locking and comparing a plan (B15) are point
+interactions on the project database alone: one operation each for build and
+lock, no source file opened, stat'ed or listed. The routing detector also
+checks locked plan revisions against their own dependencies whenever it runs
+with the pairs (after a collection run, when Similar Images or Plan opens).

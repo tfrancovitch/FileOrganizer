@@ -3,8 +3,9 @@
 This is a **reference fixture package**, not a Phase 3 implementation.
 
 It contains 16 synthetic SQLite fixtures with (F16, the P3.R3 §34 non-edge
-shape, added in B14; the product ships the 12 its builds use so far -- F11 to
-F14, plan and metadata scenarios, arrive with those builds):
+shape, added in B14; the product ships the 14 its builds use so far -- F11 and
+F12, the plan scenarios, arrived with Build 8 in B15; F13 and F14, the metadata
+scenarios, arrive with Build 9):
 - synthetic Phase 2 evidence stubs;
 - authoritative Phase 3 Decision / Policy / Batch / Review / Plan records;
 - expected current projections;
@@ -20,4 +21,4 @@ Double-click:
 
 Expected:
 
-`P3.R11 fixture validation: 16/16 PASS` (12/12 in the product's copy)
+`P3.R11 fixture validation: 16/16 PASS` (14/14 in the product's copy)

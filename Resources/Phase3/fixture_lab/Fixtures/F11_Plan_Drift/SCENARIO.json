@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F11_Plan_Drift",
+  "title": "Locked Plan Becomes Obsolete After Decision Drift",
+  "purpose": "Locked fingerprinted Plan is preserved and marked obsolete when source intent changes."
+}

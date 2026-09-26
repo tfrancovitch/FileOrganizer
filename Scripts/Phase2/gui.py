@@ -41,6 +41,7 @@ from . import hub as hub_view
 from .runner import RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, ANALYSIS, run_blocking, app_root_for
 from Phase3 import review as review_view
 from Phase3 import imagegame as imagegame_view
+from Phase3 import planview as plan_view
 
 #: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -253,7 +254,7 @@ class Phase2App(tk.Tk):
         self.nav_sep=ttk.Separator(nav); self.nav_sep.pack(fill="x",pady=10)
         self.nav_buttons=[]
         for label,cmd in [
-            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Similar Images",self.show_similar),("Reports",self.show_reports),
+            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Similar Images",self.show_similar),("Plan",self.show_plan),("Reports",self.show_reports),
             ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history)]:
             b=ttk.Button(nav,text=label,style="Nav.TButton",command=cmd); b.pack(fill="x",pady=2)
             self.nav_buttons.append(b)
@@ -564,6 +565,11 @@ class Phase2App(tk.Tk):
         """Phase 3's Image Game -- visual candidate pairs, one at a time (Phase3.imagegame)."""
         if self.conn is None: self.show_welcome(); return
         imagegame_view.show_similar(self, pair_id=pair_id, compare=compare)
+
+    def show_plan(self, plan_id=None):
+        """Phase 3's Plan Builder -- proposed intent, previewed and frozen (Phase3.planview). Build 8."""
+        if self.conn is None: self.show_welcome(); return
+        plan_view.show_plan(self, plan_id=plan_id)
 
     def clear(self):
         # A scrolling list binds the mouse wheel for the whole window while

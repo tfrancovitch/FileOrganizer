@@ -517,8 +517,8 @@ def test_project(tmp: Path):
     app_root, corpus, r1, r2, project_dir, outs = open_project(tmp, "P3Visual")
     check("Pre-Scan, Find My Duplicates and Analyze (pictures) through the worker", all(o.ok for o in outs), str([o.status for o in outs]))
     conn = connect(project_dir, write=True)
-    check("the project is on schema 12 with the two visual-candidate tables",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 12
+    check("the project is on schema 13 (12 brought the two visual-candidate tables)",
+          conn.execute("PRAGMA user_version").fetchone()[0] == 13
           and {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'visual_candidate%' AND type='table'")}
           == {"visual_candidate", "visual_candidate_generation"})
     gens = conn.execute("SELECT * FROM visual_candidate_generation").fetchall()

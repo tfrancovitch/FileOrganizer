@@ -31,6 +31,13 @@ against every oracle key.
     F09  Supersession_Undo_Reapply    change, withdraw, re-apply: every row survives
     F10  Revalidation                 the decision stays; a changed observation routes the
                                       group to Needs Revalidation (Build 3)
+    F11  Plan_Drift                   a locked, fingerprinted revision is judged obsolete
+                                      ("source decision changed") by the product's own
+                                      check once its source decision is superseded --
+                                      never rewritten, never re-planned (Build 8)
+    F12  Hard_Precondition_Unknown    the product's Plan Builder rebuilds the lab's removal:
+                                      physical identity unknown -> the hard precondition is
+                                      'unknown', and unknown blocks (blocked_evidence) (Build 8)
     F15  Projection_Rebuild           keeper / canonical / protected / plan readiness
                                       reconstruct from authoritative history alone
     F16  Visual_NonEdge               A~B and B~C are candidates, A~C is not (P3.R3 §34):
@@ -211,6 +218,9 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
         ev = Evidence(locations, groups, decisions, policies, events, {}, now)
         ev.batches = batches
         ev.pairs = pairs
+        # Build 8: the lab's plan rows (F11, F12), as the lab recorded them.
+        ev.plan_rows = {"revisions": [dict(r) for r in _rows(con, "SELECT * FROM p3_plan_revision ORDER BY plan_revision_id")],
+                        "items": [dict(r) for r in _rows(con, "SELECT * FROM p3_plan_item ORDER BY plan_item_id")]}
         return ev, oracle, history
     finally:
         con.close()
@@ -299,6 +309,34 @@ def actual_projection(fid: str, ev: Evidence, history) -> dict:
                 "candidate_pairs": sorted(p.pair_id for p in edges),
                 "non_edges": sorted(sorted(x) for x in SV.non_edges(images, edges, proj)),
                 "transitive_equivalence_inferred": bool((covered | recorded) - set(ev.pairs))}
+    if fid.startswith("F11"):
+        # The lab's locked, fingerprinted revision, judged by the product's own
+        # obsolescence check (plans.obsolescence) against the record as it now
+        # stands: its source decision D1 was superseded by D3 after the lock.
+        from Phase3 import plans as PL
+        from Phase3.registry import LOCATION as LOC, ITEM_READY, ITEM_BLOCKED
+        rev = ev.plan_rows["revisions"][0]
+        items = [PL.PlanItem(n, r["action_kind"], LOC, r["target_ref"], (), {},
+                             decision_ids=tuple(json.loads(r["source_decision_ids_json"] or "[]")),
+                             state=ITEM_READY if r["blocked_reason"] is None else ITEM_BLOCKED)
+                 for n, r in enumerate(ev.plan_rows["items"], 1)]
+        reasons = PL.obsolescence(items, ev, proj, RT.route_all(ev, proj, ev.now))
+        return {"plan_revision": rev["plan_revision_id"], "fingerprint": rev["fingerprint"], "locked": bool(rev["locked"]),
+                "obsolete": bool(reasons), "reason": reasons[0][1] if reasons else None,
+                "auto_replanned": len(ev.plan_rows["revisions"]) != 1}
+    if fid.startswith("F12"):
+        # The product's Plan Builder on the lab's evidence: the removal the lab
+        # recorded, rebuilt, its hard precondition evaluated from evidence alone.
+        from Phase3 import plans as PL
+        from Phase3.registry import ACTION_REMOVE, ITEM_READY
+        want = ev.plan_rows["items"][0]
+        key = json.loads(want["hard_preconditions_json"])[0]
+        draft = PL.build(ev, proj, RT.route_all(ev, proj, ev.now))
+        item = next(i for i in draft.items if i.action_kind == ACTION_REMOVE and i.target_ref == want["target_ref"])
+        c = item.condition(key)
+        return {"precondition_result": c.result if c else None,
+                "hard_unknown_blocks": bool(c and c.severity == "hard" and c.result == "unknown" and item.state != ITEM_READY),
+                "plan_item_state": item.state}
     if fid.startswith("F07"):
         p = proj.pairs[0]
         return {"relationship": p.relationship, "keeper_set": list(p.keeper_set),

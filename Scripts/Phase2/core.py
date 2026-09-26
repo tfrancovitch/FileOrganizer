@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import VERSION
 
-REQUIRED_SCHEMA_VERSION = 12
+REQUIRED_SCHEMA_VERSION = 13
 DB_RELATIVE = Path("Database") / "FileOrganizer.db"
 
 

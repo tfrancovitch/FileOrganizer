@@ -733,6 +733,8 @@ def reconcile(conn, store, now=None, pairs=True, keep=None):
                            that blocker. A route needs no row to say
                            "blocked"; the row explains why a decision is not
                            moving, without one row per untouched group.
+      (plans)              a locked plan revision whose own dependencies
+                           changed becomes obsolete (Build 8)
 
     Never touches a decision. Idempotent: a second run writes nothing.
     Returns the counts written. `pairs=False` leaves the visual candidate
@@ -790,6 +792,13 @@ def reconcile(conn, store, now=None, pairs=True, keep=None):
                            "return_condition": route.deferral_fired_why})
     if writes:
         store.system_events(writes, note=f"routing detector {ROUTING_VERSION}")
+    # Build 8: locked plan revisions are among the things this detector
+    # watches. Each is checked against its OWN dependencies (plans.py
+    # obsolescence); one whose dependencies moved becomes obsolete -- never
+    # rewritten. Only with the pairs loaded: a revision that depends on a
+    # visual pair cannot be judged without them (the Decide page's pass,
+    # pairs=False, leaves plans to the next full pass).
+    obsolete = store.reconcile_plans(ev, proj, routing) if pairs else []
     if keep is not None:
         keep["model"] = (ev, proj, routing)
         keep["marks"] = marks_before
@@ -797,4 +806,6 @@ def reconcile(conn, store, now=None, pairs=True, keep=None):
     for w in writes:
         counts[w["event_kind"]] = counts.get(w["event_kind"], 0) + 1
     counts["written"] = len(writes)
+    if obsolete:                                    # like every count here: present only when something was written
+        counts["plans_obsolete"] = len(obsolete)
     return counts

@@ -1,11 +1,11 @@
-# Architecture — The File Organizer, B14 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B15 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
 routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
-refresh) at the end say what B7 and B8–B14 added on top.
+refresh, the Plan Builder) at the end say what B7 and B8–B15 added on top.
 
 ---
 
@@ -709,3 +709,34 @@ model twice. `p3_refresh_check.py` compares `refresh.fingerprint` of the
 incremental model with a fresh full load after every step of random sessions
 (and so did the acceptance run on a copy of the real collection).
 
+### The Plan Builder (B15, schema 13)
+
+A Plan is proposed logical intent derived from current decisions and policies
+(P3.R7): never an action log, never a guarantee, never an execution method.
+
+```
+   decisions + evidence --> resolve / routing (unchanged)
+        |   population: groups and pairs whose decisions resolve them ready for a plan
+        |   (deferred left out; evidence-blocked or needing revalidation IN, items blocked)
+   plans.build (pure)
+        |   remove_location per redundant candidate, no_op_preserve per keeper / protected / preferred
+        |   links: justifying decisions, policy versions, an ids-only evidence binding, dependencies
+        |   Phase 3 Evidence Preview: evidence-stage preconditions -> pass | fail | unknown |
+        |     not_applicable | unsupported; hard fail -> blocked, hard unknown -> blocked_evidence,
+        |     unsupported -> unsupported_action; live-stage ones declared for Phase 4, never evaluated
+        |   no_retaining_decision: any current decision anywhere that keeps the image blocks the removal
+   store.record_plan_revision      one 'plan_build' operation, status previewed, basis = record +
+        |                          evidence marks
+   store.lock_plan_revision        marks unchanged -> canonical payload -> SHA-256 -> locked + event
+        |                          with the dependency set
+   routing.reconcile -> store.reconcile_plans -> plans.obsolescence (the revision's OWN dependencies)
+                                   -> 'obsolete' event; items and fingerprint untouched
+```
+
+The schema normalizes what is queried -- decision links (`p3_plan_item_decision`,
+indexed by decision: the dependency index), policy links, the item graph, the
+preconditions with their results -- and keeps as JSON what is read back whole:
+the evidence binding (the `p3_decision` shape, so `routing.binding_drift` reads
+it), effects, postconditions. The Plan page (`planview.py`) reads the model once
+at open (the detector's) and reuses it while the record and evidence marks
+stand; nothing it does opens a source file.
