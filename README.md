@@ -8,9 +8,34 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B15 changes a file either — not even the plan B15 builds.
+a later phase; nothing in B8–B16 changes a file either — not even the plan B15 builds, or
+the metadata you ask for in B16.
 
 ---
+
+## B16 — Phase 3, Build 9: project metadata and desired source metadata
+
+B16 is the **record-keeping** half of metadata. It is not an editor, and
+no screen for it ships this round. What it adds:
+
+- **What each file's metadata says now**, with an honest state: a value;
+  *no value*; *unknown* (never read); *unsupported* (nothing reads that field
+  for that kind of file); *unavailable* (not present, or cloud-only); *stale*
+  (the file changed since); *conflicting* (two readings disagree, both shown,
+  no winner picked). It reads what Phase 1/2's analyzers already recorded:
+  PDF and Office title, author and creation date; RAW capture date; audio title.
+- **What you want a field to say** later (*set*, *clear*, or *leave unchanged*).
+  It is a decision like any other: attributed, superseded by a later one, never
+  edited. A desired value becomes an **Update Source Metadata** step in a plan,
+  and it stays **blocked**: no metadata writer exists, and none is certified in
+  this build. A signed or certified file, or a hard-linked one, is blocked on its
+  own, with or without a plan.
+- **The project's own metadata** (tags, a category, a note, an owner, a review
+  priority, why a file is kept). It is stored in the File Organizer project,
+  never written to the file, and never a plan step.
+
+`CHANGELOG-B16.md` has the detail; `PHASE3_B16_HANDBACK.md` reports against
+the Build 9 handoff.
 
 ## B15 — Phase 3, Build 8: the Plan Builder
 
@@ -624,7 +649,8 @@ remove, a copy to keep), and how many you deferred (left out).
 |---|---|
 | **Remove location** | this copy should no longer exist -- *how* is not decided here |
 | **Preserve (no action)** | this copy stays, and why: a keeper, protected, the group's canonical, preferred by a pair |
-| Move / Rename location, Update source metadata | in the vocabulary; no decision asks for them yet (a metadata update would show as an unsupported action -- no writer exists yet) |
+| **Update source metadata** (from B16) | a field of this file should say X, or have no value -- from a desired-metadata decision; always blocked for now (no certified writer exists; a signed or hard-linked file is blocked either way) |
+| Move / Rename location | in the vocabulary; no decision asks for them yet |
 
 Each revision is **previewed** against the project's evidence (nothing on
 disk is read). Every step lists what was checked now:
@@ -653,6 +679,21 @@ fingerprint and becomes immutable. Building again makes the next revision;
 evidence a locked revision rests on changes, the revision shows **Obsolete**
 with the reason, and is never rewritten. A change elsewhere in the project
 does not touch it.
+
+### 4d. Metadata (from B16)
+
+There is no Metadata screen yet. The project records metadata decisions, and
+the Plan page shows the Update Source Metadata steps they make. Each step
+lists what was checked:
+- the desired value, beside what the file says now;
+- **writer supported** -- whether a certified writer covers that field for that
+  kind of file (none does);
+- **not signed or certified**, and **not hard-linked** -- from the scan's
+  evidence, or *unknown* where the scan could not say.
+
+*Leave unchanged* and project metadata never appear as plan steps; the plan
+counts them. A field you chose to leave unchanged comes back for review only
+when the file itself changes.
 
 ### Stopping a run
 

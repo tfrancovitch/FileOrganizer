@@ -41,6 +41,12 @@ Build 6 adds three bulk actions over pairs (`pairs_related_keep_both`,
 record on one pair, applied pair by pair to a frozen population. None has a
 policy twin -- the research rules out a standing rule for relationship or
 retention decisions (P3.R4).
+
+Build 8 adds the Plan Builder's vocabulary (action kinds, preconditions,
+item states). Build 9 adds metadata (at the end of this module): a fourth
+target, the metadata question; the semantic field registry and the project
+metadata fields; the observed value-states; the capability record's
+vocabulary; and four decision kinds recorded through the same engine.
 """
 from __future__ import annotations
 
@@ -117,7 +123,8 @@ class DecisionKind:
     key: str
     label: str
     target_kinds: frozenset
-    value_kind: str                 # 'flag' | 'location_ref' | 'override' | 'location_pair'
+    value_kind: str                 # 'flag' | 'location_ref' | 'override' | 'location_pair' |
+                                    # (Build 9) 'metadata_value' | 'project_metadata'
     resolution_class: str           # one of RESOLUTION_ORDER, or 'none' (not a retention decision)
     conflict_domain: str            # same target + same domain: the new decision supersedes the old
     requires_evidence: bool
@@ -129,17 +136,21 @@ class DecisionKind:
     def validate_value(self, value):
         """The value as it will be stored, or ValueError."""
         return {"flag": _flag, "location_ref": _location_ref, "override": _override,
-                "location_pair": _location_pair}[self.value_kind](value)
+                "location_pair": _location_pair, "metadata_value": _desired_value,
+                "project_metadata": _project_metadata}[self.value_kind](value)
 
     def domain_key(self, value):
         """The conflict domain instance for one recorded value.
 
         Protection overrides conflict per rule overridden, not per location:
         a location under a protected root AND a protected folder may carry
-        one override for each.
+        one override for each. Project metadata conflicts per field: a new
+        note replaces the note, never the tags.
         """
         if self.key == "override_protection":
             return f"{self.conflict_domain}:{value['policy_id']}"
+        if self.key == "project_metadata_set":
+            return f"{self.conflict_domain}:{value['field']}"
         return self.conflict_domain
 
 
@@ -492,7 +503,8 @@ IMPACT_CLASSES = ("low", "medium", "high", "critical")
 ACTION_IMPACT = {ACTION_REMOVE: "high", ACTION_MOVE: "medium", ACTION_RENAME: "medium", ACTION_METADATA: "medium",
                  ACTION_PRESERVE: "low"}
 
-PRECONDITION_CLASSES = ("identity", "retention", "evidence", "environment", "collision", "concurrency", "reversibility")
+PRECONDITION_CLASSES = ("identity", "retention", "evidence", "environment", "collision", "concurrency", "reversibility",
+                        "integrity")          # Build 9: the source's own integrity (signed / hard-linked)
 SEVERITIES = ("hard", "warning", "informational")
 RESULTS = ("pass", "fail", "unknown", "not_applicable", "unsupported")
 #: Level 1 (checked now, from project evidence only -- zero source reads) and
@@ -500,8 +512,15 @@ RESULTS = ("pass", "fail", "unknown", "not_applicable", "unsupported")
 STAGE_EVIDENCE, STAGE_LIVE = "evidence_preview", "live_preflight"
 
 #: R7 §37's baseline vocabulary with each condition's class, plus one Build 8
-#: addition: no_retaining_decision (the question B13 carried forward).
+#: addition: no_retaining_decision (the question B13 carried forward), and
+#: Build 9's three for an update_source_metadata item: writer_supported (the
+#: capability record's status; only 'supported' passes) and the two
+#: evidence-level integrity blockers (P3-A115 signed / certified, P3-A116
+#: hard-linked), which metadata.blocked_by_evidence answers with no plan at all.
 PRECONDITIONS = {
+    "writer_supported": "environment",
+    "source_not_signed_or_certified": "integrity",
+    "source_not_hardlinked": "integrity",
     "target_exists": "identity",
     "target_observation_current": "identity",
     "target_content_matches": "identity",
@@ -563,10 +582,15 @@ ACTION_PRECONDITIONS = {
         ("no_current_conflict", "hard", STAGE_EVIDENCE),
         ("destination_collision_absent", "hard", STAGE_EVIDENCE),
     ) + _LIVE_COMMON + (("destination_available", "hard", STAGE_LIVE), ("filesystem_capability_supported", "hard", STAGE_LIVE)),
+    # Build 9: made from desired_source_metadata_set / _clear decisions. The
+    # writer is the capability record's; the integrity flags are evidence.
     ACTION_METADATA: (
         ("target_exists", "hard", STAGE_EVIDENCE),
         ("decision_current", "hard", STAGE_EVIDENCE),
-        ("filesystem_capability_supported", "hard", STAGE_EVIDENCE),    # the known writer profile: none yet
+        ("writer_supported", "hard", STAGE_EVIDENCE),
+        ("source_not_signed_or_certified", "hard", STAGE_EVIDENCE),
+        ("source_not_hardlinked", "hard", STAGE_EVIDENCE),
+        ("source_local_if_required", "warning", STAGE_EVIDENCE),
     ) + _LIVE_COMMON,
     ACTION_PRESERVE: (),
 }
@@ -578,10 +602,9 @@ ACTION_POSTCONDITIONS = {
     ACTION_METADATA: ("desired_metadata_observed", "rollback_record_exists"),
     ACTION_PRESERVE: (),
 }
-#: The known Phase 4 capability profile, as far as Phase 3 can know it: no
-#: source-metadata writer exists (R10 §16 -- format certification is later
-#: work), so an update_source_metadata item plans correctly and stays blocked.
-METADATA_WRITERS = ()
+#: (Build 8's placeholder for a known writer profile, METADATA_WRITERS = (),
+#: is replaced in Build 9 by the metadata capability record -- migration 014,
+#: p3_metadata_capability -- and the writer_supported precondition.)
 
 #: An item's state, from its evidence-stage results: a hard 'fail' blocks, a
 #: hard 'unknown' blocks as evidence (P3-A91: Unknown is not Pass), a hard
@@ -589,6 +612,19 @@ METADATA_WRITERS = ()
 ITEM_READY, ITEM_BLOCKED, ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE = (
     "ready", "blocked", "blocked_evidence", "unsupported_action", "preserve")
 ITEM_STATES = (ITEM_READY, ITEM_BLOCKED, ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE)
+
+#: An item's blocked_reason is the key of the hard precondition that settled
+#: it -- except where the research names the reason itself (Build 9, F13 and
+#: F14): WHY it is blocked, where the item's state says WHAT that produces.
+BLOCKED_REASONS = {
+    ("writer_supported", "unsupported"): "writer_unsupported",
+    ("source_not_signed_or_certified", "fail"): "signed_or_certified",
+    ("source_not_hardlinked", "fail"): "hardlinked_generic_write",
+}
+
+
+def blocked_reason(key, result):
+    return BLOCKED_REASONS.get((key, result), key)
 LINK_JUSTIFIES, LINK_RETAINS = "justifies", "retains"
 
 #: The disclosure every preview makes (P3.R7 §14, required wording).
@@ -600,3 +636,231 @@ def action_kind(key):
     if key not in ACTION_KINDS:
         raise ValueError(f"unknown plan action kind: {key!r}")
     return key
+
+
+# -- Build 9: project metadata and desired source metadata (P3.R8, scoped by R10 §4.6-§8, §16) --
+#
+# Four layers never collapse into one "field -> value -> save" (P3-A103):
+# observed source metadata (Phase 1/2 evidence), project metadata (the
+# project's own data), desired source metadata (a Phase 3 decision: what a
+# person wants written LATER), and an executed / verified change (Phase 4,
+# which does not exist -- nothing here simulates it). Metadata is not a
+# second decision engine (R10 §4.6): the four kinds below are recorded,
+# superseded and withdrawn like every other p3_decision row. Only what is
+# genuinely different gets its own code: the semantic field registry, the
+# capability record (migration 014), typed values, and the review data.
+
+#: The new target: one file location x one semantic field (R10 §7).
+#: target_ref = p3_metadata_question.question_id (as text).
+METADATA_QUESTION = "metadata_question"
+
+#: Value types (R8 §26's list is the ceiling; this is the floor that keeps
+#: text, dates and keyword lists apart -- R10 §8: no universal free-form field).
+VALUE_TYPES = ("text", "person", "date", "keyword_list", "choice")
+
+
+@dataclass(frozen=True)
+class MetadataField:
+    key: str
+    label: str
+    value_type: str
+    description: str
+    choices: tuple = ()
+
+
+#: The semantic field registry (R8 §3-4): a semantic field is not a physical
+#: tag. Which physical tags a field maps to, and how to reconcile them, is
+#: R8 §25's mapping profile -- a writer's concern, not built here.
+METADATA_FIELDS = {f.key: f for f in (
+    MetadataField("title", "Title", "text", "The document's or item's title."),
+    MetadataField("creator", "Creator", "person", "Who made it (author, artist)."),
+    MetadataField("content_created", "Content created", "date",
+                  "When the content says it was created -- not the file system's timestamp."),
+    MetadataField("description", "Description", "text", "A description or subject line."),
+    MetadataField("keywords", "Keywords", "keyword_list", "Keywords or tags embedded in the file."),
+    MetadataField("copyright", "Copyright", "text", "A copyright or rights statement."),
+)}
+
+#: Project metadata fields: the project's OWN data about an item, stored only
+#: in the project database, edited freely, never written to a file, and fully
+#: functional with no writer at all (P3-A112, P3-A113; R8 §6, §54-56).
+PROJECT_METADATA_FIELDS = {f.key: f for f in (
+    MetadataField("tags", "Tags", "keyword_list", "Your tags for this file."),
+    MetadataField("category", "Category", "text", "Your category for this file."),
+    MetadataField("note", "Note", "text", "A note about this file."),
+    MetadataField("review_priority", "Review priority", "choice", "How soon it needs a look.",
+                  ("low", "normal", "high")),
+    MetadataField("retention_rationale", "Retention rationale", "text", "Why this file is kept."),
+    MetadataField("owner", "Owner", "person", "Who the project records as its owner -- R8 §54's "
+                  "project-only correction: the file keeps what it says."),
+)}
+#: The words any surface shows beside project metadata (P3-A112).
+PROJECT_METADATA_LABEL = "Stored in the File Organizer project -- never written to the file"
+DESIRED_METADATA_LABEL = ("Desired source metadata -- what you want written to the file later; nothing is written "
+                          "in Phase 3, and no writer exists yet")
+
+#: The value-states of observed metadata (R8 §5), kept apart: 'no_value' (the
+#: field is empty) is not 'unknown' (nobody could say), and neither is a
+#: reason to CLEAR anything (P3-A111: clear is intent, unknown is evidence).
+OBS_KNOWN, OBS_NO_VALUE, OBS_UNKNOWN, OBS_UNSUPPORTED, OBS_UNAVAILABLE, OBS_STALE, OBS_CONFLICTING = (
+    "known", "no_value", "unknown", "unsupported", "unavailable", "stale", "conflicting")
+OBSERVED_STATES = (OBS_KNOWN, OBS_NO_VALUE, OBS_UNKNOWN, OBS_UNSUPPORTED, OBS_UNAVAILABLE, OBS_STALE, OBS_CONFLICTING)
+
+#: The capability record's vocabularies (R8 §16-18). Only 'supported'
+#: satisfies writer_supported; experimental, read_only, blocked and unknown
+#: all fail it -- no partial credit (Build 9 synthesis §8).
+CAPABILITY_STATUSES = ("supported", "experimental", "read_only", "blocked", "unknown")
+CAPABILITY_SUPPORTED = "supported"
+READ_SUPPORT = ("phase2_analyzer", "none", "unknown")
+WRITE_SUPPORT = ("none", "unknown")
+
+#: File families, by extension (a capability is per family x field).
+FILE_FAMILIES = {}
+for _family, _exts in (
+        ("pdf", (".pdf",)),
+        ("ooxml", (".docx", ".docm", ".dotx", ".xlsx", ".xlsm", ".pptx", ".pptm")),
+        ("ole_office", (".doc", ".xls", ".ppt")),
+        ("odf", (".odt", ".ods", ".odp")),
+        ("jpeg", (".jpg", ".jpeg", ".jfif")),
+        ("png", (".png",)),
+        ("tiff", (".tif", ".tiff")),
+        ("heif", (".heic", ".heif")),
+        ("webp", (".webp",)),
+        ("raw_image", (".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".srw", ".pef")),
+        ("audio", (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".wma", ".aac", ".opus")),
+        ("video", (".mp4", ".mov", ".mkv", ".avi", ".wmv", ".m4v", ".webm"))):
+    for _e in _exts:
+        FILE_FAMILIES[_e] = _family
+FAMILY_OTHER = "other"
+#: Families whose formats carry digital signatures or certification a
+#: metadata write could invalidate (R8 §2.8, §33). Phase 1/2 records no
+#: signature evidence, so for these the flag is unknown until it does.
+SIGNABLE_FAMILIES = ("pdf", "ooxml", "ole_office", "odf")
+
+
+def file_family(path) -> str:
+    s = str(path or "").replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    ext = "." + s.rsplit(".", 1)[-1] if "." in s else ""
+    return FILE_FAMILIES.get(ext, FAMILY_OTHER)
+
+
+#: What Phase 1/2 reads, field by field: (analyzer key, promoted column or
+#: detail_json key). The capability record says the same per family; this
+#: says where in analyzer_result to find it.
+METADATA_READ_MAP = {
+    "title": (("pdf", "column", "title"), ("office", "column", "title"), ("audio", "column", "title")),
+    "creator": (("pdf", "column", "author"), ("office", "column", "author")),
+    "content_created": (("pdf", "column", "content_created_reported"), ("office", "column", "content_created_reported"),
+                        ("raw_image", "column", "content_created_reported")),
+}
+
+
+def _text_value(value, what="a value"):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{what} is non-empty text")
+    value = value.strip()
+    if len(value) > 4000:
+        raise ValueError(f"{what} is at most 4,000 characters")
+    return value
+
+
+def _date_value(value):
+    import re
+    from datetime import date, datetime
+    s = _text_value(value, "a date")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        date.fromisoformat(s)
+        return s
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?", s):
+        datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return s
+    raise ValueError("a date is YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS][Z|+HH:MM]")
+
+
+def _keyword_list(value):
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("a keyword list is a non-empty list of keywords")
+    out = []
+    for v in value:
+        v = _text_value(v, "each keyword")
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def validate_field_value(spec: MetadataField, value):
+    """A value for this field as it will be stored, or ValueError."""
+    if spec.value_type in ("text", "person"):
+        return _text_value(value, f"{spec.label}")
+    if spec.value_type == "date":
+        return _date_value(value)
+    if spec.value_type == "keyword_list":
+        return _keyword_list(value)
+    if spec.value_type == "choice":
+        if value not in spec.choices:
+            raise ValueError(f"{spec.label} is one of: {', '.join(spec.choices)}")
+        return value
+    raise ValueError(f"unknown value type {spec.value_type!r}")
+
+
+def metadata_field(key):
+    try:
+        return METADATA_FIELDS[key]
+    except KeyError:
+        raise ValueError(f"unknown semantic metadata field: {key!r}")
+
+
+def _desired_value(value):
+    """The kind-level gate for desired_source_metadata_set; the field's own
+    type is checked where the question is known (store._validate_decision).
+    An empty value is refused: clearing is its own decision (P3-A111, R8 §9)."""
+    if value is None or (isinstance(value, str) and not value.strip()) or value == []:
+        raise ValueError("to clear a field, record Clear -- an empty value is not a clear")
+    return value
+
+
+def _project_metadata(value):
+    """project_metadata_set: {"field": one of PROJECT_METADATA_FIELDS, "value": v};
+    v None means the project holds no value for that field."""
+    if not isinstance(value, dict) or set(value) != {"field", "value"}:
+        raise ValueError('project metadata is {"field": ..., "value": ...}')
+    try:
+        spec = PROJECT_METADATA_FIELDS[value["field"]]
+    except KeyError:
+        raise ValueError(f"unknown project metadata field: {value.get('field')!r}")
+    v = value["value"]
+    return {"field": spec.key, "value": None if v is None else validate_field_value(spec, v)}
+
+
+DECISION_KINDS.update({k.key: k for k in (
+    DecisionKind(
+        "project_metadata_set", "Set project metadata", frozenset({LOCATION}), "project_metadata",
+        "none", "project_metadata",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="The project's own data about this file (a tag, category, note, priority, owner, why it is "
+                    "kept). " + PROJECT_METADATA_LABEL + "; never a plan item."),
+    DecisionKind(
+        "desired_source_metadata_set", "Desired: set", frozenset({METADATA_QUESTION}), "metadata_value",
+        "none", "source_metadata",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="What you want this field of the file to say, written later by Phase 4 if a certified writer "
+                    "exists. Plans as Update Source Metadata; blocked until then."),
+    DecisionKind(
+        "desired_source_metadata_clear", "Desired: clear", frozenset({METADATA_QUESTION}), "flag",
+        "none", "source_metadata",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="You want this field of the file to have no value -- the semantic clear, never a "
+                    "format's empty string. Always a person's intent; an unknown observation never makes one."),
+    DecisionKind(
+        "leave_source_metadata_unchanged", "Leave unchanged", frozenset({METADATA_QUESTION}), "flag",
+        "none", "source_metadata",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="You looked and want the file's value left as it is (R8 §53). Keeps the question out of "
+                    "review unless the evidence materially changes; never a plan item."),
+)})
+
+#: The four metadata kinds, and which of them propose a source action.
+METADATA_DECISION_KINDS = ("project_metadata_set", "desired_source_metadata_set", "desired_source_metadata_clear",
+                           "leave_source_metadata_unchanged")
+SOURCE_METADATA_KINDS = METADATA_DECISION_KINDS[1:]
+PLANNED_METADATA_KINDS = ("desired_source_metadata_set", "desired_source_metadata_clear")

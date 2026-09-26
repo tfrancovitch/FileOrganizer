@@ -43,6 +43,13 @@ the minimum location and physical-copy counts hold. For a hard precondition,
 filesystem could answer -- the file still exists as observed, its bytes still
 match, permissions, a free action lock, a rollback route -- is DECLARED for
 Phase 4's Live Preflight and not evaluated here; every preview says so.
+
+Build 9 adds Update Source Metadata items: one per metadata question with an
+active desired set or clear, after the retention items. Each is previewed
+for a certified writer (the capability record's status; none is certified,
+so every such item stays blocked) and for the two integrity blockers
+metadata.py answers with no plan at all. Project metadata and Leave
+unchanged propose no source action and are never items.
 """
 from __future__ import annotations
 
@@ -52,11 +59,13 @@ from dataclasses import dataclass, field, asdict
 
 from . import resolve as R
 from . import routing as RT
+from . import metadata as MD
 from .model import Evidence, active_decisions, active_policies
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, ACTION_REMOVE, ACTION_MOVE, ACTION_RENAME, ACTION_METADATA,
                        ACTION_PRESERVE, ACTION_KINDS, ACTION_IMPACT, ACTION_PRECONDITIONS, ACTION_POSTCONDITIONS,
-                       PRECONDITIONS, STAGE_EVIDENCE, STAGE_LIVE, METADATA_WRITERS, ITEM_READY, ITEM_BLOCKED,
-                       ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE, PREVIEW_DISCLOSURE, ACTION_WORDS)
+                       PRECONDITIONS, STAGE_EVIDENCE, STAGE_LIVE, ITEM_READY, ITEM_BLOCKED,
+                       ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE, PREVIEW_DISCLOSURE, ACTION_WORDS,
+                       METADATA_QUESTION, METADATA_FIELDS, blocked_reason)
 from . import EVIDENCE_BINDING_SCHEMA
 
 PLAN_PAYLOAD_SCHEMA = "fileorganizer.p3.plan-payload/1"
@@ -103,6 +112,15 @@ class PlanItem:
 
     def condition(self, key, stage=STAGE_EVIDENCE):
         return next((c for c in self.preconditions if c.key == key and c.stage == stage), None)
+
+    @property
+    def blocking(self):
+        """The precondition whose result settled a blocked item (its
+        blocked_reason is that key, or -- Build 9 -- the reason it names)."""
+        if not self.blocked_reason:
+            return None
+        return next((c for c in self.preconditions if c.stage == STAGE_EVIDENCE and c.result
+                     and blocked_reason(c.key, c.result) == self.blocked_reason), None)
 
     @property
     def warnings(self):
@@ -342,8 +360,78 @@ def build(ev: Evidence, proj, routing) -> PlanDraft:
         it.estimated_effect = {"logical_bytes": loc.size_bytes if loc else None,
                                "physical_id": loc.physical_id if loc else None,
                                "root_key": loc.root_key if loc else None}
+    # Build 9: an Update Source Metadata item for every active desired set or
+    # clear -- after the retention items, so a revision with none numbers and
+    # fingerprints exactly as Build 8's did. Project metadata and Leave
+    # unchanged propose no source action and are never items (counted only).
+    items.extend(metadata_items(ev, len(items) + 1))
+    left = sum(1 for d in MD.current_decisions(MD.active_metadata(ev)).values() if d.kind == "leave_source_metadata_unchanged")
+    project = sum(1 for d in MD.active_metadata(ev) if d.kind == "project_metadata_set")
+    if left:
+        excluded["left_unchanged"] = left
+    if project:
+        excluded["project_metadata"] = project
     summary = summarize(items, ev, proj, excluded)
     return PlanDraft(items, summary, excluded)
+
+
+def metadata_items(ev: Evidence, first_no=1) -> list:
+    """One Update Source Metadata item per question with an active desired set
+    or clear, in location display order then field order. Logical intent only
+    ("this field should say X" / "should have no value"); never how."""
+    order = {k: i for i, k in enumerate(METADATA_FIELDS)}
+
+    def display(qd):
+        q = qd[0]
+        loc = ev.locations.get(q.location_id)
+        return (loc.sort_key if loc is not None else (), _id_order(q.location_id), order.get(q.semantic_field, 99))
+    items = []
+    for n, (q, d) in enumerate(sorted(MD.planned(ev), key=display), first_no):
+        loc = ev.locations.get(q.location_id)
+        effect = {"effect": "metadata_value", "field": q.semantic_field,
+                  "operation": "set" if d.kind == "desired_source_metadata_set" else "clear",
+                  "path": loc.path if loc is not None else None}
+        if d.kind == "desired_source_metadata_set":
+            effect["value"] = d.value
+        binding = _location_binding(ev, q.location_id)
+        binding["question"] = {"question_id": q.question_id, "semantic_field": q.semantic_field,
+                               "analyzer_result_ids": list(q.analyzer_result_ids), "observed_state": q.observed_state}
+        it = PlanItem(n, ACTION_METADATA, LOCATION, q.location_id, ((METADATA_QUESTION, q.question_id),), effect,
+                      decision_ids=_ids([d.decision_id]), evidence_binding=binding)
+        _declare(it)
+        _preview_metadata(it, ev, q, d)
+        _settle(it)
+        it.estimated_effect = {"field": q.semantic_field, "observed_state": q.observed_state,
+                               "observed_value": q.observed_value, "observed_values": list(q.observed_values),
+                               "file_family": q.file_family, "logical_bytes": 0}
+        items.append(it)
+    return items
+
+
+def _preview_metadata(it, ev, q, d):
+    """The Evidence Preview of a metadata item: the target as last observed,
+    the decision still resting on that evidence, the writer (the capability
+    record's status), and the two integrity blockers -- the same checks
+    metadata.blocked_by_evidence answers with no plan at all."""
+    loc = ev.locations.get(q.location_id)
+    if loc is None:
+        _set(it, "target_exists", "unknown", "not in the current evidence")
+    else:
+        _set(it, "target_exists", "pass" if loc.present else "fail",
+             "present at the last scan" if loc.present else "not present at the last scan", observation_id=loc.observation_id)
+    drift = MD.question_drift(q, d)
+    _set(it, "decision_current", "fail" if drift else "pass",
+         ("needs revalidation: " + drift[0]) if drift else "the decision rests on the evidence as it is now")
+    result, detail = MD.writer_check(q)
+    cap = q.capability
+    _set(it, "writer_supported", result, detail, file_family=q.file_family, semantic_field=q.semantic_field,
+         capability_status=cap.status if cap is not None else "unknown")
+    for key, (res, why) in MD.integrity(q).items():
+        _set(it, key, res, why)
+    if loc is not None and loc.cloud_only:
+        _set(it, "source_local_if_required", "fail", "cloud-only at the last scan: Phase 4 would need it local")
+    else:
+        _set(it, "source_local_if_required", "pass", "local at the last scan")
 
 
 def _declare(it: PlanItem):
@@ -470,11 +558,11 @@ def _settle(it: PlanItem):
     if pending:
         raise ValueError(f"item {it.item_no}: evidence-stage precondition {pending[0].key} was not evaluated")
     if failed:
-        it.state, it.blocked_reason = ITEM_BLOCKED, failed[0].key
+        it.state, it.blocked_reason = ITEM_BLOCKED, blocked_reason(failed[0].key, "fail")
     elif unknown:
-        it.state, it.blocked_reason = ITEM_BLOCKED_EVIDENCE, unknown[0].key
+        it.state, it.blocked_reason = ITEM_BLOCKED_EVIDENCE, blocked_reason(unknown[0].key, "unknown")
     elif unsupported:
-        it.state, it.blocked_reason = ITEM_UNSUPPORTED, unsupported[0].key
+        it.state, it.blocked_reason = ITEM_UNSUPPORTED, blocked_reason(unsupported[0].key, "unsupported")
     else:
         it.state, it.blocked_reason = ITEM_READY, None
 
@@ -482,11 +570,12 @@ def _settle(it: PlanItem):
 # -- items the current decision vocabulary does not produce yet ------------------------------
 
 def logical_item(ev: Evidence, action, lid, desired_effect, decision_ids=(), item_no=1) -> PlanItem:
-    """A move, rename or metadata item, previewed from project evidence. No
-    decision kind asks for one yet (desired metadata is Build 9's), so the
-    builder does not generate them; the vocabulary, the preconditions and the
-    preview exist so the schema carries all five kinds (R10 §15)."""
-    if action not in (ACTION_MOVE, ACTION_RENAME, ACTION_METADATA):
+    """A move or rename item, previewed from project evidence. No decision
+    kind asks for one yet, so the builder does not generate them; the
+    vocabulary, the preconditions and the preview exist so the schema carries
+    all five kinds (R10 §15). (Metadata items are Build 9's, made from
+    desired-metadata decisions by build() -- not here.)"""
+    if action not in (ACTION_MOVE, ACTION_RENAME):
         raise ValueError(f"{action} is built from decisions by build(), not here")
     loc = ev.locations.get(str(lid))
     it = PlanItem(item_no, action, LOCATION, str(lid), (), dict(desired_effect), decision_ids=_ids(decision_ids),
@@ -499,21 +588,15 @@ def logical_item(ev: Evidence, action, lid, desired_effect, decision_ids=(), ite
              "present at the last scan" if loc.present else "not present at the last scan")
     _set(it, "decision_current", "pass" if decision_ids else "fail",
          "rests on current decisions" if decision_ids else "no decision asks for it -- the Plan Builder never invents intent")
-    if action in (ACTION_MOVE, ACTION_RENAME):
-        _set(it, "no_current_conflict", "pass", "no conflict stands on the location")
-        dest = str(desired_effect.get("destination") or "")
-        if not dest:
-            _set(it, "destination_collision_absent", "fail", "no destination recorded")
-        else:
-            taken = [l for l in ev.locations.values() if l.present and l.path.lower() == dest.lower() and l.location_id != str(lid)]
-            _set(it, "destination_collision_absent", "fail" if taken else "pass",
-                 f"the evidence already holds a file there ({taken[0].path})" if taken
-                 else "no file known to the evidence is at the destination", destination=dest)
+    _set(it, "no_current_conflict", "pass", "no conflict stands on the location")
+    dest = str(desired_effect.get("destination") or "")
+    if not dest:
+        _set(it, "destination_collision_absent", "fail", "no destination recorded")
     else:
-        fmt = str(desired_effect.get("format") or "").lower()
-        _set(it, "filesystem_capability_supported", "unsupported" if fmt not in METADATA_WRITERS else "pass",
-             "no source-metadata writer exists yet (format certification is later work): planned, not executable"
-             if fmt not in METADATA_WRITERS else f"a {fmt} writer is known")
+        taken = [l for l in ev.locations.values() if l.present and l.path.lower() == dest.lower() and l.location_id != str(lid)]
+        _set(it, "destination_collision_absent", "fail" if taken else "pass",
+             f"the evidence already holds a file there ({taken[0].path})" if taken
+             else "no file known to the evidence is at the destination", destination=dest)
     _settle(it)
     return it
 
@@ -603,8 +686,15 @@ def summary_lines(s) -> list:
     if ex.get("deferred") or ex.get("conflict") or s.get("undecided_left"):
         lines.append(f"Not in this plan: {ex.get('deferred', 0):,} deferred by you, {ex.get('conflict', 0):,} in conflict; "
                      f"{s.get('undecided_left', 0):,} undecided cop(ies) in planned groups (the Plan Builder never decides them).")
+    if ex.get("left_unchanged") or ex.get("project_metadata"):
+        lines.append(f"Never plan items: {ex.get('left_unchanged', 0):,} metadata field(s) you chose to leave unchanged; "
+                     f"{ex.get('project_metadata', 0):,} project metadata value(s) (stored in the File Organizer project, "
+                     "never written to a file).")
     lines.append("Coverage: Remove Location -- evidence preview complete; live existence, content, permissions and "
                  "rollback are deferred to Phase 4.")
+    if a.get(ACTION_METADATA):
+        lines.append("Coverage: Update Source Metadata -- planned only: no certified source-metadata writer exists "
+                     "(R10 §16), so every such item stays blocked; nothing is written in Phase 3.")
     lines.append(PREVIEW_DISCLOSURE)
     return lines
 
@@ -665,6 +755,8 @@ REASON_WORDS = {
     "membership_changed": "duplicate-group membership changed",
     "pair_changed": "candidate pair changed",
     "new_conflict": "new conflict",
+    "capability_changed": "metadata capability changed",
+    "integrity_changed": "integrity evidence changed",
 }
 
 
@@ -675,7 +767,7 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
     sources); a change anywhere else in the project cannot obsolete it. An
     empty list: it still stands."""
     active = active_decisions(ev.decisions)
-    active_ids = {d.decision_id for d in active}
+    active_ids = {d.decision_id for d in active} | {d.decision_id for d in MD.active_metadata(ev)}
     index = R._index_decisions(active)
     policies = active_policies(ev.policies)
     current_policy_versions = {str(p.policy_version_id) for p in policies}
@@ -697,6 +789,9 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
         stale_pol = [p for p in it.policy_version_ids if str(p) not in current_policy_versions]
         if stale_pol:
             add("policy_changed", f"item {it.item_no}: policy version(s) {', '.join(stale_pol)} no longer current")
+        if it.action_kind == ACTION_METADATA:
+            _metadata_obsolescence(it, ev, add)
+            continue
         if it.action_kind != ACTION_REMOVE:
             continue
         loc = ev.locations.get(str(it.target_ref))
@@ -732,6 +827,32 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
             if route is not None and any(c.severity == R.BLOCKING for c in route.of(RT.CONFLICT)) and it.state == ITEM_READY:
                 add("new_conflict", f"item {it.item_no}: {'group' if kind == GROUP else 'pair #'}{ref} is now in conflict")
     return reasons
+
+
+def _metadata_obsolescence(it, ev: Evidence, add):
+    """A metadata item's own dependencies (Build 9): its file observed again
+    or re-read, its question gone, the capability record or the integrity
+    evidence no longer what the preview found."""
+    b = it.evidence_binding or {}
+    qb = b.get("question") or {}
+    src = dict(it.sources).get(METADATA_QUESTION)
+    q = ev.metadata.questions.get(str(src)) if src is not None else None
+    if q is None:
+        add("evidence_changed", f"item {it.item_no}: metadata question #{src} is no longer in the evidence")
+        return
+    drift = RT.binding_drift(ev, LOCATION, it.target_ref, {k: v for k, v in b.items() if k not in ("source", "question")})
+    if not drift and qb and tuple(str(x) for x in qb.get("analyzer_result_ids") or ()) != tuple(q.analyzer_result_ids):
+        drift = (f"{_name(ev, it.target_ref)}: {q.semantic_field} read again by an analyzer since",)
+    if drift:
+        add("evidence_changed", f"item {it.item_no}: " + "; ".join(drift[:3]))
+    was = it.condition("writer_supported")
+    if was is not None and (was.params.get("capability_status") != (q.capability.status if q.capability else "unknown")):
+        add("capability_changed", f"item {it.item_no}: {q.semantic_field} in {q.file_family} files is now "
+                                  f"'{q.capability.status if q.capability else 'unknown'}' (was '{was.params.get('capability_status')}')")
+    for key, (res, _why) in MD.integrity(q).items():
+        c = it.condition(key)
+        if c is not None and c.result != res:
+            add("integrity_changed", f"item {it.item_no}: {key.replace('_', ' ')} was {c.result}, now {res}")
 
 
 # -- revision diff (R7 §34) --------------------------------------------------------------------

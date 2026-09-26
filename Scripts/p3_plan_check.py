@@ -117,8 +117,10 @@ def test_vocabulary():
           REG.ACTION_KINDS == ("remove_location", "move_location", "rename_location", "update_source_metadata", "no_op_preserve"))
     check("no hard-link replacement anywhere in the vocabulary (R7 §21: never a default)",
           not any("hardlink" in k or "link" in k for k in REG.ACTION_KINDS))
-    check("R7 §37's twenty-two precondition keys, each with a class from R7 §15; one Build 8 addition (no_retaining_decision)",
-          set(R7_PRECONDITIONS) <= set(REG.PRECONDITIONS) and set(REG.PRECONDITIONS) - set(R7_PRECONDITIONS) == {"no_retaining_decision"}
+    check("R7 §37's twenty-two precondition keys, each with a class from R7 §15; one Build 8 addition (no_retaining_decision), "
+          "three Build 9 additions (writer_supported and the two integrity blockers)",
+          set(R7_PRECONDITIONS) <= set(REG.PRECONDITIONS) and set(REG.PRECONDITIONS) - set(R7_PRECONDITIONS) == {
+              "no_retaining_decision", "writer_supported", "source_not_signed_or_certified", "source_not_hardlinked"}
           and set(REG.PRECONDITIONS.values()) <= set(REG.PRECONDITION_CLASSES))
     check("severities and results are R7 §16's", REG.SEVERITIES == ("hard", "warning", "informational")
           and REG.RESULTS == ("pass", "fail", "unknown", "not_applicable", "unsupported"))
@@ -132,7 +134,9 @@ def test_vocabulary():
               for a in (REG.ACTION_REMOVE, REG.ACTION_MOVE, REG.ACTION_RENAME, REG.ACTION_METADATA)))
     check("the disclosure is R7 §14's own words", REG.PREVIEW_DISCLOSURE.startswith("This preview evaluates the Plan against "
                                                                                      "Project Evidence. Phase 4 must re-check"))
-    check("no metadata writer is known (R10 §16): a metadata item plans and stays blocked", REG.METADATA_WRITERS == ())
+    check("no metadata writer is known (R10 §16): Build 8's placeholder profile is gone, and the metadata item declares "
+          "writer_supported (Build 9: the capability record's status) as a hard evidence-stage precondition",
+          not hasattr(REG, "METADATA_WRITERS") and ("writer_supported", "hard", REG.STAGE_EVIDENCE) in REG.ACTION_PRECONDITIONS[REG.ACTION_METADATA])
 
 
 # ---------------------------------------------------------------------------
@@ -309,9 +313,9 @@ def test_other_items_and_effects():
     section("2c. Move / rename / metadata items, the three reclaim metrics, the fingerprint")
     L = [gloc("1", r"C:\D\a.pdf", phys="P1"), gloc("2", r"C:\E\a.pdf", phys="P2"), gloc("3", r"C:\E\b.pdf", phys="P3", content="C3")]
     ev, proj, rt = routed(L, [gdec("D1", "must_keep_location", LOCATION, "1"), gdec("D2", "redundant_location", LOCATION, "2")])
-    m = PL.logical_item(ev, REG.ACTION_METADATA, "3", {"field": "author", "value": "X", "format": "pdf"}, ["D9"])
-    check("an update_source_metadata item plans, and is an unsupported action (no writer exists yet) -- never executable",
-          m.state == UNSUPPORTED and res(m, "filesystem_capability_supported") == "unsupported")
+    check("an update_source_metadata item cannot be built by hand (Build 9: only from a desired-metadata decision; "
+          "p3_metadata_check proves those plan, and stay unsupported)",
+          refused(lambda: PL.logical_item(ev, REG.ACTION_METADATA, "3", {"field": "creator", "value": "X"}, ["D9"])))
     mv = PL.logical_item(ev, REG.ACTION_MOVE, "3", {"destination": r"C:\D\a.pdf"}, ["D9"])
     mv2 = PL.logical_item(ev, REG.ACTION_MOVE, "3", {"destination": r"C:\New\b.pdf"}, ["D9"])
     check("a move onto a path the evidence already holds fails destination_collision_absent; a free destination passes",

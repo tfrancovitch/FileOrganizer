@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F14_Metadata_Integrity_Blockers",
+  "title": "Signed PDF + Hard-Link Metadata Blockers",
+  "purpose": "Generic metadata writer is blocked for signed/certified and hard-linked sources."
+}

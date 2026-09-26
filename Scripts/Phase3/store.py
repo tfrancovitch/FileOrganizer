@@ -67,6 +67,7 @@ from .registry import (decision_kind, policy_kind, event_kind, return_kind, orig
                        DISP_DECIDED, MODE_PRESERVE)
 from .resolve import _policy_covers
 from .registry import action_kind, PLAN_EVENT_KINDS, LINK_JUSTIFIES, LINK_RETAINS
+from .registry import METADATA_QUESTION, METADATA_DECISION_KINDS, metadata_field, validate_field_value
 
 SYSTEM_ACTOR_KIND = "system_evidence"
 DETECTOR_AGENT = "routing_detector"
@@ -194,9 +195,10 @@ class DecisionStore:
         row = self.conn.execute(
             "SELECT (SELECT COUNT(*) FROM p3_operation), (SELECT COUNT(*) FROM p3_decision), "
             "       (SELECT COUNT(*) FROM p3_decision_withdrawal), (SELECT COUNT(*) FROM p3_policy_version), "
-            "       (SELECT COUNT(*) FROM p3_review_event), (SELECT COUNT(*) FROM p3_bulk_batch)").fetchone()
+            "       (SELECT COUNT(*) FROM p3_review_event), (SELECT COUNT(*) FROM p3_bulk_batch), "
+            "       (SELECT COUNT(*) FROM p3_metadata_question)").fetchone()
         return {"operations": row[0], "decisions": row[1], "withdrawals": row[2], "policy_versions": row[3],
-                "review_events": row[4], "batches": row[5]}
+                "review_events": row[4], "batches": row[5], "metadata_questions": row[6]}
 
     # -- review events (Build 3) ------------------------------------------------
 
@@ -347,7 +349,74 @@ class DecisionStore:
             member_ids = {str(m["file_path_id"]) for m in evidence_binding.get("members", [])}
             if value not in member_ids:
                 raise ValueError("the canonical must be a current member of the group")
+        if target_kind == METADATA_QUESTION:
+            # Build 9: the question must exist, and a desired value must be of
+            # its field's type (the kind-level gate only refuses an empty one).
+            if not (evidence_binding or {}).get("question_id"):
+                raise ValueError("no such metadata question")
+            if kind == "desired_source_metadata_set":
+                value = validate_field_value(metadata_field(evidence_binding["semantic_field"]), value)
         return kind, target_kind, target_ref, value, evidence_binding
+
+    # -- metadata (Build 9) --------------------------------------------------------
+    #
+    # The four metadata kinds are ordinary decisions; these helpers only name
+    # the question a desired-metadata decision targets. Nothing here reads a
+    # source file (the observed value is Phase 1/2 evidence) or writes one.
+
+    def metadata_question(self, file_path_id, semantic_field, create=False, command_id=None):
+        """The question id for one location x one semantic field, or None --
+        or, with `create`, a new question under its own operation."""
+        metadata_field(semantic_field)
+        row = self.conn.execute("SELECT question_id FROM p3_metadata_question WHERE project_id = 1 AND file_path_id = ? "
+                                "AND semantic_field = ?", (int(file_path_id), semantic_field)).fetchone()
+        if row is not None or not create:
+            return int(row[0]) if row is not None else None
+        return self._run(lambda: self._question_row(self._operation("metadata_question", command_id, None),
+                                                    file_path_id, semantic_field))
+
+    def _question_row(self, operation_id, file_path_id, semantic_field):
+        metadata_field(semantic_field)
+        if self.conn.execute("SELECT 1 FROM file_path WHERE file_path_id = ?", (int(file_path_id),)).fetchone() is None:
+            raise ValueError(f"no such file location: {file_path_id}")
+        row = self.conn.execute("SELECT question_id FROM p3_metadata_question WHERE project_id = 1 AND file_path_id = ? "
+                                "AND semantic_field = ?", (int(file_path_id), semantic_field)).fetchone()
+        if row is not None:
+            return int(row[0])
+        return int(self.conn.execute("INSERT INTO p3_metadata_question(project_id, file_path_id, semantic_field, operation_id) "
+                                     "VALUES(1,?,?,?)", (int(file_path_id), semantic_field, operation_id)).lastrowid)
+
+    def record_metadata_decision(self, kind, file_path_id, semantic_field=None, value=True, rationale=None, command_id=None):
+        """One metadata decision in one operation, the question named (and, the
+        first time, created) in the same operation.
+
+          project_metadata_set             file_path_id, value={"field", "value"}: the project's own
+                                           data, on the file location itself (never a question)
+          desired_source_metadata_set      file_path_id + semantic_field, value = the desired value
+          desired_source_metadata_clear    file_path_id + semantic_field (value true)
+          leave_source_metadata_unchanged  file_path_id + semantic_field (value true)
+
+        Returns {decision_id, operation_id, supersedes_decision_id, question_id}."""
+        if kind not in METADATA_DECISION_KINDS:
+            raise ValueError(f"{kind} is not a metadata decision kind")
+        if kind == "project_metadata_set":
+            result = self.record_decision(kind, LOCATION, file_path_id, value, rationale=rationale, command_id=command_id)
+            result["question_id"] = None
+            return result
+        spec = metadata_field(semantic_field)
+        dk = decision_kind(kind)
+        value = dk.validate_value(value)
+        if kind == "desired_source_metadata_set":
+            value = validate_field_value(spec, value)
+
+        def work():
+            op = self._operation("decision", command_id, rationale)
+            qid = self._question_row(op, file_path_id, spec.key)
+            binding = ev_mod.question_binding(self.conn, qid)
+            decision_id, supersedes = self._decision_row(op, kind, METADATA_QUESTION, qid, value, binding, rationale)
+            return {"decision_id": decision_id, "operation_id": op, "supersedes_decision_id": supersedes,
+                    "withdrawn": [], "question_id": qid}
+        return self._run(work)
 
     def record_decisions(self, decisions, rationale=None, command_id=None, withdraw=()):
         """Several decisions in ONE operation: every row lands or none does.
@@ -977,6 +1046,8 @@ def export_decision_journal(conn, path):
         lines.append(f"#{o['operation_id']}  {o['occurred_utc']}  {o['kind']}  by {o['actor_id']} via {o['agent_kind']} {o['agent_version']}")
         if o["note"]:
             lines.append(f"    note: {o['note']}")
+        for q in conn.execute("SELECT * FROM p3_metadata_question WHERE operation_id=? ORDER BY question_id", (o["operation_id"],)):
+            lines.append(f"    metadata question #{q['question_id']}: {q['semantic_field']} of file location {q['file_path_id']}")
         for d in conn.execute("SELECT * FROM p3_decision WHERE operation_id=? ORDER BY decision_id", (o["operation_id"],)):
             sup = f"  supersedes #{d['supersedes_decision_id']}" if d["supersedes_decision_id"] else ""
             origin = f"  (batch #{d['origin_ref']})" if d["origin_kind"] == ORIGIN_BULK_EXPLICIT_HUMAN else ""

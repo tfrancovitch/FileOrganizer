@@ -167,6 +167,55 @@ class VisualPair:
 
 
 @dataclass(frozen=True)
+class CapabilityRecord:
+    """What the product can do with one semantic field of one file family
+    (Build 9; R8 §16-18). Only status 'supported' satisfies the Plan
+    Builder's writer_supported precondition; no record says it yet."""
+    file_family: str
+    semantic_field: str
+    read_support: str = "unknown"   # phase2_analyzer | none | unknown
+    write_support: str = "unknown"  # none | unknown
+    status: str = "unknown"         # supported | experimental | read_only | blocked | unknown
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class MetadataQuestion:
+    """A metadata question (Build 9, R10 §7): one file location x one semantic
+    field, and what the evidence says about it -- the bridge from observed
+    source metadata to a desired-metadata decision. Everything past the
+    identity is read from Phase 1/2 evidence (or, in the fixture lab, from
+    its evidence_metadata_question row), never recorded by Phase 3.
+
+    `signed_or_certified` / `hardlinked`: True, False, or None when the
+    evidence cannot say (P3-A91: unknown is not 'no')."""
+    question_id: str
+    location_id: str
+    semantic_field: str
+    observed_state: str = "unknown"             # registry.OBSERVED_STATES
+    observed_value: Any = None                  # the value when 'known'
+    observed_values: tuple = ()                 # every value seen, when 'conflicting'
+    file_family: str = "other"
+    capability: CapabilityRecord | None = None
+    signed_or_certified: bool | None = None
+    hardlinked: bool | None = None
+    observation_id: str | None = None           # the location's observation the reading rests on
+    analyzer_result_ids: tuple = ()             # the results it was read from (ids only)
+    detail: str = ""
+
+
+@dataclass
+class MetadataEvidence:
+    """Build 9's slice of the model: the metadata questions, the metadata
+    decisions (kept apart from `Evidence.decisions`, which the duplicate and
+    pair resolvers read -- a note or a desired Creator is not retention
+    intent), and the capability record."""
+    questions: dict = field(default_factory=dict)       # question_id -> MetadataQuestion
+    decisions: list = field(default_factory=list)       # every metadata Decision row, withdrawn and superseded included
+    capabilities: dict = field(default_factory=dict)    # (file_family, semantic_field) -> CapabilityRecord
+
+
+@dataclass(frozen=True)
 class PolicyVersion:
     policy_version_id: str
     policy_id: str
@@ -189,6 +238,7 @@ class Evidence:
     now: str = ""                                   # the moment routing is evaluated at (ISO UTC)
     batches: list = field(default_factory=list)     # Batch records, when a caller loads them (the fixture check does)
     pairs: dict = field(default_factory=dict)       # pair_id -> VisualPair (Build 5): current pairs, plus any a decision or event names
+    metadata: MetadataEvidence = field(default_factory=MetadataEvidence)   # Build 9
 
     def group_of(self, location_id):
         for g in self.groups.values():

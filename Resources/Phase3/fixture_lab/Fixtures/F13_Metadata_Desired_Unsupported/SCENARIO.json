@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F13_Metadata_Desired_Unsupported",
+  "title": "Desired Metadata + Unsupported Writer",
+  "purpose": "Desired source metadata can exist in Phase 3 while source remains untouched and Plan is blocked."
+}

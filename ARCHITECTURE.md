@@ -1,11 +1,11 @@
-# Architecture — The File Organizer, B15 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B16 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
 routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
-refresh, the Plan Builder) at the end say what B7 and B8–B15 added on top.
+refresh, the Plan Builder, metadata) at the end say what B7 and B8–B16 added on top.
 
 ---
 
@@ -740,3 +740,37 @@ the evidence binding (the `p3_decision` shape, so `routing.binding_drift` reads
 it), effects, postconditions. The Plan page (`planview.py`) reads the model once
 at open (the detector's) and reuses it while the record and evidence marks
 stand; nothing it does opens a source file.
+
+### Project metadata and desired source metadata (B16, schema 14)
+
+Four layers, never one "field -> value -> save" (P3.R8, P3-A103): observed
+source metadata (Phase 1/2 evidence), project metadata, desired source
+metadata (a decision), and an executed / verified change (Phase 4's; nothing
+here simulates it). Metadata reuses the one Decision engine (R10 §4.6): four
+decision kinds, one new target.
+
+```
+   analyzer_result (Phase 1/2: Title / Author / created, latest attempt on the current observation)
+   file_state.hard_link_count           p3_metadata_capability (014: family x field -> read, write, status)
+        |                                    |
+   evidence.load_metadata --> MetadataQuestion (p3_metadata_question: location x semantic field, identity only)
+        |   observed value-state (known | no_value | unknown | unsupported | unavailable | stale | conflicting),
+        |   capability, signed (always unknown: no Phase 1/2 evidence), hard-linked (true | false | unknown)
+        |   + every metadata decision (kept OUT of ev.decisions: the duplicate / pair model never sees them)
+   metadata.py (pure)
+        |   blocked_by_evidence(questions)  -> question -> signed_or_certified | hardlinked_generic_write   (no plan)
+        |   review / queue                  -> the data a review surface needs; Left Unchanged returns only on drift
+        |   project_metadata                -> the project's own values, labelled "stored in the project"
+   plans.build (after the retention items)
+        |   desired set / clear -> update_source_metadata item; preconditions: writer_supported (the record's
+        |   status; only 'supported' passes), source_not_signed_or_certified, source_not_hardlinked (the same
+        |   checks blocked_by_evidence uses), decision_current, target_exists; a cloud-only warning
+        |   project_metadata_set, leave_source_metadata_unchanged -> never an item (counted)
+   plans.obsolescence: a metadata item's own decision, evidence, capability status and integrity flags
+```
+
+`store.record_metadata_decision` names the question (creating it the first
+time) and records the decision in one operation. Its binding is ids only: the
+question, the location's observation, and the analyzer results the value came
+from. No row in the capability record says `supported`, so every metadata
+item is blocked.

@@ -4,6 +4,9 @@ Builds 1-2 (B8): Core Persistence and Exact-Duplicate Decisions.
 Build 3 (B9): Review Routing. Build 4 (B10): Bulk / Policy.
 Build 5 (B11): the Image Game -- visual candidate pairs.
 Build 6 (B12): Bulk Visual Review -- frozen batches over visual pairs.
+Build 7 (B13): Survey Mode. B14: incremental review refresh.
+Build 8 (B15): the Plan Builder. Build 9 (B16): project metadata and
+desired source metadata -- recorded and planned, never written.
 
 Phase 3 converts evidence into attributable human intent, and that intent
 into an inspectable projection of what SHOULD happen -- without touching a
@@ -29,6 +32,10 @@ Phase 4, which does not exist yet.
                   versions, review events and bulk batches; append-only
     review.py     the Exact-Duplicate Review pages inside the one window
     imagegame.py  the Similar Images page: one pair at a time (Build 5)
+    plans.py      the Plan Builder: proposed logical intent, previewed
+                  against evidence, frozen and fingerprinted (Build 8)
+    metadata.py   metadata questions, value-states, the capability record,
+                  the evidence-level integrity blockers, review data (Build 9)
 
 The pairs themselves are Phase 2 evidence (Phase2\visual.py compares the
 image hashes); this package only records and resolves decisions about them.
@@ -43,3 +50,4 @@ DECISION_SCHEMA = "fileorganizer.p3.decisions/1"
 EVIDENCE_BINDING_SCHEMA = "fileorganizer.p3.evidence-binding/1"
 BULK_SCHEMA = "fileorganizer.p3.bulk/1"                  # migration 011
 BULK_QUERY_SCHEMA = "fileorganizer.p3.bulk-query/1"      # the frozen query a snapshot batch records
+METADATA_SCHEMA = "fileorganizer.p3.metadata/1"          # migration 014

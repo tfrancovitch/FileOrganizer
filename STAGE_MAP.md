@@ -322,3 +322,9 @@ interactions on the project database alone: one operation each for build and
 lock, no source file opened, stat'ed or listed. The routing detector also
 checks locked plan revisions against their own dependencies whenever it runs
 with the pairs (after a collection run, when Similar Images or Plan opens).
+Recording a metadata decision (B16) is one operation on the project database
+(the metadata question it names is created in the same operation). Reading a
+file's metadata state reads Phase 1/2's analyzer results and the file's
+current state; no source file is opened, stat'ed or listed, and nothing is
+written to any file. A rescan or re-analysis that changes a file sends its
+decided metadata questions, Left Unchanged included, back for review.

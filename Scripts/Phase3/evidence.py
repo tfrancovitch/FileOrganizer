@@ -27,8 +27,11 @@ from Phase2.coverage import coverage_summary
 from Phase2.derived import ensure_duplicate_projection
 
 from . import EVIDENCE_BINDING_SCHEMA
-from .model import Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, RootCoverage, VisualPair, path_key
-from .registry import LOCATION, GROUP, VISUAL_PAIR
+from .model import (Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, RootCoverage, VisualPair, path_key,
+                    MetadataEvidence, MetadataQuestion, CapabilityRecord)
+from .registry import (LOCATION, GROUP, VISUAL_PAIR, METADATA_QUESTION, METADATA_DECISION_KINDS, METADATA_FIELDS,
+                       METADATA_READ_MAP, file_family)
+from .metadata import observe, capability_for
 
 _MEMBER_SQL = """
 SELECT m.file_path_id, m.content_id, m.source_root_id, m.size_bytes, m.physical_key,
@@ -119,17 +122,33 @@ def _bound_location_ids(decisions, events):
     return ids
 
 
-def load_decisions(conn, where="", args=()) -> list:
+#: (Build 9) The metadata decision kinds, as an SQL list. They are p3_decision
+#: rows like any other, but they are not retention or review intent: the
+#: duplicate and pair model never reads them (a note on a file is not a Keep),
+#: and the metadata slice (`load_metadata`) reads nothing else.
+_METADATA_KINDS_SQL = "(" + ",".join(f"'{k}'" for k in METADATA_DECISION_KINDS) + ")"
+
+
+def _kind_filter(metadata):
+    if metadata is None:
+        return ""
+    return f" AND d.decision_kind {'IN' if metadata else 'NOT IN'} {_METADATA_KINDS_SQL}"
+
+
+def load_decisions(conn, where="", args=(), metadata=False) -> list:
     """Every decision row, oldest first -- or (B14) those a further condition
     on `d` picks: newer than a watermark (`load_decisions_after`), or on one
     target (`store.active_for`). One parser, so a row read either way is the
-    same Decision."""
+    same Decision. `metadata` (Build 9): False (the default) reads the
+    retention and review decisions only, True the metadata decisions only,
+    None every row."""
     rows = conn.execute(
         "SELECT d.decision_id, d.operation_id, d.target_kind, d.target_ref, d.decision_kind, d.value_json, "
         "       d.origin_kind, d.supersedes_decision_id, d.evidence_binding_json, w.withdrawal_id, o.occurred_utc "
         "  FROM p3_decision d LEFT JOIN p3_decision_withdrawal w ON w.decision_id = d.decision_id "
         "  JOIN p3_operation o ON o.operation_id = d.operation_id "
-        " WHERE d.project_id = 1" + (f" AND ({where})" if where else "") + " ORDER BY d.decision_id", tuple(args)).fetchall()
+        " WHERE d.project_id = 1" + _kind_filter(metadata) + (f" AND ({where})" if where else "")
+        + " ORDER BY d.decision_id", tuple(args)).fetchall()
     out = []
     for r in rows:
         try:
@@ -188,9 +207,12 @@ def load_decisions_after(conn, after) -> list:
 
 
 def withdrawals_after(conn, after) -> list:
-    """(withdrawal_id, decision_id) for each withdrawal row newer than `after`."""
+    """(withdrawal_id, decision_id) for each withdrawal row newer than `after`
+    -- of the decisions `load_decisions` reads by default (Build 9: not the
+    metadata decisions, which the model it refreshes never held)."""
     return [(int(r[0]), str(r[1])) for r in conn.execute(
-        "SELECT withdrawal_id, decision_id FROM p3_decision_withdrawal WHERE withdrawal_id > ? ORDER BY withdrawal_id",
+        "SELECT w.withdrawal_id, w.decision_id FROM p3_decision_withdrawal w JOIN p3_decision d ON d.decision_id = w.decision_id "
+        " WHERE w.withdrawal_id > ?" + _kind_filter(False) + " ORDER BY w.withdrawal_id",
         (int(after),))]
 
 
@@ -345,6 +367,11 @@ def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
     wanted = _bound_location_ids([d for d in decisions if not d.withdrawn], events)
     for p in pairs.values():
         wanted.update(p.members)
+    # Build 9: every location a metadata question or project metadata names
+    # (a plan item on it needs its evidence; so does a review of it).
+    metadata = load_metadata(conn) if not content_ids else MetadataEvidence()
+    wanted.update(q.location_id for q in metadata.questions.values())
+    wanted.update(str(d.target_ref) for d in metadata.decisions if d.target_kind == LOCATION and not d.withdrawn)
     wanted -= set(locations)
     if wanted and not content_ids:
         ids = sorted(int(i) for i in wanted if str(i).isdigit())
@@ -356,7 +383,150 @@ def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
                 locations[loc.location_id] = loc
     ev = Evidence(locations, groups, decisions, load_policies(conn), events, load_roots(conn), utc_now())
     ev.pairs = pairs
+    ev.metadata = metadata
     return ev
+
+
+# -- Build 9: metadata questions, read from Phase 1/2 evidence ------------------------------------
+
+def load_capabilities(conn) -> dict:
+    """The metadata capability record (migration 014): (family, field) -> CapabilityRecord."""
+    try:
+        rows = conn.execute("SELECT * FROM p3_metadata_capability").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {(r["file_family"], r["semantic_field"]): CapabilityRecord(
+        r["file_family"], r["semantic_field"], r["read_support"], r["write_support"], r["status"], r["note"] or "")
+        for r in rows}
+
+
+_QUESTION_LOCATION_SQL = """
+SELECT fp.file_path_id, fp.relative_path, sr.root_path, fs.state, fs.current_observation_id,
+       fs.is_offline_or_cloud, fs.hard_link_count
+  FROM file_path fp JOIN source_root sr ON sr.source_root_id = fp.source_root_id
+  LEFT JOIN file_state fs ON fs.file_path_id = fp.file_path_id
+"""
+_READ_ANALYZERS = tuple(sorted({a for readers in METADATA_READ_MAP.values() for a, _k, _s in readers}))
+
+
+def _analyzer_readings(conn, file_path_ids) -> dict:
+    """file_path_id -> [(analyzer_result_id, analyzer_key, observation_id, status, row)] for the
+    analyzers that read metadata, every observation (staleness is judged later). Read only."""
+    out = {}
+    ids = sorted({int(i) for i in file_path_ids if str(i).isdigit()})
+    marks_a = ",".join("?" for _ in _READ_ANALYZERS)
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        marks = ",".join("?" for _ in chunk)
+        for r in conn.execute(
+                "SELECT ar.analyzer_result_id, a.analyzer_key, ar.file_observation_id, ar.status, ar.title, ar.author, "
+                "       ar.content_created_reported, ar.detail_json, fo.file_path_id "
+                "  FROM file_observation fo JOIN analyzer_result ar ON ar.file_observation_id = fo.file_observation_id "
+                "  JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id JOIN analyzer a ON a.analyzer_id = rr.analyzer_id "
+                f" WHERE fo.file_path_id IN ({marks}) AND a.analyzer_key IN ({marks_a})",
+                tuple(chunk) + _READ_ANALYZERS):
+            out.setdefault(str(r["file_path_id"]), []).append(r)
+    return out
+
+
+def _reading(row, semantic_field):
+    """One analyzer result's value for a field, per METADATA_READ_MAP."""
+    for analyzer, kind, source in METADATA_READ_MAP.get(semantic_field, ()):
+        if analyzer != row["analyzer_key"]:
+            continue
+        if kind == "column":
+            return row[source]
+        try:
+            return (json.loads(row["detail_json"] or "{}") or {}).get(source)
+        except ValueError:
+            return None
+    return None
+
+
+def _question(question_id, loc_row, semantic_field, readings, capabilities) -> MetadataQuestion:
+    path = full_path(loc_row["root_path"], loc_row["relative_path"])
+    family = file_family(path)
+    cap = capability_for(capabilities, family, semantic_field)
+    results = [(int(r["analyzer_result_id"]), r["analyzer_key"], r["file_observation_id"], r["status"],
+                _reading(r, semantic_field)) for r in readings]
+    obs = loc_row["current_observation_id"]
+    present = loc_row["state"] == "present"
+    state, value, values, ids, detail = observe(results, semantic_field, cap, present=present,
+                                                cloud_only=bool(loc_row["is_offline_or_cloud"]), current_observation_id=obs)
+    links = loc_row["hard_link_count"]
+    return MetadataQuestion(
+        question_id=str(question_id) if question_id is not None else None, location_id=str(loc_row["file_path_id"]),
+        semantic_field=semantic_field, observed_state=state, observed_value=value, observed_values=values,
+        file_family=family, capability=cap,
+        signed_or_certified=None,                   # Phase 1/2 records no signature evidence
+        hardlinked=None if links is None else int(links) > 1,
+        observation_id=str(obs) if obs is not None else None, analyzer_result_ids=ids, detail=detail)
+
+
+def load_metadata(conn, question_ids=None) -> MetadataEvidence:
+    """Build 9's slice: every metadata question (or the given ones) with what
+    the evidence says now, every metadata decision row, the capability record.
+    Nothing is read from a source file: values come from analyzer_result, the
+    link count from file_state."""
+    caps = load_capabilities(conn)
+    try:
+        sql = ("SELECT q.question_id, q.semantic_field, x.* FROM p3_metadata_question q "
+               "  JOIN (" + _QUESTION_LOCATION_SQL + ") x ON x.file_path_id = q.file_path_id WHERE q.project_id = 1")
+        args = ()
+        if question_ids is not None:
+            ids = [int(i) for i in question_ids if str(i).isdigit()]
+            sql += f" AND q.question_id IN ({','.join('?' for _ in ids) or 'NULL'})"
+            args = tuple(ids)
+        rows = conn.execute(sql + " ORDER BY q.question_id", args).fetchall()
+    except sqlite3.OperationalError:
+        return MetadataEvidence(capabilities=caps)
+    readings = _analyzer_readings(conn, [r["file_path_id"] for r in rows])
+    questions = {}
+    for r in rows:
+        q = _question(r["question_id"], r, r["semantic_field"], readings.get(str(r["file_path_id"]), []), caps)
+        questions[q.question_id] = q
+    decisions = load_decisions(conn, metadata=True) if question_ids is None else []
+    return MetadataEvidence(questions, decisions, caps)
+
+
+def location_metadata(conn, file_path_id) -> list:
+    """Every semantic field of one location as a MetadataQuestion -- the ones
+    already asked with their ids, the rest with question_id None: what a
+    review surface lists for a file before anyone records anything."""
+    row = conn.execute(_QUESTION_LOCATION_SQL + " WHERE fp.file_path_id = ?", (int(file_path_id),)).fetchone()
+    if row is None:
+        raise ValueError(f"no such file location: {file_path_id}")
+    asked = {}
+    try:
+        asked = {r["semantic_field"]: r["question_id"] for r in conn.execute(
+            "SELECT question_id, semantic_field FROM p3_metadata_question WHERE project_id = 1 AND file_path_id = ?",
+            (int(file_path_id),))}
+    except sqlite3.OperationalError:
+        pass
+    caps = load_capabilities(conn)
+    readings = _analyzer_readings(conn, [file_path_id]).get(str(int(file_path_id)), [])
+    return [_question(asked.get(f), row, f, readings, caps) for f in METADATA_FIELDS]
+
+
+def question_binding(conn, question_id) -> dict:
+    """What a metadata decision rests on (Build 1's pattern, ids only): the
+    question, its location's current observation, and the analyzer results
+    the observed value was read from -- plus the value-state word, so a
+    material change (R8 §53) can be told from a re-read that found the same."""
+    md = load_metadata(conn, [question_id])
+    q = md.questions.get(str(question_id))
+    if q is None:
+        return {}
+    return {
+        "schema": EVIDENCE_BINDING_SCHEMA,
+        "target_kind": METADATA_QUESTION,
+        "question_id": int(question_id),
+        "file_path_id": int(q.location_id),
+        "semantic_field": q.semantic_field,
+        "observation_id": int(q.observation_id) if q.observation_id is not None else None,
+        "analyzer_result_ids": [int(i) for i in q.analyzer_result_ids],
+        "observed_state": q.observed_state,
+    }
 
 
 def group_members(conn, content_id):
@@ -488,4 +658,6 @@ def pair_binding_from(ev, pair) -> dict:
 def binding_for(conn, target_kind, target_ref) -> dict:
     if target_kind == VISUAL_PAIR:
         return pair_binding(conn, target_ref)
+    if target_kind == METADATA_QUESTION:
+        return question_binding(conn, target_ref)
     return location_binding(conn, target_ref) if target_kind == LOCATION else group_binding(conn, target_ref)

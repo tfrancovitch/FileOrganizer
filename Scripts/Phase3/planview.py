@@ -27,12 +27,15 @@ from . import evidence as E
 from . import plans as PL
 from . import resolve as R
 from . import routing as RT
-from .registry import (ACTION_WORDS, ITEM_READY, ITEM_PRESERVE, STAGE_EVIDENCE, STAGE_LIVE, PREVIEW_DISCLOSURE)
+from .registry import (ACTION_WORDS, ITEM_READY, ITEM_PRESERVE, STAGE_EVIDENCE, STAGE_LIVE, PREVIEW_DISCLOSURE,
+                       ACTION_METADATA, GROUP, VISUAL_PAIR, METADATA_QUESTION)
 from .review import store_for, run_detector
 from .store import new_command_id
 
 STATE_WORDS = {"ready": "Ready", "blocked": "Blocked", "blocked_evidence": "Blocked (unknown evidence)",
                "unsupported_action": "Unsupported action", "preserve": "Preserved"}
+#: How an item names what produced it.
+SOURCE_WORDS = {GROUP: "group ", VISUAL_PAIR: "pair #", METADATA_QUESTION: "metadata question #"}
 STATUS_WORDS = {"previewed": "Previewed", "locked": "Locked", "obsolete": "Obsolete", "superseded": "Superseded",
                 "review_ready": "Review ready", "draft": "Draft", "handed_off": "Handed off", "archived": "Archived"}
 
@@ -242,7 +245,7 @@ class PlanPage:
             head.append("OBSOLETE -- no longer to be carried out: " + "; ".join(f"{r['words']} ({r['detail']})" for r in reasons[:4]))
         self._write(self.preview_text, "\n".join(head + [""] + PL.summary_lines(rev["summary"])))
         for it in self.items:
-            why = (it.condition(it.blocked_reason).detail if it.blocked_reason and it.condition(it.blocked_reason) else
+            why = (it.blocking.detail if it.blocking is not None else
                    "; ".join(it.desired_effect.get("why", [])) if it.action_kind == "no_op_preserve" else "")
             tag = "ready" if it.state == ITEM_READY else "preserve" if it.state == ITEM_PRESERVE else "blocked"
             self.items_tree.insert("", "end", iid=str(it.item_no), tags=(tag,), values=[
@@ -266,7 +269,13 @@ class PlanPage:
                  f"{it.desired_effect.get('path') or it.target_ref}",
                  f"Logical intent: {it.desired_effect.get('effect')} (how is not decided here; that is Phase 4's)",
                  f"State: {STATE_WORDS.get(it.state, it.state)} · impact: {it.impact_class}",
-                 "From: " + ", ".join(f"{'group' if k == 'exact_duplicate_group_version' else 'pair #'}{r}" for k, r in it.sources)]
+                 "From: " + ", ".join(f"{SOURCE_WORDS.get(k, k + ' ')}{r}" for k, r in it.sources)]
+        if it.action_kind == ACTION_METADATA:
+            op = it.desired_effect.get("operation")
+            lines.append(f"Desired: {it.desired_effect.get('field')} "
+                         + (f"= {it.desired_effect.get('value')!r}" if op == "set" else "cleared (no value)")
+                         + f"; observed now: {it.estimated_effect.get('observed_state')}"
+                         + (f" {it.estimated_effect.get('observed_value')!r}" if it.estimated_effect.get("observed_value") is not None else ""))
         if it.decision_ids:
             lines.append("Justified by decision(s): " + ", ".join(f"#{d}" for d in it.decision_ids))
         if it.retaining_ids:

@@ -179,9 +179,11 @@ def routed(locations, decisions=(), policies=(), events=(), roots=None, now=NOW)
 def test_registry():
     section("1. The decision-kind registry is a gate")
     kinds = set(REG.DECISION_KINDS)
-    check("ten decision kinds: the research's six for exact duplicates, and Build 5's four for visual pairs", kinds == {
+    check("fourteen decision kinds: the research's six for exact duplicates, Build 5's four for visual pairs, "
+          "Build 9's four for metadata", kinds == {
         "must_keep_location", "keep_all_group", "canonical_location", "redundant_location", "defer_review", "override_protection",
-        "equivalent_copy", "related_variant", "different", "keep_both"}, str(kinds))
+        "equivalent_copy", "related_variant", "different", "keep_both", "project_metadata_set", "desired_source_metadata_set",
+        "desired_source_metadata_clear", "leave_source_metadata_unchanged"}, str(kinds))
     check("five policy kinds", set(REG.POLICY_KINDS) == {
         "protect_source_root", "protect_folder_subtree", "prefer_source_root", "prefer_folder_subtree", "avoid_folder_subtree"})
     check("eight-step resolution order as the catalog names it", REG.RESOLUTION_ORDER == (
@@ -191,7 +193,8 @@ def test_registry():
     check("the shipped catalog agrees with the order in code", tuple(catalog["resolution_order"]) == REG.RESOLUTION_ORDER)
     for k in REG.DECISION_KINDS.values():
         check(f"{k.key}: targets, value kind, class, domain, confirmation all declared",
-              k.target_kinds and k.value_kind in ("flag", "location_ref", "override", "location_pair")
+              k.target_kinds and k.value_kind in ("flag", "location_ref", "override", "location_pair", "metadata_value",
+                                                  "project_metadata")
               and (k.resolution_class in REG.RESOLUTION_ORDER or k.resolution_class == "none")
               and k.conflict_domain and k.confirmation in (REG.CONFIRM_NONE, REG.CONFIRM_EXPLICIT_OVERRIDE)
               and k.requires_evidence)
@@ -522,18 +525,19 @@ def test_project(tmp: Path):
     check("Find My Duplicates through the worker", out.ok, f"{out.status}: {out.message}")
 
     conn = connect(project_dir, write=True)
-    check("a fresh project lands on schema 13 with the sixteen p3 tables (Build 8's eight plan tables included)",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 13 and {r[0] for r in conn.execute(
+    check("a fresh project lands on schema 14 with the eighteen p3 tables (Build 8's eight plan tables, Build 9's two metadata tables)",
+          conn.execute("PRAGMA user_version").fetchone()[0] == 14 and {r[0] for r in conn.execute(
               "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'p3_%'")} == {
               "p3_operation", "p3_decision", "p3_decision_withdrawal", "p3_policy", "p3_policy_version", "p3_review_event",
               "p3_bulk_batch", "p3_bulk_member", "p3_plan", "p3_plan_revision", "p3_plan_event", "p3_plan_item",
-              "p3_plan_item_decision", "p3_plan_item_policy", "p3_plan_dependency", "p3_plan_precondition"})
+              "p3_plan_item_decision", "p3_plan_item_policy", "p3_plan_dependency", "p3_plan_precondition",
+              "p3_metadata_capability", "p3_metadata_question"})
     check("app_meta carries the Phase 3 contracts",
           conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1"
           and conn.execute("SELECT value FROM app_meta WHERE key='phase3.bulk_schema'").fetchone()[0] == "fileorganizer.p3.bulk/1")
-    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B15', schema 13 everywhere",
-          fo_db.APP_VERSION == "B15" and __import__("Phase2").VERSION == "B15" and fo_db.APP_SCHEMA_VERSION == 13
-          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 13 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 13)
+    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B16', schema 14 everywhere",
+          fo_db.APP_VERSION == "B16" and __import__("Phase2").VERSION == "B16" and fo_db.APP_SCHEMA_VERSION == 14
+          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 14 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 14)
 
     # -- migrating a schema-8 database ---------------------------------------
     old_dir = tmp / "Old8"
@@ -556,9 +560,9 @@ def test_project(tmp: Path):
     c8.close()
     fo_db.write_project_json(paths, "uid-8", "Old8", "2026-01-01T00:00:00Z", "B7.2")
     c9, _ = fo_db.open_project(str(old_dir), app_version=fo_db.APP_VERSION)
-    check("a schema-8 project opens and migrates to 13", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 13)
-    check("migrations 009 to 013 recorded with this build's version",
-          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12,13) ORDER BY version")] == ["B15"] * 5)
+    check("a schema-8 project opens and migrates to 14", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 14)
+    check("migrations 009 to 014 recorded with this build's version",
+          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12,13,14) ORDER BY version")] == ["B16"] * 6)
     same = all(c9.execute(f"SELECT * FROM {t}").fetchall() == rows for t, rows in snapshot8.items() if t != "schema_migration")
     check("every pre-existing row is untouched by the migration", same)
     check("a pre-migration backup was made", any(paths.backup_dir and Path(paths.backup_dir).glob("*")))
@@ -604,7 +608,8 @@ def test_project(tmp: Path):
     check("store refuses override of a policy that does not cover the location", refused(lambda: st.record_override(doc.location_id, protect["policy_id"], "why", confirmed=True)))
     check("store refuses override of a preference policy", refused(lambda: st.record_override(doc.location_id, prefer["policy_id"], "why", confirmed=True)))
     check("override cannot be recorded through record_decision", refused(lambda: st.record_decision("override_protection", LOCATION, back.location_id, {"policy_id": "1", "policy_version_id": "1"})))
-    check("nothing was written by the refusals", st.counts() == {"operations": 2, "decisions": 0, "withdrawals": 0, "policy_versions": 2, "review_events": 0, "batches": 0})
+    check("nothing was written by the refusals", st.counts() == {"operations": 2, "decisions": 0, "withdrawals": 0, "policy_versions": 2, "review_events": 0, "batches": 0,
+                                                                  "metadata_questions": 0})
 
     d1 = st.record_decision("canonical_location", GROUP, report_group, doc.location_id, rationale="the working copy")
     d2 = st.record_decision("redundant_location", LOCATION, down.location_id)
@@ -622,7 +627,7 @@ def test_project(tmp: Path):
     op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (d1["operation_id"],)).fetchone()
     check("the operation carries actor, actor kind, agent kind and version, session and command ids, time, note",
           op["actor_id"] == "tester" and op["actor_kind"] == "explicit_human" and op["agent_kind"] == "dashboard"
-          and op["agent_version"] == "B15" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
+          and op["agent_version"] == "B16" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
           and op["occurred_utc"].endswith("Z") and op["note"] == "the working copy")
     g = R.resolve_all(E.load_evidence(conn)).group(report_group)
     check("the gate in a real project: the protected backup mark is a conflict; Downloads is eligible only once the conflict clears",
