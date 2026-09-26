@@ -64,14 +64,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from Phase2 import visual as V
-from Phase2.core import utc_now
 
 from . import bulk as BK
 from . import evidence as E
+from . import refresh as RF
 from . import resolve as R
 from . import routing as RT
-from .model import active_decisions
-from .pairs import EQUIVALENT, RELATED, DIFFERENT, resolve_pairs
+from .pairs import EQUIVALENT, RELATED, DIFFERENT
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT,
                        DISP_DECIDED, bulk_actions_for)
 from .review import store_for, run_detector, DeferDialog, BatchesDialog, human_bytes, CHECKED, UNCHECKED
@@ -551,36 +550,59 @@ class SimilarImagesPage:
                             f"({counts['pairs_new']:,} new, {counts['pairs_retired']:,} no longer alike).")
 
     def detect(self):
-        self.detector_result = run_detector(self.app.conn, self.store)
+        """The routing detector. The model it loads is kept (B14): the page
+        opening right after it brings that model up to date instead of
+        loading, resolving and routing everything a second time."""
+        self._detected = {}
+        self.detector_result = run_detector(self.app.conn, self.store, keep=self._detected)
 
     def reload(self, select=None):
-        """Everything from the database: evidence, record, projection, routes."""
+        """Everything from the database: evidence, record, projection, routes.
+        Right after the detector (the page opening), its model -- loaded a
+        moment ago from the same evidence -- is brought up to date with what
+        was recorded since (the detector's own events) instead."""
+        kept, self._detected = getattr(self, "_detected", None) or {}, None
         try:
-            ev = E.load_evidence(self.app.conn)
-            self.ev = ev
-            self.proj = R.resolve_all(ev)
-            self.routing = RT.route_all(ev, self.proj, ev.now)
+            if kept.get("model") is not None and kept.get("marks") is not None:
+                self.ev, self.proj, self.routing = kept["model"]
+                self._marks = kept["marks"]
+                if not self._catch_up():
+                    self._load_everything()
+            else:
+                self._load_everything()
         except Exception as exc:                                    # noqa: BLE001
             messagebox.showerror("Similar images", str(exc), parent=self.app)
             return
         self._summarize()
         self.refresh_list(select=select if select is not None else self.selected)
 
+    def _load_everything(self):
+        marks = RF.marks(self.app.conn)                 # before the load: see refresh.marks
+        ev = E.load_evidence(self.app.conn)
+        self.ev = ev
+        self.proj = R.resolve_all(ev)
+        self.routing = RT.route_all(ev, self.proj, ev.now)
+        self._marks = marks
+        self.last_refresh = {"full": True}
+
+    def _catch_up(self):
+        """The incremental refresh (B14, refresh.py): what the record gained
+        since the page last read it. False when it cannot prove its answer."""
+        res = RF.apply(self.app.conn, self.ev, self.proj, self.routing, self._marks) if getattr(self, "_marks", None) else None
+        if res is None:
+            return False
+        self._marks, self.last_refresh = res
+        return True
+
     def refresh_record(self, select=None):
         """After a decision, a deferral, a skip or an undo: the evidence has not
-        moved, only the record has. Re-read the decisions and events and
-        re-derive the pairs alone -- the same functions, less of the model --
-        so a keystroke answers at once even with tens of thousands of pairs."""
+        moved, only the record has. Read what the record gained and re-derive
+        only the pairs it can reach (B14, refresh.py) -- or, when that cannot
+        be proved (a policy changed, say), reload everything -- so a keystroke
+        answers at once even with tens of thousands of decisions."""
         try:
-            ev = self.ev
-            ev.decisions = E.load_decisions(self.app.conn)
-            ev.events = E.load_events(self.app.conn)
-            ev.now = utc_now()
-            active = active_decisions(ev.decisions)
-            before = {p.pair_id: p for p in self.proj.pairs}
-            self.proj.pairs = resolve_pairs(ev, R._index_decisions(active), active, previous=before)
-            self.routing.pairs, self.routing.pair_counts = RT.route_pairs(ev, self.proj.pairs, ev.now,
-                                                                          previous=self.routing.pairs)
+            if not self._catch_up():
+                self._load_everything()             # a policy changed, say: everything, from the database
         except Exception as exc:                                    # noqa: BLE001
             messagebox.showerror("Similar images", str(exc), parent=self.app)
             return
@@ -1191,7 +1213,7 @@ class SimilarImagesPage:
         entry = None
         while self.undo_stack and entry is None:
             pid, ids, label = self.undo_stack.pop()
-            active = {d.decision_id for d in self.store.active()}
+            active = self.store.still_active(ids)              # B14: those rows only, not the whole record
             ids = [i for i in ids if str(i) in active]
             if ids:
                 entry = (pid, ids, label)
@@ -1200,7 +1222,7 @@ class SimilarImagesPage:
             if p is None or not p.decision_ids:
                 self.status_var.set("Nothing to undo.")
                 return
-            active = [d for d in self.store.active() if d.target_kind == VISUAL_PAIR and d.target_ref == p.pair_id]
+            active = self.store.active_for(VISUAL_PAIR, p.pair_id)
             if not active:
                 self.status_var.set("Nothing to undo.")
                 return

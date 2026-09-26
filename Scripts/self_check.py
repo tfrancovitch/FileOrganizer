@@ -88,7 +88,7 @@ RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    # Phase 2 (the window and its core) and Phase 3 (decisions)
                    "Phase2.core", "Phase2.query", "Phase2.capability", "Phase2.visual",
                    "Phase3.registry", "Phase3.resolve", "Phase3.pairs", "Phase3.routing", "Phase3.bulk", "Phase3.store",
-                   "Phase3.review", "Phase3.imagegame", "Phase3.survey", "Phase3.survey_view")
+                   "Phase3.review", "Phase3.imagegame", "Phase3.survey", "Phase3.survey_view", "Phase3.refresh")
 
 
 class Report(object):

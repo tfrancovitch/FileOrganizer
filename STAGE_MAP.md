@@ -313,3 +313,7 @@ the view, and each group control a preview then one `bulk` operation.
 Excluding an image from the view records nothing. A scan, a re-hash or a
 re-analysis between any bulk preview and its commit (groups included,
 from B13) makes the commit refuse.
+After any of these the Similar Images page reads only what the record gained
+and re-derives only the pairs it can reach (B14); a policy change makes it
+reload everything. Opening the page runs the detector once and reuses its
+model.

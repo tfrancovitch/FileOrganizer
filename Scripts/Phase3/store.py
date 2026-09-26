@@ -120,8 +120,26 @@ class DecisionStore:
         return active_decisions(ev_mod.load_decisions(self.conn))
 
     def active_for(self, target_kind, target_ref):
+        """One target's active decisions. B14: read for that target only (a
+        decision only ever supersedes the chain head on its own target, so
+        the target's rows alone say which of them still speak)."""
         ref = str(target_ref)
-        return [d for d in self.active() if d.target_kind == target_kind and d.target_ref == ref]
+        return active_decisions(ev_mod.load_decisions(self.conn, "d.target_kind = ? AND d.target_ref = ?", (target_kind, ref)))
+
+    def still_active(self, decision_ids):
+        """(B14) Which of these decision ids still speak -- not withdrawn, not
+        superseded by any row -- as a set of strings, without reading the
+        whole record."""
+        ids = [int(i) for i in decision_ids if str(i).isdigit()]
+        out = set()
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" for _ in chunk)
+            out.update(str(r[0]) for r in self.conn.execute(
+                f"SELECT d.decision_id FROM p3_decision d WHERE d.decision_id IN ({marks}) "
+                "   AND NOT EXISTS (SELECT 1 FROM p3_decision_withdrawal w WHERE w.decision_id = d.decision_id) "
+                "   AND NOT EXISTS (SELECT 1 FROM p3_decision s WHERE s.supersedes_decision_id = d.decision_id)", chunk))
+        return out
 
     def _chain_head(self, target_kind, target_ref, domain):
         """The decision a new one in this domain supersedes: the newest row on
@@ -574,13 +592,15 @@ class DecisionStore:
             out.append(d)
         return out
 
-    def batches(self):
-        """Every batch, newest first, with what it recorded and what still stands."""
+    def batches(self, batch_id=None):
+        """Every batch, newest first, with what it recorded and what still
+        stands -- or (B14) the one batch `batch_id` names."""
         rows = self.conn.execute(
             "SELECT b.*, o.occurred_utc, o.actor_id, "
             "       (SELECT COUNT(*) FROM p3_bulk_member m WHERE m.batch_id = b.batch_id) AS members "
             "  FROM p3_bulk_batch b JOIN p3_operation o ON o.operation_id = b.operation_id "
-            " WHERE b.project_id = 1 ORDER BY b.batch_id DESC").fetchall()
+            " WHERE b.project_id = 1" + (" AND b.batch_id = ?" if batch_id is not None else "") + " ORDER BY b.batch_id DESC",
+            (int(batch_id),) if batch_id is not None else ()).fetchall()
         out = []
         opened = RT.open_events(ev_mod.load_events(self.conn)) if any(bulk_action(r["action"]).records_events for r in rows) else {}
         for r in rows:
@@ -601,10 +621,8 @@ class DecisionStore:
         return out
 
     def batch(self, batch_id):
-        for b in self.batches():
-            if int(b["batch_id"]) == int(batch_id):
-                return b
-        return None
+        found = self.batches(batch_id)                  # B14: that batch only (was: every batch, then pick one)
+        return found[0] if found else None
 
     def batch_members(self, batch_id):
         return [dict(r) for r in self.conn.execute(

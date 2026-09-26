@@ -753,35 +753,9 @@ def _first_blocker(route):
 def _neighbourhood(ev: Evidence, planned_ids):
     """The model restricted to the pairs a batch's simulation can change
     (Build 7: a six-pair cluster was re-resolving all 51,924 pairs of the
-    real collection, 1.3 s a preview).
-
-    Exact, by the resolver's own shape: a pair's conflicts come from its own
-    rows (protection, an explicit Keep, retention on Different) and from the
-    chain guard -- its keeper given up by ANOTHER pair. So only a pair that
-    shares an image with a planned pair (the first ring) can gain a
-    conflict: a pair elsewhere keeps its rows, and no planned row can give
-    up its keeper without containing that image. For a first-ring pair, every
-    pair that could give up its keeper shares that keeper, so the second
-    ring -- every pair touching an image of the first -- holds them all. A
-    second-ring pair can only LOSE conflicts in the restricted model (some
-    of its own neighbours are missing), never gain one, so no false conflict
-    is reported. The suite checks the answers against the whole model."""
-    import copy
-    first_images = set()
-    for pid in planned_ids:
-        p = ev.pairs.get(pid)
-        if p is not None:
-            first_images.update(p.members)
-    by_image = {}
-    for p in ev.pairs.values():
-        by_image.setdefault(p.a_id, []).append(p)
-        by_image.setdefault(p.b_id, []).append(p)
-    ring1 = {p.pair_id: p for lid in first_images for p in by_image.get(lid, ())}
-    images2 = {lid for p in ring1.values() for lid in p.members}
-    ring2 = {p.pair_id: p for lid in images2 for p in by_image.get(lid, ())}
-    sub = copy.copy(ev)
-    sub.pairs = {pid: ev.pairs[pid] for pid in ev.pairs if pid in ring2}      # the evidence's own order
-    return sub
+    real collection, 1.3 s a preview). `pairs.neighbourhood` says why it is
+    exact; the suites check the answers against the whole model."""
+    return PR.neighbourhood(ev, planned_ids)[0]
 
 
 def classify_pairs(candidates, ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection, _whole=False):

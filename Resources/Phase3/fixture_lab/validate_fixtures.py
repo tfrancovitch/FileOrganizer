@@ -63,6 +63,17 @@ def compute(cur,fid):
         for dk in ("equivalent_copy","different"):
             for _,tk,tr,v in D.get(dk,[]): pd[tr]=dk
         return dict(pair_decisions=pd,transitive_equivalence_inferred=False)
+    if fid=="F16_Visual_NonEdge":
+        # B14: the P3.R3 section-34 shape -- computed from the rows alone, like every branch here.
+        cand={r[0]:frozenset((r[1],r[2])) for r in cur.execute("SELECT pair_id,a_location_id,b_location_id FROM evidence_visual_candidate WHERE current=1")}
+        pd={}
+        for dk in ("equivalent_copy","related_variant","different"):
+            for _,tk,tr,v in D.get(dk,[]): pd[tr]=dk
+        ids=sorted(L)
+        joined=set(cand.values())
+        non=[[x,y] for i,x in enumerate(ids) for y in ids[i+1:] if frozenset((x,y)) not in joined]
+        recorded={tr for ds in D.values() for _,tk,tr,_v in ds if tk=="visual_candidate_pair"}
+        return dict(pair_decisions=pd,candidate_pairs=sorted(cand),non_edges=non,transitive_equivalence_inferred=bool(recorded-set(cand)))
     if fid=="F07_Related_Variant":
         keep=next(v for _,tk,tr,v in D["keep_both"]); return dict(relationship="related_variant",keeper_set=keep,ordinary_redundant_candidate=False)
     if fid=="F08_Deferred_vs_Blocked":

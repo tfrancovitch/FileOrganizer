@@ -644,14 +644,19 @@ def route_all(ev: Evidence, proj: R.ProjectProjection, now=None) -> RoutingProje
     return RoutingProjection(groups, locations, counts, now, pairs, pair_counts)
 
 
-def route_pairs(ev: Evidence, pair_projections, now=None, opened=None, by_target=None, previous=None):
+def route_pairs(ev: Evidence, pair_projections, now=None, opened=None, by_target=None, previous=None, only=None):
     """Every pair's route and the pairs' counts -- the pair half of route_all,
     callable alone (the Similar Images page re-routes its pairs after a
     decision without re-routing every group).
 
     `previous` (pair_id -> Route, from the same evidence) is reused for a
     pair with no decision and no review event, then or now: nothing but the
-    evidence routes it, and the evidence has not moved. Same answer."""
+    evidence routes it, and the evidence has not moved. Same answer.
+
+    `only` (B14, with `previous`): the pairs whose route CAN have changed --
+    the caller's claim, which `refresh.apply` makes from what changed in the
+    record (and every pair with an open event, whose deferral may fire as the
+    clock moves). Every other pair keeps its previous route."""
     now = now or ev.now
     opened = opened if opened is not None else open_events(ev.events)
     if by_target is None:
@@ -660,6 +665,9 @@ def route_pairs(ev: Evidence, pair_projections, now=None, opened=None, by_target
     pairs = {}
     for pp in pair_projections:
         old = previous.get(pp.pair_id) if previous else None
+        if only is not None and old is not None and pp.pair_id not in only:
+            pairs[pp.pair_id] = old
+            continue
         if (old is not None and not old.drift and old.open_events is _EMPTY_SLOT and old.deferral is None
                 and (VISUAL_PAIR, pp.pair_id) not in by_target and (VISUAL_PAIR, pp.pair_id) not in opened):
             pairs[pp.pair_id] = old
@@ -707,7 +715,7 @@ def ordered_pairs(proj: R.ProjectProjection, routing: RoutingProjection, route):
 
 # -- the detector ---------------------------------------------------------------------
 
-def reconcile(conn, store, now=None, pairs=True):
+def reconcile(conn, store, now=None, pairs=True, keep=None):
     """Bring the review-event record in line with what the evidence says.
 
     Runs when the review surface opens and after a collection run. Writes,
@@ -730,7 +738,14 @@ def reconcile(conn, store, now=None, pairs=True):
     Returns the counts written. `pairs=False` leaves the visual candidate
     pairs out (the Duplicate decisions page reconciles its own targets; the
     Similar Images page and every collection run reconcile the pairs).
+
+    `keep` (B14): a dict that receives the model this run loaded -- "model"
+    (ev, proj, routing) and "marks", the record watermarks taken before the
+    load -- so a page that opens right after the detector can bring that
+    model up to date (the detector's own writes are review events) instead of
+    loading, resolving and routing everything a second time.
     """
+    marks_before = ev_mod.record_marks(conn) if keep is not None else None
     ev = ev_mod.load_evidence(conn, pairs=pairs)
     if now:
         ev.now = now
@@ -775,6 +790,9 @@ def reconcile(conn, store, now=None, pairs=True):
                            "return_condition": route.deferral_fired_why})
     if writes:
         store.system_events(writes, note=f"routing detector {ROUTING_VERSION}")
+    if keep is not None:
+        keep["model"] = (ev, proj, routing)
+        keep["marks"] = marks_before
     counts = {}
     for w in writes:
         counts[w["event_kind"]] = counts.get(w["event_kind"], 0) + 1

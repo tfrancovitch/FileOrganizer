@@ -119,13 +119,17 @@ def _bound_location_ids(decisions, events):
     return ids
 
 
-def load_decisions(conn) -> list:
+def load_decisions(conn, where="", args=()) -> list:
+    """Every decision row, oldest first -- or (B14) those a further condition
+    on `d` picks: newer than a watermark (`load_decisions_after`), or on one
+    target (`store.active_for`). One parser, so a row read either way is the
+    same Decision."""
     rows = conn.execute(
         "SELECT d.decision_id, d.operation_id, d.target_kind, d.target_ref, d.decision_kind, d.value_json, "
         "       d.origin_kind, d.supersedes_decision_id, d.evidence_binding_json, w.withdrawal_id, o.occurred_utc "
         "  FROM p3_decision d LEFT JOIN p3_decision_withdrawal w ON w.decision_id = d.decision_id "
         "  JOIN p3_operation o ON o.operation_id = d.operation_id "
-        " WHERE d.project_id = 1 ORDER BY d.decision_id").fetchall()
+        " WHERE d.project_id = 1" + (f" AND ({where})" if where else "") + " ORDER BY d.decision_id", tuple(args)).fetchall()
     out = []
     for r in rows:
         try:
@@ -142,11 +146,13 @@ def load_decisions(conn) -> list:
     return out
 
 
-def load_events(conn) -> list:
-    """Every review event, oldest first (Build 3)."""
+def load_events(conn, after=None) -> list:
+    """Every review event, oldest first (Build 3) -- or (B14) only those newer
+    than the watermark `after` (review events are never changed, only added)."""
     rows = conn.execute(
         "SELECT e.*, o.occurred_utc, o.actor_kind FROM p3_review_event e JOIN p3_operation o ON o.operation_id = e.operation_id "
-        " WHERE e.project_id = 1 ORDER BY e.review_event_id").fetchall()
+        " WHERE e.project_id = 1" + (" AND e.review_event_id > ?" if after is not None else "") + " ORDER BY e.review_event_id",
+        (int(after),) if after is not None else ()).fetchall()
     out = []
     for r in rows:
         try:
@@ -161,6 +167,31 @@ def load_events(conn) -> list:
             occurred_utc=r["occurred_utc"] or "", actor_kind=r["actor_kind"] or "explicit_human",
             sequence=int(r["review_event_id"])))
     return out
+
+
+def record_marks(conn) -> dict:
+    """Where the decision record stands (B14): the newest decision row,
+    withdrawal row, review event and policy version. A decision row is never
+    changed once written -- it is only withdrawn (a new withdrawal row) or
+    superseded (a new decision row) -- so what is newer than these marks is
+    everything that changed since they were taken."""
+    q = lambda sql: int(conn.execute(sql).fetchone()[0] or 0)              # noqa: E731
+    return {"decision": q("SELECT MAX(decision_id) FROM p3_decision"),
+            "withdrawal": q("SELECT MAX(withdrawal_id) FROM p3_decision_withdrawal"),
+            "event": q("SELECT MAX(review_event_id) FROM p3_review_event"),
+            "policy": q("SELECT MAX(policy_version_id) FROM p3_policy_version")}
+
+
+def load_decisions_after(conn, after) -> list:
+    """The decision rows newer than the watermark `after`."""
+    return load_decisions(conn, "d.decision_id > ?", (int(after),))
+
+
+def withdrawals_after(conn, after) -> list:
+    """(withdrawal_id, decision_id) for each withdrawal row newer than `after`."""
+    return [(int(r[0]), str(r[1])) for r in conn.execute(
+        "SELECT withdrawal_id, decision_id FROM p3_decision_withdrawal WHERE withdrawal_id > ? ORDER BY withdrawal_id",
+        (int(after),))]
 
 
 def load_roots(conn) -> dict:

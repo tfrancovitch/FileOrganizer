@@ -227,14 +227,29 @@
       "sha256": "206127880e307f185878af9a03e46504a0c8f86e138ded6ffafe8b83bd2a6aa2"
     },
     {
+      "path": "Fixtures/F16_Visual_NonEdge/README.md",
+      "bytes": 669,
+      "sha256": "4138a822881151f25b75462e42581bfbdc6d3035f755413ebafb97236ffbae94"
+    },
+    {
+      "path": "Fixtures/F16_Visual_NonEdge/SCENARIO.json",
+      "bytes": 248,
+      "sha256": "2bb0d13136e301e4cbe81f475215b2c2d4682cef7f1ff0bea96f71bdd955f6dc"
+    },
+    {
+      "path": "Fixtures/F16_Visual_NonEdge/fixture.sqlite",
+      "bytes": 135168,
+      "sha256": "9fa785fc8c565c7e648ef5429002e5ef780aa926f53f5462fab26fa27ece69d2"
+    },
+    {
       "path": "QUERY_EXAMPLES.md",
       "bytes": 541,
       "sha256": "962caf9f8c0276acb7c3cf02416eee5bb872db8e4157d49cf3a0f81c676fbd60"
     },
     {
       "path": "README.md",
-      "bytes": 561,
-      "sha256": "827fe5bbc36c18eeff00704f2d73230e4f91ef6febbb9ddecde456f41c823e64"
+      "bytes": 759,
+      "sha256": "6e7a289ec9968ede5a3498fb60dcdb3281308c20d75a7de7243caf3d7c615381"
     },
     {
       "path": "Run-P3.R11-Fixture-Validation.bat",
@@ -248,8 +263,8 @@
     },
     {
       "path": "validate_fixtures.py",
-      "bytes": 8002,
-      "sha256": "2f4807783f24de99fde3db327059d69c3f28a3aa8221764eaa77c21bbc9b033e"
+      "bytes": 8817,
+      "sha256": "b33d4589804c922d4f092397cfa29a9a8a454d92b7731ddb9e63cefcb180ad41"
     }
   ]
 }

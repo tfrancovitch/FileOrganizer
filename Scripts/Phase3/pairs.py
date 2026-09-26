@@ -238,3 +238,39 @@ def resolve_pairs(ev: Evidence, _index=None, _active=None, previous=None) -> lis
                 a.sort_key if a else (), b.sort_key if b else (), pp.pair_id)
     out.sort(key=order)
     return out
+
+
+def neighbourhood(ev: Evidence, pair_ids=(), images=()):
+    """(the model restricted to the two-ring around some changed pairs or
+    images, the ids of the first ring). Built for Build 7's batch simulation
+    (`bulk._neighbourhood`), and B14's incremental refresh uses it too.
+
+    Exact, by this module's own shape: a pair's conflicts come from its own
+    rows (protection, an explicit Keep on its images, retention on
+    Different) and from the chain guard -- its keeper given up by ANOTHER
+    pair. So when the rows on some pairs change (or the decisions on some
+    images), only a pair that shares an image with them -- the FIRST ring --
+    can resolve differently: a pair elsewhere keeps its rows, and no changed
+    pair can give up its keeper without containing that image. For a
+    first-ring pair, every pair that could give up its keeper shares that
+    keeper, so the SECOND ring -- every pair touching an image of the first
+    -- holds them all, and resolving the second ring gives each first-ring
+    pair exactly what the whole model gives it. (A second-ring pair may lose
+    conflicts in the restricted model -- some of its own neighbours are
+    missing -- which is why only the first ring's answers are used.)"""
+    import copy
+    seed = {str(i) for i in images}
+    for pid in pair_ids:
+        p = ev.pairs.get(str(pid))
+        if p is not None:
+            seed.update(p.members)
+    by_image = {}
+    for p in ev.pairs.values():
+        by_image.setdefault(p.a_id, []).append(p)
+        by_image.setdefault(p.b_id, []).append(p)
+    ring1 = {p.pair_id for lid in seed for p in by_image.get(lid, ())}
+    images2 = {lid for pid in ring1 for lid in ev.pairs[pid].members}
+    ring2 = {p.pair_id for lid in images2 for p in by_image.get(lid, ())}
+    sub = copy.copy(ev)
+    sub.pairs = {pid: ev.pairs[pid] for pid in ev.pairs if pid in ring2}      # the evidence's own order
+    return sub, ring1

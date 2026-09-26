@@ -33,6 +33,10 @@ against every oracle key.
                                       group to Needs Revalidation (Build 3)
     F15  Projection_Rebuild           keeper / canonical / protected / plan readiness
                                       reconstruct from authoritative history alone
+    F16  Visual_NonEdge               A~B and B~C are candidates, A~C is not (P3.R3 §34):
+                                      Survey Mode shows A, B and C as one cluster, names
+                                      A-C a non-edge, and a group control's pairs are A~B
+                                      and B~C only -- nothing inferred across A-C (B14)
 
 Also proved here, because the fixtures are the cleanest place to prove it:
 the projection is a pure function -- the same input in any row order gives
@@ -280,6 +284,21 @@ def actual_projection(fid: str, ev: Evidence, history) -> dict:
         chain = pp["PAB"].relationship == "equivalent_copy" and pp["PBC"].relationship == "equivalent_copy"
         inferred = chain and pp["PAC"].relationship != "different"
         return {"pair_decisions": pair_decisions, "transitive_equivalence_inferred": inferred}
+    if fid.startswith("F16"):
+        # Through the product's own Survey Mode code: the cluster, its pairs,
+        # its non-edges, and what a group control would cover.
+        from Phase3 import survey as SV
+        routing = RT.route_all(ev, proj, ev.now)
+        clusters = SV.cluster_map(proj, routing, ev, BK.LENS_ALL).clusters
+        images = clusters[0].images if len(clusters) == 1 else ()
+        edges = SV.cluster_edges(proj, images)
+        pv = SV.preview_group(ev, proj, routing, SV.REMAINING_EQUIVALENT, images, BK.LENS_ALL) if edges else None
+        covered = {c.target_ref for c in pv.candidates} if pv else set()
+        recorded = {d.target_ref for d in ev.decisions if d.target_kind == "visual_candidate_pair"}
+        return {"pair_decisions": {p.pair_id: p.relationship for p in proj.pairs if p.relationship},
+                "candidate_pairs": sorted(p.pair_id for p in edges),
+                "non_edges": sorted(sorted(x) for x in SV.non_edges(images, edges, proj)),
+                "transitive_equivalence_inferred": bool((covered | recorded) - set(ev.pairs))}
     if fid.startswith("F07"):
         p = proj.pairs[0]
         return {"relationship": p.relationship, "keeper_set": list(p.keeper_set),

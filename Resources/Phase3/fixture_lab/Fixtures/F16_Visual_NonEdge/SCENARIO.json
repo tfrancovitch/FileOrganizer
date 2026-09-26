@@ -1,0 +1,5 @@
+{
+  "fixture_id": "F16_Visual_NonEdge",
+  "title": "Visual Similarity Non-Edge (P3.R3 §34)",
+  "purpose": "A~B and B~C are candidate pairs and A~C is not: A, B and C are shown together, and nothing is ever inferred or recorded between A and C."
+}

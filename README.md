@@ -8,9 +8,23 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B13 changes a file either.
+a later phase; nothing in B8–B14 changes a file either.
 
 ---
+
+## B14 — Phase 3 maintenance: a faster Similar Images page
+
+Once a project holds tens of thousands of decisions (a few big bulk batches
+do that), every answer on the **Similar Images** page had slowed to several
+seconds. B14 makes the page read only what each answer changed: on a copy of
+a 41,000-file collection with 76,000 decisions, an answer now redraws in about
+a quarter of a second (was 3.2 s), a Survey Mode group action in 0.6 s (was
+3.7 s), and the page opens in 4.7 s (was 8.8 s). What the page shows is
+unchanged — checked, after every step, against loading everything afresh.
+Also: the fixture lab gains **F16**, the "A~B and B~C, but no A~C" shape the
+research uses to state that nothing is inferred between two images that are
+not a candidate pair. `CHANGELOG-B14.md` has the detail;
+`PHASE3_B14_HANDBACK.md` reports against the handoff.
 
 ## B13 — Phase 3, Build 7: Survey Mode
 

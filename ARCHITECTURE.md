@@ -1,11 +1,11 @@
-# Architecture — The File Organizer, B13 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B14 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
-routing, bulk, similar images, bulk over pairs, Survey Mode) at the end say
-what B7 and B8–B13 added on top.
+routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
+refresh) at the end say what B7 and B8–B14 added on top.
 
 ---
 
@@ -681,4 +681,31 @@ image is not a Keeper, Keep both otherwise) and plans one deferral per pair
 for `pairs_defer`. Per-image Compare opens the page's Compare Mode
 (`open_compare`), unchanged: two images that are not a candidate pair are
 shown with no pair decision on offer.
+
+### The Similar Images page's incremental refresh (B14)
+
+The page holds one model (evidence, projection, routes). After an answer
+the evidence has not moved, only the record has, and the record only grows:
+a decision row is never changed (it is withdrawn by a new withdrawal row or
+superseded by a new decision row) and review events are only added.
+
+```
+   refresh.marks(conn)     newest decision / withdrawal / review event / policy version
+        |                  (taken BEFORE a load; a row read twice is skipped, never missed)
+   refresh.apply(...)      the rows above the marks -> the changed pairs and images
+        |                    pairs.neighbourhood: re-resolve the first ring (the two-ring
+        |                    model makes the chain guard exact -- B13's argument)
+        |                    routing.route_pairs(only=): the ring, the changed targets and
+        |                    every pair with an open event (a dated deferral fires by the clock)
+        v
+   None  -> the page reloads everything: a policy changed, or a decision names a pair or
+            an image the model does not hold
+```
+
+Page open: `routing.reconcile(..., keep=)` hands the page the model the
+detector just loaded and the marks taken before it; `apply` catches up with
+the detector's own events, so the page no longer loads and routes the whole
+model twice. `p3_refresh_check.py` compares `refresh.fingerprint` of the
+incremental model with a fresh full load after every step of random sessions
+(and so did the acceptance run on a copy of the real collection).
 

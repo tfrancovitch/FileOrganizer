@@ -151,8 +151,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.9.2"
-APP_VERSION = "B13"
+MODULE_VERSION = "1.9.3"
+APP_VERSION = "B14"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).

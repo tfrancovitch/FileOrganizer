@@ -263,11 +263,15 @@ def test_clusters():
           not any("cluster" in k for k in REG.DECISION_KINDS) and not any("cluster" in t for t in REG.TARGET_KINDS))
 
 
-def _f06():
+def _fixture(prefix):
     import p3_fixture_check as FX
-    db = next(FIXTURES.glob("F06*")) / "fixture.sqlite"
+    db = next(FIXTURES.glob(prefix + "*")) / "fixture.sqlite"
     ev, _oracle, _history = FX.load_fixture(db)
     return ev
+
+
+def _f06():
+    return _fixture("F06")
 
 
 def _world_from(ev, pairs=None, decisions=None):
@@ -300,9 +304,13 @@ def test_controls():
     check("F06 undecided: exactly its three candidate pairs are the population, each gets its own two rows",
           sorted(rows(pv)) == ["PAB", "PAC", "PBC"] and pv.decision_count == 6)
 
-    # §34's shape: A~B, B~C candidates, A~C NOT a candidate (F06 without its weak pair).
-    shape = {k: v for k, v in f06.pairs.items() if k != "PAC"}
-    ev, proj, rt = _world_from(f06, pairs=shape, decisions=[])
+    # §34's shape: A~B, B~C candidates, A~C NOT a candidate -- fixture F16 (B14; built in this
+    # suite by B13 as F06 without its weak pair, now in the fixture lab), its decisions set aside.
+    f16 = _fixture("F16")
+    check("F16 is F06's images with A~B and B~C only: A~C is not a candidate pair",
+          set(f16.locations) == set(f06.locations) and sorted(f16.pairs) == ["PAB", "PBC"])
+    shape = f16.pairs
+    ev, proj, rt = _world_from(f16, decisions=[])
     m = SV.cluster_map(proj, rt, ev, BK.LENS_ALL)
     cl = m.clusters[0]
     edges = SV.cluster_edges(proj, cl.images)
@@ -315,7 +323,7 @@ def test_controls():
     check("Mark Remaining Equivalent writes exactly two relationship decisions, on A~B and B~C -- nothing across the missing A-C edge",
           sorted(rels) == [("PAB", "equivalent_copy"), ("PBC", "equivalent_copy")] and targets == {"PAB", "PBC"}
           and len(pv.candidates) == 2)
-    ev2, proj2, rt2 = _world_from(f06, pairs=shape, decisions=[
+    ev2, proj2, rt2 = _world_from(f16, pairs=shape, decisions=[
         dec("D1", "equivalent_copy", "PAB"), dec("D2", "keep_both", "PAB", ["A", "B"]),
         dec("D3", "equivalent_copy", "PBC"), dec("D4", "keep_both", "PBC", ["B", "C"])])
     check("...and with both recorded, the resolver still infers nothing about A and C (no pair, no decision, no group)",

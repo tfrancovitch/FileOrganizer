@@ -174,13 +174,14 @@ def show_review(app, content_id=None, file_path_id=None):
     page.reload(select=content_id)
 
 
-def run_detector(conn, store, pairs=True):
+def run_detector(conn, store, pairs=True, keep=None):
     """The routing detector, for the window: after a collection run and when
     the Decide page opens. Never raises -- a failure to write provenance must
     not stop a run from finishing or a page from drawing; it is logged.
-    `pairs=False`: the exact-duplicate targets only (the Decide page's)."""
+    `pairs=False`: the exact-duplicate targets only (the Decide page's).
+    `keep`: see `routing.reconcile` (B14)."""
     try:
-        return RT.reconcile(conn, store, pairs=pairs)
+        return RT.reconcile(conn, store, pairs=pairs, keep=keep)
     except Exception as exc:                                        # noqa: BLE001
         try:
             import fo_log
