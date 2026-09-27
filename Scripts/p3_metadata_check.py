@@ -96,11 +96,14 @@ def cap(family, fld, status="read_only", read="phase2_analyzer", write="none"):
 
 
 def mq(qid, lid, fld="creator", family="ooxml", status="read_only", state="known", value="Alice", signed=False,
-       hard=False, obs=None, ids=("1",), values=None):
+       hard=False, obs=None, ids=("1",), values=None, encrypted=False):
+    # B17: a hand-built question states its encryption evidence too (default:
+    # not encrypted); None would be unknown, and unknown blocks.
     return MetadataQuestion(qid, lid, fld, observed_state=state, observed_value=value if state == "known" else None,
                             observed_values=values if values is not None else ((value,) if state == "known" else ()),
                             file_family=family, capability=cap(family, fld, status), signed_or_certified=signed,
-                            hardlinked=hard, observation_id=obs or f"obs-{lid}", analyzer_result_ids=tuple(ids))
+                            hardlinked=hard, observation_id=obs or f"obs-{lid}", analyzer_result_ids=tuple(ids),
+                            encrypted=encrypted)
 
 
 def with_metadata(ev, questions, decisions):
@@ -525,12 +528,16 @@ def test_project(tmp: Path):
     check("the capability that applies is visible per question (ooxml creator read_only; jpeg creator unknown)",
           (lm["creator"].capability.status, photo["creator"].capability.status) == ("read_only", "unknown"))
     check("integrity from evidence: linked.pdf hard-linked (true); photo.jpg a single name (false); a unique size leaves it "
-          "unknown exactly when the scan left the link count empty; signatures unknown for Office and PDF (no Phase 1/2 "
-          "evidence), not applicable for JPEG", linked["creator"].hardlinked is True and photo["creator"].hardlinked is False
+          "unknown exactly when the scan left the link count empty; B17: the analyzers now record signatures -- report.docx "
+          "and paper.pdf unsigned, neither encrypted; JPEG not applicable for both",
+          linked["creator"].hardlinked is True and photo["creator"].hardlinked is False
           and unique["creator"].hardlinked is (None if links["unique.jpg"] is None else links["unique.jpg"] > 1)
-          and lm["creator"].signed_or_certified is None and photo["creator"].signed_or_certified is None
+          and (lm["creator"].signed_or_certified, lm["creator"].signature_state, lm["creator"].encrypted) == (False, "unsigned", False)
+          and (paper["creator"].signed_or_certified, paper["creator"].encrypted) == (False, False)
+          and photo["creator"].signed_or_certified is None
           and MD.integrity(photo["creator"])[MD.SIGNED_KEY][0] == "not_applicable"
-          and MD.integrity(lm["creator"])[MD.SIGNED_KEY][0] == "unknown")
+          and MD.integrity(photo["creator"])[MD.ENCRYPTED_KEY][0] == "not_applicable"
+          and MD.integrity(lm["creator"])[MD.SIGNED_KEY][0] == "pass")
     check("listing a file's metadata asks nothing: no question row, no operation", st.counts()["metadata_questions"] == 0
           and st.counts()["operations"] == 0 and lm["creator"].question_id is None)
     check("...and read no source file to answer (the values are Phase 1/2's rows), writing nothing anywhere",
@@ -648,10 +655,11 @@ def test_project(tmp: Path):
     check("linked.pdf: blocked by its real hard link (hardlinked_generic_write)",
           (m[(by["linked.pdf"], "creator")].state, m[(by["linked.pdf"], "creator")].blocked_reason) == (BLOCKED, "hardlinked_generic_write"))
     rep = m[(by["report.docx"], "creator")]
-    check("report.docx: blocked on unknown evidence (whether it is signed -- Phase 1/2 records no signatures), the writer "
-          "also recorded unsupported: every metadata item is blocked, none ready", (rep.state, rep.blocked_reason) ==
-          (BLOCKED_EV, "source_not_signed_or_certified") and rep.condition("writer_supported").result == "unsupported"
-          and all(i.state != READY for i in m.values()))
+    check("report.docx: with its signature and encryption now known (unsigned, not encrypted), F13's shape on a real "
+          "document -- unsupported_action / writer_unsupported; every metadata item is blocked, none ready",
+          (rep.state, rep.blocked_reason) == (UNSUPPORTED, "writer_unsupported")
+          and rep.condition("source_not_signed_or_certified").result == "pass"
+          and rep.condition("source_not_encrypted").result == "pass" and all(i.state != READY for i in m.values()))
     check("the clear on memo.docx (observed no value) is a person's clear, planned as one", m[(by["memo.docx"], "creator")]
           .desired_effect["operation"] == "clear")
     check("the review data answers the same without the plan: linked.pdf blocked by evidence; report.docx Title left "

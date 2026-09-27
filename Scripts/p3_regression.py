@@ -525,8 +525,8 @@ def test_project(tmp: Path):
     check("Find My Duplicates through the worker", out.ok, f"{out.status}: {out.message}")
 
     conn = connect(project_dir, write=True)
-    check("a fresh project lands on schema 14 with the eighteen p3 tables (Build 8's eight plan tables, Build 9's two metadata tables)",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 14 and {r[0] for r in conn.execute(
+    check("a fresh project lands on schema 15 with the eighteen p3 tables (Build 8's eight plan tables, Build 9's two metadata tables)",
+          conn.execute("PRAGMA user_version").fetchone()[0] == 15 and {r[0] for r in conn.execute(
               "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'p3_%'")} == {
               "p3_operation", "p3_decision", "p3_decision_withdrawal", "p3_policy", "p3_policy_version", "p3_review_event",
               "p3_bulk_batch", "p3_bulk_member", "p3_plan", "p3_plan_revision", "p3_plan_event", "p3_plan_item",
@@ -535,9 +535,9 @@ def test_project(tmp: Path):
     check("app_meta carries the Phase 3 contracts",
           conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1"
           and conn.execute("SELECT value FROM app_meta WHERE key='phase3.bulk_schema'").fetchone()[0] == "fileorganizer.p3.bulk/1")
-    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B16', schema 14 everywhere",
-          fo_db.APP_VERSION == "B16" and __import__("Phase2").VERSION == "B16" and fo_db.APP_SCHEMA_VERSION == 14
-          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 14 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 14)
+    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B17', schema 15 everywhere",
+          fo_db.APP_VERSION == "B17" and __import__("Phase2").VERSION == "B17" and fo_db.APP_SCHEMA_VERSION == 15
+          and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 15 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 15)
 
     # -- migrating a schema-8 database ---------------------------------------
     old_dir = tmp / "Old8"
@@ -560,9 +560,9 @@ def test_project(tmp: Path):
     c8.close()
     fo_db.write_project_json(paths, "uid-8", "Old8", "2026-01-01T00:00:00Z", "B7.2")
     c9, _ = fo_db.open_project(str(old_dir), app_version=fo_db.APP_VERSION)
-    check("a schema-8 project opens and migrates to 14", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 14)
-    check("migrations 009 to 014 recorded with this build's version",
-          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12,13,14) ORDER BY version")] == ["B16"] * 6)
+    check("a schema-8 project opens and migrates to 15", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 15)
+    check("migrations 009 to 015 recorded with this build's version",
+          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12,13,14,15) ORDER BY version")] == ["B17"] * 7)
     same = all(c9.execute(f"SELECT * FROM {t}").fetchall() == rows for t, rows in snapshot8.items() if t != "schema_migration")
     check("every pre-existing row is untouched by the migration", same)
     check("a pre-migration backup was made", any(paths.backup_dir and Path(paths.backup_dir).glob("*")))
@@ -627,7 +627,7 @@ def test_project(tmp: Path):
     op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (d1["operation_id"],)).fetchone()
     check("the operation carries actor, actor kind, agent kind and version, session and command ids, time, note",
           op["actor_id"] == "tester" and op["actor_kind"] == "explicit_human" and op["agent_kind"] == "dashboard"
-          and op["agent_version"] == "B16" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
+          and op["agent_version"] == "B17" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
           and op["occurred_utc"].endswith("Z") and op["note"] == "the working copy")
     g = R.resolve_all(E.load_evidence(conn)).group(report_group)
     check("the gate in a real project: the protected backup mark is a conflict; Downloads is eligible only once the conflict clears",

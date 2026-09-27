@@ -42,6 +42,7 @@ from .runner import RunRequest, PRESCAN, DUPLICATES, FINGERPRINT, ANALYSIS, run_
 from Phase3 import review as review_view
 from Phase3 import imagegame as imagegame_view
 from Phase3 import planview as plan_view
+from Phase3 import metadata_view
 
 #: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -254,7 +255,7 @@ class Phase2App(tk.Tk):
         self.nav_sep=ttk.Separator(nav); self.nav_sep.pack(fill="x",pady=10)
         self.nav_buttons=[]
         for label,cmd in [
-            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Similar Images",self.show_similar),("Plan",self.show_plan),("Reports",self.show_reports),
+            ("Project",self.show_hub),("Files",self.show_files),("Decide",self.show_decide),("Similar Images",self.show_similar),("Plan",self.show_plan),("Metadata",self.show_metadata_review),("Reports",self.show_reports),
             ("Saved Queries",self.show_saved),("Evidence",self.show_evidence),("History",self.show_history)]:
             b=ttk.Button(nav,text=label,style="Nav.TButton",command=cmd); b.pack(fill="x",pady=2)
             self.nav_buttons.append(b)
@@ -570,6 +571,11 @@ class Phase2App(tk.Tk):
         """Phase 3's Plan Builder -- proposed intent, previewed and frozen (Phase3.planview). Build 8."""
         if self.conn is None: self.show_welcome(); return
         plan_view.show_plan(self, plan_id=plan_id)
+
+    def show_metadata_review(self, file_path_id=None):
+        """Phase 3's Metadata page -- the Metadata Review queue, or one file's metadata (Phase3.metadata_view). B17."""
+        if self.conn is None: self.show_welcome(); return
+        metadata_view.show_metadata_review(self, file_path_id=file_path_id)
 
     def clear(self):
         # A scrolling list binds the mouse wheel for the whole window while
@@ -955,6 +961,9 @@ class Phase2App(tk.Tk):
             ttk.Label(f,text=str(v),wraplength=200,justify="left").pack(side="left",fill="x")
         ttk.Separator(self.detail_host).pack(fill="x",pady=8)
         ttk.Button(self.detail_host,text="Metadata Explorer",command=lambda:self.show_metadata(row.get("path.id"),row.get("path.file_name") or "")).pack(anchor="w")
+        # B17: what you want this file's metadata to say (Phase 3's Metadata page).
+        if row.get("path.id") is not None:
+            ttk.Button(self.detail_host,text="Metadata for this file",command=lambda:self.show_metadata_review(file_path_id=row["path.id"])).pack(anchor="w",pady=(4,0))
         # Phase 3: a file that has byte-identical copies can be taken straight
         # to its group on the Decide page (wording provisional -- P3 UI-1).
         if row.get("path.id") is not None and review_view.group_for_file(self.conn,row["path.id"]) is not None:

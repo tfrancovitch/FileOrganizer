@@ -520,6 +520,8 @@ STAGE_EVIDENCE, STAGE_LIVE = "evidence_preview", "live_preflight"
 PRECONDITIONS = {
     "writer_supported": "environment",
     "source_not_signed_or_certified": "integrity",
+    "source_not_encrypted": "integrity",              # B17 (P3.R8 §34)
+    "no_removal_metadata_overlap": "collision",       # B17 (P3.R8 §48): a WARNING, attached only where it applies
     "source_not_hardlinked": "integrity",
     "target_exists": "identity",
     "target_observation_current": "identity",
@@ -589,6 +591,7 @@ ACTION_PRECONDITIONS = {
         ("decision_current", "hard", STAGE_EVIDENCE),
         ("writer_supported", "hard", STAGE_EVIDENCE),
         ("source_not_signed_or_certified", "hard", STAGE_EVIDENCE),
+        ("source_not_encrypted", "hard", STAGE_EVIDENCE),
         ("source_not_hardlinked", "hard", STAGE_EVIDENCE),
         ("source_local_if_required", "warning", STAGE_EVIDENCE),
     ) + _LIVE_COMMON,
@@ -619,6 +622,7 @@ ITEM_STATES = (ITEM_READY, ITEM_BLOCKED, ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED
 BLOCKED_REASONS = {
     ("writer_supported", "unsupported"): "writer_unsupported",
     ("source_not_signed_or_certified", "fail"): "signed_or_certified",
+    ("source_not_encrypted", "fail"): "encrypted",
     ("source_not_hardlinked", "fail"): "hardlinked_generic_write",
 }
 
@@ -736,6 +740,11 @@ FAMILY_OTHER = "other"
 #: metadata write could invalidate (R8 §2.8, §33). Phase 1/2 records no
 #: signature evidence, so for these the flag is unknown until it does.
 SIGNABLE_FAMILIES = ("pdf", "ooxml", "ole_office", "odf")
+#: Families whose formats can be encrypted or password-protected in a way a
+#: metadata write must respect (R8 §34, B17). Elsewhere: not applicable.
+ENCRYPTABLE_FAMILIES = ("pdf", "ooxml", "ole_office", "odf")
+#: signature_state words the analyzers record (B17, migration 015).
+SIGNATURE_STATES = ("signed", "certified", "unsigned", "unknown", "not_applicable")
 
 
 def file_family(path) -> str:
@@ -864,3 +873,9 @@ METADATA_DECISION_KINDS = ("project_metadata_set", "desired_source_metadata_set"
                            "leave_source_metadata_unchanged")
 SOURCE_METADATA_KINDS = METADATA_DECISION_KINDS[1:]
 PLANNED_METADATA_KINDS = ("desired_source_metadata_set", "desired_source_metadata_clear")
+
+#: (B17) A metadata question can be deferred with Build 3's review events and
+#: triggers -- a date, or the evidence changing (the file observed again or
+#: re-read). It is not a routing target (owner's decision Q3): these events are
+#: kept out of the retention model and read by metadata.py alone.
+DEFER_CHOICES[METADATA_QUESTION] = ("defer_indefinitely", "snooze_until_date", "snooze_until_evidence_change")

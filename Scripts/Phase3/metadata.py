@@ -44,17 +44,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .model import Evidence, MetadataQuestion, CapabilityRecord, active_decisions
-from .registry import (METADATA_FIELDS, PROJECT_METADATA_FIELDS, METADATA_READ_MAP, SIGNABLE_FAMILIES,
+from .registry import (METADATA_FIELDS, PROJECT_METADATA_FIELDS, METADATA_READ_MAP, SIGNABLE_FAMILIES, ENCRYPTABLE_FAMILIES,
                        CAPABILITY_SUPPORTED, PLANNED_METADATA_KINDS, SOURCE_METADATA_KINDS, LOCATION, METADATA_QUESTION,
                        OBS_KNOWN, OBS_NO_VALUE, OBS_UNKNOWN, OBS_UNSUPPORTED, OBS_UNAVAILABLE, OBS_STALE, OBS_CONFLICTING,
                        PROJECT_METADATA_LABEL, DESIRED_METADATA_LABEL, blocked_reason)
 
 SIGNED_KEY, HARDLINK_KEY, WRITER_KEY = "source_not_signed_or_certified", "source_not_hardlinked", "writer_supported"
+ENCRYPTED_KEY = "source_not_encrypted"
 
 #: Review states of a metadata question (the data a review surface sorts by).
 UNDECIDED, DESIRED, LEFT_UNCHANGED, NEEDS_REVALIDATION = "undecided", "desired", "left_unchanged", "needs_revalidation"
+CLEAR_REQUESTED, DEFERRED = "clear_requested", "deferred"          # B17 (R8 §52)
 REVIEW_WORDS = {UNDECIDED: "Undecided", DESIRED: "Desired value recorded", LEFT_UNCHANGED: "Left unchanged",
-                NEEDS_REVALIDATION: "Needs revalidation"}
+                NEEDS_REVALIDATION: "Needs revalidation", CLEAR_REQUESTED: "Clear requested", DEFERRED: "Deferred"}
 
 
 # -- observed value-states ---------------------------------------------------------------------
@@ -129,20 +131,33 @@ def writer_check(q: MetadataQuestion):
 
 
 def integrity(q: MetadataQuestion) -> dict:
-    """The two integrity checks from the evidence flags -- {key: (result, detail)}.
-    True fails (the write is blocked); False passes; None is 'unknown', which
-    a hard precondition treats as blocking (P3-A91)."""
+    """The integrity checks from the evidence flags -- {key: (result, detail)}:
+    signed / certified, encrypted (B17, R8 §34), hard-linked. True fails (the
+    write is blocked); False passes; None is 'unknown', which a hard
+    precondition treats as blocking (P3-A91). A family with no such scheme,
+    or a file the analyzer found to be RTF saved as .doc, is not applicable."""
     out = {}
     if q.signed_or_certified is True:
-        out[SIGNED_KEY] = ("fail", "signed or certified: a metadata write could invalidate the signature; blocked unless "
-                                   "a future specialized workflow supports it (P3-A115)")
+        out[SIGNED_KEY] = ("fail", f"{q.signature_state or 'signed'}: a metadata write could invalidate the signature; "
+                                   "blocked unless a future specialized workflow supports it (P3-A115)")
     elif q.signed_or_certified is False:
-        out[SIGNED_KEY] = ("pass", "not signed or certified")
-    elif q.file_family in SIGNABLE_FAMILIES:
-        out[SIGNED_KEY] = ("unknown", f"a {q.file_family} file can carry a signature, and Phase 1/2 records no evidence "
-                                      "of whether this one does")
+        out[SIGNED_KEY] = ("pass", "not signed or certified (the analyzer found no signature)")
+    elif q.file_family in SIGNABLE_FAMILIES and SIGNED_KEY not in q.integrity_na:
+        out[SIGNED_KEY] = ("unknown", f"a {q.file_family} file can carry a signature, and no current analysis says whether "
+                                      "this one does (analyzed before B17, or the analyzer could not read it)")
     else:
-        out[SIGNED_KEY] = ("not_applicable", f"no signature or certification scheme is recognised for {q.file_family} files")
+        out[SIGNED_KEY] = ("not_applicable", f"no signature or certification scheme is recognised for this "
+                                             f"{'RTF' if SIGNED_KEY in q.integrity_na else q.file_family} file")
+    if q.encrypted is True:
+        out[ENCRYPTED_KEY] = ("fail", "encrypted or password-protected: a metadata write is blocked (P3.R8 §34)")
+    elif q.encrypted is False:
+        out[ENCRYPTED_KEY] = ("pass", "not encrypted (the analyzer opened it without a password)")
+    elif q.file_family in ENCRYPTABLE_FAMILIES and ENCRYPTED_KEY not in q.integrity_na:
+        out[ENCRYPTED_KEY] = ("unknown", f"a {q.file_family} file can be encrypted, and the evidence does not say whether "
+                                         "this one is")
+    else:
+        out[ENCRYPTED_KEY] = ("not_applicable", f"no encryption scheme is recognised for this "
+                                                f"{'RTF' if ENCRYPTED_KEY in q.integrity_na else q.file_family} file")
     if q.hardlinked is True:
         out[HARDLINK_KEY] = ("fail", "hard-linked: writing one name's bytes changes every alias; generic metadata "
                                      "writes are blocked until specialized behaviour is proven (P3-A116)")
@@ -205,7 +220,13 @@ def question_drift(q: MetadataQuestion, decision) -> tuple:
     file observed again, re-read by an analyzer, or gone. Empty: nothing.
     A decision recorded without a binding (the fixture lab's) has nothing to
     compare and never drifts."""
-    b = (decision.binding if decision is not None else None) or {}
+    return binding_drift(q, (decision.binding if decision is not None else None) or {})
+
+
+def binding_drift(q: MetadataQuestion, b) -> tuple:
+    """(B17) question_drift against a binding itself -- a decision's, or the
+    one a deferral 'until the evidence changes' recorded."""
+    b = b or {}
     if not b:
         return ()
     out = []
@@ -260,52 +281,150 @@ class QuestionReview:
     review_state: str = UNDECIDED
     drift: tuple = ()
     label: str = DESIRED_METADATA_LABEL
+    deferral: object = None                     # B17: the open deferral event, if any
+    returned: bool = False                      # B17: a deferral whose trigger has fired (back in the queue)
+    file_family: str = "other"
 
     @property
     def word(self):
         return REVIEW_WORDS[self.review_state]
 
 
-def review(ev: Evidence) -> list:
-    """Every metadata question with what a review surface shows (R8 §51):
-    the value-state, capability and blockers, the current decision, and
-    whether it needs a look. Sorted by location display order, then field."""
+def open_deferral(events):
+    """The deferral still open among one question's events (oldest first):
+    a new deferral replaces an open one; a restore ends the one it names, or
+    every one when it names none (Build 3's rule)."""
+    current = None
+    for e in events:
+        if e.kind == "deferred":
+            current = e
+        elif e.kind == "restored" and current is not None and (e.refers_to is None or e.refers_to == current.review_event_id):
+            current = None
+    return current
+
+
+def deferral_fired(q: MetadataQuestion, e, now) -> bool:
+    """Has a metadata deferral's trigger fired? A date that has come; the
+    evidence changed since (the binding the event recorded, compared the way a
+    decision's is); 'until you restore it' never fires by itself."""
+    if e is None:
+        return False
+    if e.return_kind == "time":
+        return bool(e.return_on_utc) and bool(now) and str(now) >= str(e.return_on_utc)
+    if e.return_kind == "evidence_change":
+        return bool(binding_drift(q, e.detail))
+    return False
+
+
+def _row(q, d, events, now, path=None):
+    spec = METADATA_FIELDS.get(q.semantic_field)
+    cap = q.capability or CapabilityRecord(q.file_family, q.semantic_field)
+    drift = question_drift(q, d) if d is not None else ()
+    deferral = open_deferral(events)
+    fired = deferral_fired(q, deferral, now)
+    if drift:
+        state = NEEDS_REVALIDATION
+    elif deferral is not None and not fired:
+        state = DEFERRED
+    elif d is None:
+        state = UNDECIDED
+    elif d.kind == "leave_source_metadata_unchanged":
+        state = LEFT_UNCHANGED
+    elif d.kind == "desired_source_metadata_clear":
+        state = CLEAR_REQUESTED
+    else:
+        state = DESIRED
+    return QuestionReview(
+        q.question_id, q.location_id, path or q.path, q.semantic_field,
+        spec.label if spec else q.semantic_field, spec.value_type if spec else "text",
+        q.observed_state, q.observed_value, q.observed_values, cap.status, cap.read_support, cap.write_support,
+        integrity_blocks(q), [k for k, (r, _d) in integrity(q).items() if r == "unknown"], writer_check(q)[0],
+        d.decision_id if d else None, d.kind if d else None,
+        d.value if d is not None and d.kind == "desired_source_metadata_set" else None, state, drift,
+        deferral=deferral, returned=deferral is not None and fired, file_family=q.file_family)
+
+
+def review(ev: Evidence, now=None) -> list:
+    """Every metadata question with what a review surface shows (R8 §51-52):
+    the value-state, capability and blockers, the current decision, an open
+    deferral, and whether it needs a look. Sorted by location display order
+    (or path), then field."""
     current = current_decisions(active_metadata(ev))
+    by_q = {}
+    for e in ev.metadata.events:
+        by_q.setdefault(e.target_ref, []).append(e)
+    now = now or ev.now
     out = []
     for q in ev.metadata.questions.values():
-        spec = METADATA_FIELDS.get(q.semantic_field)
-        cap = q.capability or CapabilityRecord(q.file_family, q.semantic_field)
-        d = current.get(q.question_id)
-        drift = question_drift(q, d) if d is not None else ()
-        if d is None:
-            state = UNDECIDED
-        elif drift:
-            state = NEEDS_REVALIDATION
-        elif d.kind == "leave_source_metadata_unchanged":
-            state = LEFT_UNCHANGED
-        else:
-            state = DESIRED
         loc = ev.locations.get(q.location_id)
-        out.append(QuestionReview(
-            q.question_id, q.location_id, loc.path if loc else None, q.semantic_field,
-            spec.label if spec else q.semantic_field, spec.value_type if spec else "text",
-            q.observed_state, q.observed_value, q.observed_values, cap.status, cap.read_support, cap.write_support,
-            integrity_blocks(q), [k for k, (r, _d) in integrity(q).items() if r == "unknown"], writer_check(q)[0],
-            d.decision_id if d else None, d.kind if d else None,
-            d.value if d is not None and d.kind == "desired_source_metadata_set" else None, state, drift))
+        out.append(_row(q, current.get(q.question_id), by_q.get(q.question_id, []), now, loc.path if loc else None))
     order = {k: i for i, k in enumerate(METADATA_FIELDS)}
 
     def key(r):
         loc = ev.locations.get(r.location_id)
-        return (loc.sort_key if loc else (), r.location_id, order.get(r.semantic_field, 99))
+        return (loc.sort_key if loc else (), (r.path or "").lower(), r.location_id, order.get(r.semantic_field, 99))
     return sorted(out, key=key)
 
 
-def queue(ev: Evidence) -> list:
-    """The Metadata Review queue: questions with no decision, and decided ones
-    whose evidence materially changed. Left Unchanged stays out until then
-    (R8 §53) -- the same durable routing intent an explicit deferral carries."""
-    return [r for r in review(ev) if r.review_state in (UNDECIDED, NEEDS_REVALIDATION)]
+def file_review(md, now=None) -> list:
+    """(B17) One file's rows for the Metadata page: every semantic field,
+    asked or not, in registry order. `md` is evidence.file_metadata's slice;
+    an unasked field is simply Undecided -- looking at it asked nothing."""
+    current = current_decisions(active_decisions(md.decisions))
+    by_q = {}
+    for e in md.events:
+        by_q.setdefault(e.target_ref, []).append(e)
+    order = {k: i for i, k in enumerate(METADATA_FIELDS)}
+    rows = [_row(q, current.get(q.question_id), by_q.get(q.question_id, []), now) for q in md.questions.values()]
+    return sorted(rows, key=lambda r: order.get(r.semantic_field, 99))
+
+
+#: (B17) The Metadata Review queue's population -- the questions that need a
+#: person (judgment call, reported in the B17 handback):
+#:   1. a question a person named and has not decided (or whose deferral returned);
+#:   2. a decided question whose evidence materially changed (needs revalidation);
+#:   3. a question whose deferral trigger has fired;
+#:   4. a field observed as `conflicting` that no question names yet (R8 §22:
+#:      surfaced, never guessed) -- listed without creating a question row.
+#: Left Unchanged and an open deferral stay out until their evidence changes or
+#: their trigger fires (R8 §53). Every file x every field is NOT the queue.
+QUEUE_STATES = (UNDECIDED, NEEDS_REVALIDATION)
+
+
+def queue(ev: Evidence, conflicts=(), now=None, reviewed=None) -> list:
+    """The Metadata Review queue (see QUEUE_STATES): review rows needing a
+    person, then any surfaced conflicts (question_id None). `reviewed`: the
+    rows review(ev, now) already returned, when the caller has them."""
+    rows = [r for r in (reviewed if reviewed is not None else review(ev, now))
+            if r.review_state in QUEUE_STATES or r.returned]
+    asked = {(r.location_id, r.semantic_field) for r in rows}
+    for q in conflicts:
+        if (q.location_id, q.semantic_field) not in asked:
+            rows.append(_row(q, None, [], now))
+    return rows
+
+
+def queue_filter(rows, semantic_field=None, family=None, observed_state=None, blocker=None) -> list:
+    """(B17) The queue page's filters. `blocker`: an integrity reason
+    (signed_or_certified, encrypted, hardlinked_generic_write), 'writer'
+    (no certified writer) or 'unknown' (an integrity check the evidence
+    cannot answer)."""
+    out = []
+    for r in rows:
+        if semantic_field and r.semantic_field != semantic_field:
+            continue
+        if family and r.file_family != family:
+            continue
+        if observed_state and r.observed_state != observed_state:
+            continue
+        if blocker == "writer" and r.writer == "pass":
+            continue
+        if blocker == "unknown" and not r.integrity_unknown:
+            continue
+        if blocker not in (None, "", "writer", "unknown") and blocker not in r.blocked_by_evidence:
+            continue
+        out.append(r)
+    return out
 
 
 def project_metadata(ev: Evidence) -> dict:

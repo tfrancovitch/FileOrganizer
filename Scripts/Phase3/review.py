@@ -57,8 +57,8 @@ from . import resolve as R
 from . import routing as RT
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED,
-                       bulk_actions_for)
-from .store import DecisionStore, new_command_id, export_decision_journal
+                       bulk_actions_for, METADATA_QUESTION)
+from .store import DecisionStore, new_command_id, export_decision_journal, SCOPE_RETENTION
 
 STATUS_WORDS = {R.PROTECTED: "Protected", R.KEEPER: "Keeper", R.REDUNDANT: "Redundant candidate", R.UNDECIDED: "Undecided"}
 REVIEW_WORDS = {R.UNREVIEWED: "Unreviewed", R.IN_PROGRESS: "In progress", R.DEFERRED: "Deferred",
@@ -832,7 +832,7 @@ class ReviewPage:
                 drifted.extend(x for x in lr.drift if not x.applicable)
         if not drifted:
             return
-        active = {d.decision_id: d for d in self.store.active()}
+        active = {d.decision_id: d for d in self.store.active(SCOPE_RETENTION)}
         members = {v.location_id for v in p.members}
         todo, skipped = [], []
         for x in drifted:
@@ -933,10 +933,14 @@ class DeferDialog:
     visual candidate pair: `target_kind` / `target_ref` name it, and the
     triggers offered are the ones that apply to it (registry.DEFER_CHOICES)."""
 
-    def __init__(self, app, group, store, on_done, target_kind=GROUP, target_ref=None):
+    def __init__(self, app, group, store, on_done, target_kind=GROUP, target_ref=None, record=None):
         self.app, self.group, self.store, self.on_done = app, group, store, on_done
         self.target_kind = target_kind
-        self.target_ref = target_ref if target_ref is not None else group.group_id
+        self.target_ref = target_ref if target_ref is not None else (group.group_id if group is not None else None)
+        # (B17) The Metadata page records a field's deferral through
+        # store.defer_metadata, which names the question in the same operation:
+        # record(disposition, until, note, command_id).
+        self.record = record
         win = tk.Toplevel(app)
         self.win = win
         win.title("Defer")
@@ -945,7 +949,7 @@ class DeferDialog:
         frame = ttk.Frame(win, padding=14)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Not deciding yet", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        what = "pair" if target_kind == VISUAL_PAIR else "group"
+        what = "pair" if target_kind == VISUAL_PAIR else "field" if target_kind == METADATA_QUESTION else "group"
         ttk.Label(frame, text=f"A deferral is your choice, with a trigger that returns the {what} to the queue. "
                               "It is not a decision about any copy, and it is different from Skip, which only "
                               "records that you passed by.", wraplength=520, justify="left", foreground="#444").pack(anchor="w", pady=(2, 10))
@@ -978,8 +982,11 @@ class DeferDialog:
         disposition = self.choice.get()
         note = self.note.get("1.0", "end").strip() or None
         try:
-            self.store.defer(self.target_kind, self.target_ref, disposition, until=self.date_var.get().strip() or None,
-                             note=note, command_id=new_command_id())
+            if self.record is not None:
+                self.record(disposition, self.date_var.get().strip() or None, note, new_command_id())
+            else:
+                self.store.defer(self.target_kind, self.target_ref, disposition, until=self.date_var.get().strip() or None,
+                                 note=note, command_id=new_command_id())
         except ValueError as exc:
             messagebox.showwarning("Defer", str(exc), parent=self.win)
             return

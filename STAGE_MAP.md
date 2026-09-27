@@ -328,3 +328,13 @@ file's metadata state reads Phase 1/2's analyzer results and the file's
 current state; no source file is opened, stat'ed or listed, and nothing is
 written to any file. A rescan or re-analysis that changes a file sends its
 decided metadata questions, Left Unchanged included, back for review.
+The **Analyze** stage (B17) also records, for each PDF and Office document,
+whether it carries a digital signature (`analyzer_result.signature_state`:
+signed, certified, unsigned, unknown, not applicable). It records presence
+only, never validity. A PDF that needs a password to open is reported the
+way the Office analyzer reports an encrypted package: "password-protected
+document", no password tried. The **Metadata** page (B17) is a point
+interaction on the project database. Opening the queue or a file's page
+reads evidence and records nothing. Each action (a desired value, a clear,
+leave unchanged, a deferral, undo, project metadata) is one operation. No
+source file is opened, stat'ed or listed.

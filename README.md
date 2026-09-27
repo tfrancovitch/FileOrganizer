@@ -8,10 +8,31 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B16 changes a file either — not even the plan B15 builds, or
-the metadata you ask for in B16.
+a later phase; nothing in B8–B17 changes a file either — not even the plan B15 builds, or
+the metadata you ask for on the Metadata page.
 
 ---
+
+## B17 — Phase 3: the Metadata page
+
+**Metadata** in the side panel opens the **Metadata Review queue**: the
+metadata questions that need you. **Metadata for this file** (in a file's
+Details) and an Update Source Metadata step on the Plan page open one file's
+metadata. There you can:
+
+- see each field as the project's evidence reads it;
+- record what you want (a value, a clear, or *leave unchanged*), or defer it;
+- undo;
+- keep the project's own tags, category, note, priority and owner for the file.
+
+None of this reads or writes the file.
+
+The **Analyze** stage now also records whether a PDF or an Office document
+carries a digital signature. A signed, certified, encrypted or
+password-protected file is blocked from any metadata write. Metadata steps in
+a plan also note when a file would leave its duplicate group, and warn when
+the same plan removes that file. `CHANGELOG-B17.md` has the detail;
+`PHASE3_B17_HANDBACK.md` reports against the B17 handoff.
 
 ## B16 — Phase 3, Build 9: project metadata and desired source metadata
 
@@ -680,16 +701,44 @@ evidence a locked revision rests on changes, the revision shows **Obsolete**
 with the reason, and is never rewritten. A change elsewhere in the project
 does not touch it.
 
-### 4d. Metadata (from B16)
+### 4d. Metadata (from B16; the page from B17)
 
-There is no Metadata screen yet. The project records metadata decisions, and
-the Plan page shows the Update Source Metadata steps they make. Each step
-lists what was checked:
-- the desired value, beside what the file says now;
-- **writer supported** -- whether a certified writer covers that field for that
-  kind of file (none does);
-- **not signed or certified**, and **not hard-linked** -- from the scan's
-  evidence, or *unknown* where the scan could not say.
+**Metadata** in the side panel opens the **Metadata Review queue**. It lists
+the metadata questions that need you:
+- a field you named and have not decided;
+- a decision whose file has changed since;
+- a deferral that has come back;
+- two readings of a field that disagree.
+
+Filter it by field, kind of file, value state or blocker. When nothing needs
+you, it says **Currently clear**. Open a row, or use **Metadata for this file**
+in a file's Details, or open it from a plan's Update Source Metadata step.
+
+**One file's page** lists every field. For each one:
+- what the file says (or *no value*, *unknown*, *unsupported*, *unavailable*,
+  *stale*, *conflicting* -- both readings shown, no winner picked);
+- what you want;
+- the write capability and the blockers: no certified writer, signed or
+  certified, encrypted, hard-linked, cloud-only;
+- the review state;
+- the plan step it would make.
+
+The source section says so: *stored in the source file; saving records what
+you want; it creates a Phase 4 plan item and never edits the file.*
+
+The actions on a field:
+- **Save desired value** (typed: a date is YYYY-MM-DD; keywords separated
+  by ;). Invalid input is refused with the reason.
+- **Clear...** Asks first. It is never the default, least of all for an
+  *unknown* field.
+- **Leave source unchanged.**
+- **Defer...** Until a date, or until the file changes.
+- **Undo.**
+
+**Project metadata** (tags, category, note, review priority, retention
+rationale, owner) is *stored in the File Organizer project -- never written to
+the file*, and is never a plan step. The history lists every metadata
+decision on the file.
 
 *Leave unchanged* and project metadata never appear as plan steps; the plan
 counts them. A field you chose to leave unchanged comes back for review only

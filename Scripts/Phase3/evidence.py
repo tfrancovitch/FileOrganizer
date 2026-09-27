@@ -165,12 +165,15 @@ def load_decisions(conn, where="", args=(), metadata=False) -> list:
     return out
 
 
-def load_events(conn, after=None) -> list:
+def load_events(conn, after=None, metadata=False) -> list:
     """Every review event, oldest first (Build 3) -- or (B14) only those newer
-    than the watermark `after` (review events are never changed, only added)."""
+    than the watermark `after` (review events are never changed, only added).
+    B17: events on metadata questions (their deferrals) are kept apart, like
+    metadata decisions: False (the default) reads the others, True those only."""
     rows = conn.execute(
         "SELECT e.*, o.occurred_utc, o.actor_kind FROM p3_review_event e JOIN p3_operation o ON o.operation_id = e.operation_id "
-        " WHERE e.project_id = 1" + (" AND e.review_event_id > ?" if after is not None else "") + " ORDER BY e.review_event_id",
+        " WHERE e.project_id = 1 AND e.target_kind " + ("=" if metadata else "<>") + f" '{METADATA_QUESTION}'"
+        + (" AND e.review_event_id > ?" if after is not None else "") + " ORDER BY e.review_event_id",
         (int(after),) if after is not None else ()).fetchall()
     out = []
     for r in rows:
@@ -420,7 +423,7 @@ def _analyzer_readings(conn, file_path_ids) -> dict:
         marks = ",".join("?" for _ in chunk)
         for r in conn.execute(
                 "SELECT ar.analyzer_result_id, a.analyzer_key, ar.file_observation_id, ar.status, ar.title, ar.author, "
-                "       ar.content_created_reported, ar.detail_json, fo.file_path_id "
+                "       ar.content_created_reported, ar.detail_json, ar.error_message, ar.signature_state, fo.file_path_id "
                 "  FROM file_observation fo JOIN analyzer_result ar ON ar.file_observation_id = fo.file_observation_id "
                 "  JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id JOIN analyzer a ON a.analyzer_id = rr.analyzer_id "
                 f" WHERE fo.file_path_id IN ({marks}) AND a.analyzer_key IN ({marks_a})",
@@ -443,6 +446,50 @@ def _reading(row, semantic_field):
     return None
 
 
+#: The analyzers' own wording for a file that needs a password to open (the
+#: Office analyzer's since B6; the PDF analyzer's since B17) -- and pypdf's
+#: own message, which a PDF analyzed before B17 recorded instead.
+_PASSWORD_MARKS = ("password-protected document", "file has not been decrypted")
+
+
+def _integrity_evidence(readings, observation_id, family):
+    """(signed_or_certified, signature word, encrypted, not-applicable keys)
+    from the newest PDF / Office attempt on the current observation (B17).
+    Absent evidence is None -- unknown -- never False: a result analyzed
+    before B17 has no signature_state, and reading that as 'unsigned' would
+    unblock every metadata item on it."""
+    latest = None
+    for r in readings:
+        if r["analyzer_key"] in ("pdf", "office") and observation_id is not None \
+                and str(r["file_observation_id"]) == str(observation_id):
+            if latest is None or int(r["analyzer_result_id"]) > int(latest["analyzer_result_id"]):
+                latest = r
+    if latest is None:
+        return None, None, None, ()
+    message = (latest["error_message"] or "").lower()
+    if latest["status"] != "analyzed":
+        encrypted = True if any(m in message for m in _PASSWORD_MARKS) else None
+        return None, None, encrypted, ()
+    try:
+        detail = json.loads(latest["detail_json"] or "{}") or {}
+    except ValueError:
+        detail = {}
+    word = latest["signature_state"]
+    signed = {"signed": True, "certified": True, "unsigned": False}.get(word)
+    na = ()
+    if detail.get("OfficeType") == "RTF (legacy)" or word == "not_applicable":
+        na = ("source_not_signed_or_certified", "source_not_encrypted")
+    if latest["analyzer_key"] == "pdf":
+        encrypted = {"true": True, "false": False}.get(str(detail.get("IsEncrypted", "")).lower())
+    elif na:
+        encrypted = None
+    elif family == "ooxml":
+        encrypted = False           # the package opened: a password-to-open package is refused before it is read
+    else:
+        encrypted = None            # a legacy OLE2 file's summary can be read while its content is encrypted
+    return signed, word, encrypted, na
+
+
 def _question(question_id, loc_row, semantic_field, readings, capabilities) -> MetadataQuestion:
     path = full_path(loc_row["root_path"], loc_row["relative_path"])
     family = file_family(path)
@@ -454,11 +501,12 @@ def _question(question_id, loc_row, semantic_field, readings, capabilities) -> M
     state, value, values, ids, detail = observe(results, semantic_field, cap, present=present,
                                                 cloud_only=bool(loc_row["is_offline_or_cloud"]), current_observation_id=obs)
     links = loc_row["hard_link_count"]
+    signed, sig_word, encrypted, na = _integrity_evidence(readings, obs, family)
     return MetadataQuestion(
         question_id=str(question_id) if question_id is not None else None, location_id=str(loc_row["file_path_id"]),
-        semantic_field=semantic_field, observed_state=state, observed_value=value, observed_values=values,
+        semantic_field=semantic_field, path=path, observed_state=state, observed_value=value, observed_values=values,
         file_family=family, capability=cap,
-        signed_or_certified=None,                   # Phase 1/2 records no signature evidence
+        signed_or_certified=signed, signature_state=sig_word, encrypted=encrypted, integrity_na=na,
         hardlinked=None if links is None else int(links) > 1,
         observation_id=str(obs) if obs is not None else None, analyzer_result_ids=ids, detail=detail)
 
@@ -486,7 +534,49 @@ def load_metadata(conn, question_ids=None) -> MetadataEvidence:
         q = _question(r["question_id"], r, r["semantic_field"], readings.get(str(r["file_path_id"]), []), caps)
         questions[q.question_id] = q
     decisions = load_decisions(conn, metadata=True) if question_ids is None else []
-    return MetadataEvidence(questions, decisions, caps)
+    events = load_events(conn, metadata=True) if question_ids is None else []
+    return MetadataEvidence(questions, decisions, caps, events)
+
+
+def location(conn, file_path_id):
+    """(B17) One file location as a Location, whatever its state -- the
+    Metadata page's header and its plan preview. None when unknown."""
+    row = conn.execute(_STATE_SQL + " WHERE fs.file_path_id = ?", (int(file_path_id),)).fetchone()
+    return _location(row) if row is not None else None
+
+
+def file_metadata(conn, file_path_id):
+    """(B17) Everything the Metadata page shows for one file, read from the
+    project database only: every field as a MetadataQuestion (asked or not --
+    viewing creates nothing), the metadata decisions and review events on its
+    asked questions, and its project metadata decisions."""
+    questions = location_metadata(conn, file_path_id)
+    asked = [q.question_id for q in questions if q.question_id is not None]
+    marks = ",".join("?" for _ in asked) or "NULL"
+    decisions = load_decisions(conn, f"(d.target_kind = ? AND d.target_ref IN ({marks})) OR "
+                                     "(d.target_kind = ? AND d.target_ref = ?)",
+                               (METADATA_QUESTION, *asked, LOCATION, str(int(file_path_id))), metadata=True)
+    events = [e for e in load_events(conn, metadata=True) if e.target_ref in set(asked)]
+    return MetadataEvidence({q.question_id or f"field:{q.semantic_field}": q for q in questions}, decisions,
+                            load_capabilities(conn), events)
+
+
+def conflicting_fields(conn) -> list:
+    """(B17) Fields observed as `conflicting` that no question names yet --
+    R8 §22 says a conflict is surfaced, never guessed, so the Metadata Review
+    queue lists them without a question row until a person acts. Only a
+    location that two metadata-reading analyzers read on its current
+    observation can conflict; those are found by SQL first."""
+    marks_a = ",".join("?" for _ in _READ_ANALYZERS)
+    ids = [r[0] for r in conn.execute(
+        "SELECT fs.file_path_id FROM file_state fs JOIN analyzer_result ar ON ar.file_observation_id = fs.current_observation_id "
+        "  JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id JOIN analyzer a ON a.analyzer_id = rr.analyzer_id "
+        f" WHERE a.analyzer_key IN ({marks_a}) AND ar.status = 'analyzed' AND fs.state = 'present' "
+        " GROUP BY fs.file_path_id HAVING COUNT(DISTINCT a.analyzer_key) > 1", _READ_ANALYZERS)]
+    out = []
+    for fid in ids:
+        out.extend(q for q in location_metadata(conn, fid) if q.question_id is None and q.observed_state == "conflicting")
+    return out
 
 
 def location_metadata(conn, file_path_id) -> list:

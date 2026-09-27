@@ -69,6 +69,19 @@ from .resolve import _policy_covers
 from .registry import action_kind, PLAN_EVENT_KINDS, LINK_JUSTIFIES, LINK_RETAINS
 from .registry import METADATA_QUESTION, METADATA_DECISION_KINDS, metadata_field, validate_field_value
 
+#: Which decision kinds a read covers (B17, review R1), as
+#: evidence.load_decisions(metadata=...) takes it.
+SCOPE_RETENTION, SCOPE_METADATA, SCOPE_ALL = "retention", "metadata", "all"
+_SCOPES = {SCOPE_RETENTION: False, SCOPE_METADATA: True, SCOPE_ALL: None}
+
+
+def _scope(scope):
+    try:
+        return _SCOPES[SCOPE_RETENTION if scope is None else scope]
+    except KeyError:
+        raise ValueError(f"unknown decision scope: {scope!r}")
+
+
 SYSTEM_ACTOR_KIND = "system_evidence"
 DETECTOR_AGENT = "routing_detector"
 
@@ -118,15 +131,21 @@ class DecisionStore:
 
     # -- reading ---------------------------------------------------------------
 
-    def active(self):
-        return active_decisions(ev_mod.load_decisions(self.conn))
+    def active(self, scope=None):
+        """The active decisions of one scope (B17, review R1: the scope is
+        named, never implied). SCOPE_RETENTION -- the retention and review
+        kinds the duplicate and pair model reads (Build 9 keeps metadata out
+        of it; the default, as in B16); SCOPE_METADATA -- the four metadata
+        kinds; SCOPE_ALL -- every row."""
+        return active_decisions(ev_mod.load_decisions(self.conn, metadata=_scope(scope)))
 
-    def active_for(self, target_kind, target_ref):
-        """One target's active decisions. B14: read for that target only (a
-        decision only ever supersedes the chain head on its own target, so
-        the target's rows alone say which of them still speak)."""
+    def active_for(self, target_kind, target_ref, scope=None):
+        """One target's active decisions of one scope. B14: read for that
+        target only (a decision only ever supersedes the chain head on its
+        own target, so the target's rows alone say which of them still speak)."""
         ref = str(target_ref)
-        return active_decisions(ev_mod.load_decisions(self.conn, "d.target_kind = ? AND d.target_ref = ?", (target_kind, ref)))
+        return active_decisions(ev_mod.load_decisions(self.conn, "d.target_kind = ? AND d.target_ref = ?", (target_kind, ref),
+                                                      metadata=_scope(scope)))
 
     def still_active(self, decision_ids):
         """(B14) Which of these decision ids still speak -- not withdrawn, not
@@ -223,7 +242,7 @@ class DecisionStore:
                    return_on_utc=None, detail=None, refers_to=None):
         event_kind(kind)
         return_kind(return_kind_)
-        if target_kind not in TARGET_KINDS:
+        if target_kind not in TARGET_KINDS + (METADATA_QUESTION,):
             raise ValueError(f"unknown target kind: {target_kind!r}")
         if refers_to is not None:
             row = self.conn.execute("SELECT review_event_id FROM p3_review_event WHERE review_event_id=?", (int(refers_to),)).fetchone()
@@ -251,6 +270,8 @@ class DecisionStore:
             raise ValueError("this content is not a current exact-duplicate group")
         if target_kind == VISUAL_PAIR and ev_mod.pair_of(self.conn, target_ref) is None:
             raise ValueError("no such visual candidate pair")
+        if target_kind == METADATA_QUESTION and not ev_mod.question_binding(self.conn, target_ref):
+            raise ValueError("no such metadata question")
 
         def work():
             op = self._operation("review", command_id, note)
@@ -414,8 +435,43 @@ class DecisionStore:
             qid = self._question_row(op, file_path_id, spec.key)
             binding = ev_mod.question_binding(self.conn, qid)
             decision_id, supersedes = self._decision_row(op, kind, METADATA_QUESTION, qid, value, binding, rationale)
+            # (B17) A decision ends an open deferral on the question, in the
+            # same operation: a deferral is "not deciding yet".
+            restored = [self._event_row(op, METADATA_QUESTION, qid, EVENT_RESTORED, RETURN_MANUAL, "decided", None, {}, e)
+                        for e in self._open_deferrals(METADATA_QUESTION, qid)]
             return {"decision_id": decision_id, "operation_id": op, "supersedes_decision_id": supersedes,
-                    "withdrawn": [], "question_id": qid}
+                    "withdrawn": [], "question_id": qid, "restored": restored}
+        return self._run(work)
+
+    def _open_deferrals(self, target_kind, target_ref):
+        """Deferred events on the target that no restore has ended yet."""
+        rows = self.conn.execute("SELECT review_event_id, event_kind, refers_to_review_event_id FROM p3_review_event "
+                                 "WHERE target_kind = ? AND target_ref = ? ORDER BY review_event_id",
+                                 (target_kind, str(target_ref))).fetchall()
+        open_ = []
+        for r in rows:
+            if r["event_kind"] == EVENT_DEFERRED:
+                open_ = [int(r["review_event_id"])]          # a new deferral replaces an open one
+            elif r["event_kind"] == EVENT_RESTORED:
+                ref = r["refers_to_review_event_id"]
+                open_ = [] if ref is None else [e for e in open_ if e != int(ref)]
+        return open_
+
+    def defer_metadata(self, file_path_id, semantic_field, disposition="defer_indefinitely", until=None, note=None,
+                       command_id=None):
+        """(B17) Defer one field of one file: the question named (created the
+        first time) and the deferral recorded in ONE operation -- deferring is
+        a person recording something, so it may name a question; looking never
+        does. Build 3's deferral: a date, or the evidence changing."""
+        spec = metadata_field(semantic_field)
+        if disposition not in DEFER_CHOICES[METADATA_QUESTION]:
+            raise ValueError(f"{DEFER_DISPOSITIONS.get(disposition, (None, disposition))[1]} does not apply to a metadata field")
+
+        def work():
+            op = self._operation("review", command_id, note)
+            qid = self._question_row(op, file_path_id, spec.key)
+            eid = self._deferral_row(op, METADATA_QUESTION, qid, disposition, until)
+            return {"review_event_id": eid, "operation_id": op, "question_id": qid}
         return self._run(work)
 
     def record_decisions(self, decisions, rationale=None, command_id=None, withdraw=()):

@@ -136,6 +136,11 @@ class PlanPage:
         self.detail_text = tk.Text(right, height=12, wrap="word", state="disabled", background="#fbfbfb", relief="flat",
                                    font=("Segoe UI", 9))
         self.detail_text.pack(fill="both", expand=False, pady=(6, 0))
+        # (B17) An Update Source Metadata item opens its file's Metadata page.
+        self.chosen_item = None
+        self.metadata_button = ttk.Button(right, text="Open this file's metadata", state="disabled",
+                                          command=self.open_metadata)
+        self.metadata_button.pack(anchor="w", pady=(4, 0))
         self.status_var = tk.StringVar(value="")
         ttk.Label(right, textvariable=self.status_var, foreground="#1f6244", wraplength=900, justify="left").pack(anchor="w", pady=(4, 0))
 
@@ -258,6 +263,11 @@ class PlanPage:
                                        + (" (the routing detector)" if e["actor_kind"] == "system_evidence" else "")
                                        for e in rev["events"]))
 
+    def open_metadata(self):
+        it = self.chosen_item
+        if it is not None and it.action_kind == ACTION_METADATA:
+            self.app.show_metadata_review(file_path_id=int(it.target_ref))
+
     def _item_chosen(self):
         sel = self.items_tree.selection()
         if not sel:
@@ -296,7 +306,11 @@ class PlanPage:
             lines.append("Declared for Phase 4's live check (not evaluated here): " + ", ".join(c.key for c in live))
         if it.postconditions:
             lines.append("Afterwards, Phase 4 must verify: " + ", ".join(it.postconditions))
+        for note in it.estimated_effect.get("notes") or []:
+            lines.append("Note: " + note)
         self._write(self.detail_text, "\n".join(lines))
+        self.metadata_button.configure(state="normal" if it.action_kind == ACTION_METADATA else "disabled")
+        self.chosen_item = it
 
     def _write(self, widget, text):
         widget.configure(state="normal")

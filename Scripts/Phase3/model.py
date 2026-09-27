@@ -193,12 +193,16 @@ class MetadataQuestion:
     location_id: str
     semantic_field: str
     observed_state: str = "unknown"             # registry.OBSERVED_STATES
+    path: str | None = None                     # B17: the file's full path, for a surface with no location model
     observed_value: Any = None                  # the value when 'known'
     observed_values: tuple = ()                 # every value seen, when 'conflicting'
     file_family: str = "other"
     capability: CapabilityRecord | None = None
     signed_or_certified: bool | None = None
     hardlinked: bool | None = None
+    encrypted: bool | None = None               # B17: encrypted or password-protected (R8 §34)
+    signature_state: str | None = None          # B17: the analyzer's word (signed, certified, ...)
+    integrity_na: tuple = ()                    # B17: integrity checks the evidence says do not apply (RTF as .doc)
     observation_id: str | None = None           # the location's observation the reading rests on
     analyzer_result_ids: tuple = ()             # the results it was read from (ids only)
     detail: str = ""
@@ -213,6 +217,7 @@ class MetadataEvidence:
     questions: dict = field(default_factory=dict)       # question_id -> MetadataQuestion
     decisions: list = field(default_factory=list)       # every metadata Decision row, withdrawn and superseded included
     capabilities: dict = field(default_factory=dict)    # (file_family, semantic_field) -> CapabilityRecord
+    events: list = field(default_factory=list)          # B17: review events on metadata questions (deferrals, restores)
 
 
 @dataclass(frozen=True)

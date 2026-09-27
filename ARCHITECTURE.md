@@ -1,11 +1,11 @@
-# Architecture — The File Organizer, B16 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B17 (Phases 1–2 shipped, Phase 3 in progress)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
 routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
-refresh, the Plan Builder, metadata) at the end say what B7 and B8–B16 added on top.
+refresh, the Plan Builder, metadata and its page) at the end say what B7 and B8–B17 added on top.
 
 ---
 
@@ -774,3 +774,30 @@ time) and records the decision in one operation. Its binding is ids only: the
 question, the location's observation, and the analyzer results the value came
 from. No row in the capability record says `supported`, so every metadata
 item is blocked.
+
+### The Metadata page and its evidence (B17, schema 15)
+
+```
+   PDFAnalysis 1.2.0 / OfficeAnalysis 1.4.0 --> analyzer_result.signature_state (015; promoted: two analyzers)
+        |   PDF: /FT /Sig with /V -> signed, /Perms /DocMDP -> certified, an embedded signed PDF -> signed,
+        |        empty placeholder -> unsigned; needs a password -> "password-protected document" (error)
+        |   Office: _xmlsignatures/ or the origin relationship -> signed; OLE2 _signatures /
+        |        \x05DigitalSignature / _xmlsignatures stream -> signed; RTF as .doc -> not_applicable
+   evidence._integrity_evidence  newest PDF / Office attempt on the current observation:
+        |   signed_or_certified (NULL -> unknown), encrypted (IsEncrypted; the password-protected wording;
+        |   an opened OOXML package -> false; legacy OLE2 -> unknown), not-applicable checks
+   metadata.integrity  signed | encrypted (new) | hard-linked -> plans' hard preconditions and blocked_by_evidence
+   metadata_view.py    the Metadata page: the queue (metadata.queue + evidence.conflicting_fields,
+        |              filters) and one file (evidence.file_metadata, metadata.file_review, the Plan
+        |              Builder's own metadata_items for the expected action); actions through
+        |              store.record_metadata_decision / defer_metadata / withdraw / restore
+```
+
+Metadata questions' review events (deferrals) are loaded apart from the
+retention model (`load_events(metadata=True)`), as their decisions are;
+`routing.py` does not see them. A decision on a deferred question ends the
+deferral in the same operation. The plan notes: S1 (a file in an
+exact-duplicate group would leave it) is an informational note in the
+item's estimated effect; S2 (a removal and a metadata update on the same
+location) is a warning precondition attached only to those two items, so a
+revision without metadata items is exactly Build 8's.

@@ -74,7 +74,7 @@ from .pairs import EQUIVALENT, RELATED, DIFFERENT
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT,
                        DISP_DECIDED, bulk_actions_for)
 from .review import store_for, run_detector, DeferDialog, BatchesDialog, human_bytes, CHECKED, UNCHECKED
-from .store import new_command_id
+from .store import new_command_id, SCOPE_RETENTION
 
 #: The extensions the image analyzer hashes (ImageHash.IMAGE_EXTENSIONS) --
 #: repeated here so this module does not import Pillow to know a name.
@@ -1222,7 +1222,7 @@ class SimilarImagesPage:
             if p is None or not p.decision_ids:
                 self.status_var.set("Nothing to undo.")
                 return
-            active = self.store.active_for(VISUAL_PAIR, p.pair_id)
+            active = self.store.active_for(VISUAL_PAIR, p.pair_id, SCOPE_RETENTION)
             if not active:
                 self.status_var.set("Nothing to undo.")
                 return

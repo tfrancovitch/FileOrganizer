@@ -118,9 +118,11 @@ def test_vocabulary():
     check("no hard-link replacement anywhere in the vocabulary (R7 §21: never a default)",
           not any("hardlink" in k or "link" in k for k in REG.ACTION_KINDS))
     check("R7 §37's twenty-two precondition keys, each with a class from R7 §15; one Build 8 addition (no_retaining_decision), "
-          "three Build 9 additions (writer_supported and the two integrity blockers)",
+          "three Build 9 additions (writer_supported and the two integrity blockers), two B17 additions (the encryption "
+          "blocker and the removal / metadata overlap warning)",
           set(R7_PRECONDITIONS) <= set(REG.PRECONDITIONS) and set(REG.PRECONDITIONS) - set(R7_PRECONDITIONS) == {
-              "no_retaining_decision", "writer_supported", "source_not_signed_or_certified", "source_not_hardlinked"}
+              "no_retaining_decision", "writer_supported", "source_not_signed_or_certified", "source_not_hardlinked",
+              "source_not_encrypted", "no_removal_metadata_overlap"}
           and set(REG.PRECONDITIONS.values()) <= set(REG.PRECONDITION_CLASSES))
     check("severities and results are R7 §16's", REG.SEVERITIES == ("hard", "warning", "informational")
           and REG.RESULTS == ("pass", "fail", "unknown", "not_applicable", "unsupported"))

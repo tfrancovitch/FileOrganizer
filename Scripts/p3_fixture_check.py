@@ -241,6 +241,11 @@ def load_fixture(db_path: Path) -> tuple[Evidence, dict, list]:
                 file_family=fam, capability=CapabilityRecord(fam, r["semantic_field"], status=r["writer_capability"]),
                 signed_or_certified=None if r["signed_or_certified"] is None else bool(r["signed_or_certified"]),
                 hardlinked=None if r["hardlinked"] is None else bool(r["hardlinked"]),
+                # The lab predates R8 §34's encryption blocker (B17): it has no
+                # encryption column, and its synthetic files are unencrypted by
+                # construction -- so they load as not encrypted, as the lab's
+                # own expected projections assume.
+                encrypted=bool(r["encrypted"]) if "encrypted" in r.keys() and r["encrypted"] is not None else False,
                 observation_id=loc.observation_id)
         md_decisions = [d for d in decisions if d.kind in METADATA_DECISION_KINDS]
         decisions = [d for d in decisions if d.kind not in METADATA_DECISION_KINDS]

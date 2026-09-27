@@ -365,6 +365,7 @@ def build(ev: Evidence, proj, routing) -> PlanDraft:
     # fingerprints exactly as Build 8's did. Project metadata and Leave
     # unchanged propose no source action and are never items (counted only).
     items.extend(metadata_items(ev, len(items) + 1))
+    _metadata_notes(items, ev)
     left = sum(1 for d in MD.current_decisions(MD.active_metadata(ev)).values() if d.kind == "leave_source_metadata_unchanged")
     project = sum(1 for d in MD.active_metadata(ev) if d.kind == "project_metadata_set")
     if left:
@@ -406,6 +407,38 @@ def metadata_items(ev: Evidence, first_no=1) -> list:
                                "file_family": q.file_family, "logical_bytes": 0}
         items.append(it)
     return items
+
+
+OVERLAP_KEY = "no_removal_metadata_overlap"
+
+
+def _metadata_notes(items, ev: Evidence):
+    """Two R8 consequences a person should see before locking (B17).
+
+    S1 (R8 §47): a metadata write changes the file's bytes, so a file in a
+    current exact-duplicate group would leave it. An informational note on
+    the item (in its estimated effect), never a precondition, never a block.
+
+    S2 (R8 §48): the same revision removes a location AND updates its
+    metadata. A WARNING on both items (warnings never block), naming the
+    other; neither is reordered or dropped. Attached only where it applies,
+    so a revision without metadata items is exactly Build 8's."""
+    removals = {it.target_ref: it for it in items if it.action_kind == ACTION_REMOVE}
+    for it in items:
+        if it.action_kind != ACTION_METADATA:
+            continue
+        loc = ev.locations.get(it.target_ref)
+        if loc is not None and loc.in_current_group and loc.content_id is not None:
+            it.estimated_effect.setdefault("notes", []).append(
+                f"If written, this file will leave exact-duplicate group {loc.content_id}.")
+        rm = removals.get(it.target_ref)
+        if rm is not None:
+            for mine, other, words in ((it, rm, "removes this location"), (rm, it, "updates this location's metadata")):
+                c = Precondition(OVERLAP_KEY, PRECONDITIONS[OVERLAP_KEY], "warning", STAGE_EVIDENCE,
+                                 {"other_item": other.item_no})
+                c.result, c.detail = "fail", (f"item {other.item_no} of this revision {words} -- a metadata update on a "
+                                              "location the plan removes (P3.R8 §48); neither item is reordered or dropped")
+                mine.preconditions.append(c)
 
 
 def _preview_metadata(it, ev, q, d):
@@ -649,7 +682,21 @@ def summarize(items, ev: Evidence, proj, excluded) -> dict:
         "source_roots_affected": sorted({ev.locations[t].root_key for t in removed if t in ev.locations}),
         "excluded": dict(excluded),
         "undecided_left": sum(len(g.undecided) for g in proj.groups if g.ready_for_plan),
+        **_note_counts(items),
     }
+
+
+def _note_counts(items):
+    """(B17) The S1 / S2 counts -- present only when non-zero, so a summary
+    without them reads exactly as before."""
+    leave = sum(1 for it in items if it.action_kind == ACTION_METADATA and it.estimated_effect.get("notes"))
+    overlap = sum(1 for it in items if it.action_kind == ACTION_METADATA and it.condition(OVERLAP_KEY) is not None)
+    out = {}
+    if leave:
+        out["metadata_leaves_group"] = leave
+    if overlap:
+        out["metadata_on_removed_location"] = overlap
+    return out
 
 
 def _bytes(n):
@@ -695,6 +742,12 @@ def summary_lines(s) -> list:
     if a.get(ACTION_METADATA):
         lines.append("Coverage: Update Source Metadata -- planned only: no certified source-metadata writer exists "
                      "(R10 §16), so every such item stays blocked; nothing is written in Phase 3.")
+    if s.get("metadata_leaves_group"):
+        lines.append(f"Note: {s['metadata_leaves_group']:,} metadata update(s) on files in exact-duplicate groups -- if "
+                     "written, each file leaves its group (P3.R8 §47).")
+    if s.get("metadata_on_removed_location"):
+        lines.append(f"Warning: {s['metadata_on_removed_location']:,} metadata update(s) on a location this plan also "
+                     "removes (P3.R8 §48); both items are kept and flagged.")
     lines.append(PREVIEW_DISCLOSURE)
     return lines
 

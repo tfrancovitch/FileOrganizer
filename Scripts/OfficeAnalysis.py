@@ -2,7 +2,7 @@
 """
 OfficeAnalysis.py
 Part of: The File Organizer
-Version: 1.3.1
+Version: 1.4.0
 
 Extracts document properties from Office files selected by the database-backed analyzer engine:
 title, author, created/modified dates, and a type-appropriate content
@@ -33,6 +33,13 @@ Every legacy-file row is explicitly tagged ExtractionMode=MetadataOnly
 (vs. Full for modern files) -- both in the CSV and in the report's type
 breakdown -- so it's clear at a glance why a .doc file has less data
 than a .docx sitting next to it, not something to wonder about later.
+
+1.4.0 (B17): whether the file carries a digital signature (SignatureState:
+signed | unsigned | not_applicable | unknown). A modern package is signed
+when it holds an _xmlsignatures/ part or a digital-signature origin
+relationship; a legacy OLE2 file when it holds a _signatures,
+\\x05DigitalSignature or _xmlsignatures stream. RTF saved as .doc has no
+signature scheme: not_applicable. Presence only -- never validated.
 
 Requires:
     pip install python-docx openpyxl python-pptx olefile
@@ -75,7 +82,13 @@ except ImportError:
 MODERN_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt"}
 EXTENSIONS = MODERN_EXTENSIONS | LEGACY_EXTENSIONS
-CHECKPOINT_FIELDS = ["Key", "OfficeType", "ExtractionMode", "Title", "Author", "Created", "Modified", "ContentCount", "Error"]
+CHECKPOINT_FIELDS = ["Key", "OfficeType", "ExtractionMode", "Title", "Author", "Created", "Modified", "ContentCount",
+                     "SignatureState", "Error"]
+
+#: What marks a signed file (B17), by container. Names only; nothing is verified.
+OOXML_SIGNATURE_PREFIX = "_xmlsignatures/"
+OOXML_SIGNATURE_ORIGIN = "http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin"
+OLE_SIGNATURE_STREAMS = {"_signatures", "\x05digitalsignature", "_xmlsignatures"}
 
 LEGACY_TYPE_LABELS = {".doc": "Word (legacy)", ".xls": "Excel (legacy)", ".ppt": "PowerPoint (legacy)"}
 
@@ -268,19 +281,58 @@ def _encrypted_package(path):
     return "encryptedpackage" in names and "encryptioninfo" in names
 
 
+def ooxml_signature_state(path):
+    """signed | unsigned | unknown for a readable .docx/.xlsx/.pptx package."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(to_long_path(path)) as z:
+            names = [n.replace("\\", "/").lower() for n in z.namelist()]
+            if any(n.startswith(OOXML_SIGNATURE_PREFIX) for n in names):
+                return "signed"
+            if "_rels/.rels" in names and OOXML_SIGNATURE_ORIGIN.encode() in z.read(
+                    next(n for n in z.namelist() if n.replace("\\", "/").lower() == "_rels/.rels")):
+                return "signed"
+        return "unsigned"
+    except Exception:                                           # noqa: BLE001
+        return "unknown"
+
+
+def ole_signature_state(path):
+    """signed | unsigned | not_applicable (RTF saved as .doc) | unknown."""
+    long_path = to_long_path(path)
+    try:
+        with open(long_path, "rb") as f:
+            header = f.read(8)
+        if header.startswith(b"{\\rtf"):
+            return "not_applicable"
+        if header != bytes.fromhex("d0cf11e0a1b11ae1"):
+            return "unknown"
+        ole = olefile.OleFileIO(long_path)
+        try:
+            names = {entry[-1].lower() for entry in ole.listdir(streams=True, storages=True)}
+        finally:
+            ole.close()
+        return "signed" if names & OLE_SIGNATURE_STREAMS else "unsigned"
+    except Exception:                                           # noqa: BLE001
+        return "unknown"
+
+
 def analyze_office(path):
     ext = Path(path).suffix.lower()
     if ext in MODERN_EXTENSIONS and _encrypted_package(path):
         raise ValueError("password-protected document (an encrypted Office package; no password is tried)")
     if ext == ".docx":
-        return analyze_docx(path)
+        result = analyze_docx(path)
     elif ext == ".xlsx":
-        return analyze_xlsx(path)
+        result = analyze_xlsx(path)
     elif ext == ".pptx":
-        return analyze_pptx(path)
+        result = analyze_pptx(path)
     elif ext in LEGACY_EXTENSIONS:
-        return analyze_legacy(path)
-    raise ValueError(f"Unsupported extension: {ext}")
+        result = analyze_legacy(path)
+    else:
+        raise ValueError(f"Unsupported extension: {ext}")
+    result["SignatureState"] = ooxml_signature_state(path) if ext in MODERN_EXTENSIONS else ole_signature_state(path)
+    return result
 
 
 def report_extra(results):

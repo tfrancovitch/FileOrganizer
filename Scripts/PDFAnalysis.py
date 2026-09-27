@@ -2,13 +2,20 @@
 """
 PDFAnalysis.py
 Part of: The File Organizer
-Version: 1.1.1
+Version: 1.2.0
 
 Extracts metadata from every PDF file selected by the database-backed analyzer engine: page count,
 encryption status, whether the first page has extractable text (a cheap
 signal for "scanned image PDF" vs. a real text document -- only the first
 page is checked, not the whole document, to stay fast at scale), and
 standard document properties (Title/Author/Producer/CreationDate).
+
+1.2.0 (B17): whether the document carries a digital signature
+(SignatureState: signed | certified | unsigned | unknown). Presence only --
+a signature is never validated, and nothing is written. A PDF that needs a
+password to open is reported as "password-protected document (an encrypted
+PDF; no password is tried)", the Office analyzer's own wording, instead of
+pypdf's "File has not been decrypted".
 
 Requires:
     pip install pypdf pdfplumber
@@ -40,17 +47,92 @@ except ImportError:                                            # pragma: no cove
 
 EXTENSIONS = {".pdf"}
 CHECKPOINT_FIELDS = ["Key", "PageCount", "IsEncrypted", "HasExtractableText",
-                      "Title", "Author", "Producer", "CreationDate", "Error"]
+                      "Title", "Author", "Producer", "CreationDate", "SignatureState", "Error"]
+
+
+def _resolve(obj):
+    return obj.get_object() if hasattr(obj, "get_object") else obj
+
+
+def signature_state(reader):
+    """signed | certified | unsigned | unknown, from the document catalog.
+
+    certified: the catalog's /Perms carries /DocMDP (an author signature that
+    certifies the document). signed: a signature field (/FT /Sig) whose value
+    /V is present. An empty signature field -- a placeholder waiting to be
+    signed -- is not a signature: unsigned. Presence only; never validated.
+
+    A PDF that EMBEDS a signed or certified PDF (a portfolio, or an
+    attachment) is reported as signed: the signature is present in the file,
+    and presence blocks (P3-A115). At most EMBEDDED_PDF_CAP embedded PDFs are
+    looked at; more, or one that cannot be read, is unknown."""
+    try:
+        root = _resolve(reader.trailer["/Root"])
+        perms = _resolve(root.get("/Perms")) if root.get("/Perms") is not None else None
+        if perms is not None and perms.get("/DocMDP") is not None:
+            return "certified"
+        form = _resolve(root.get("/AcroForm")) if root.get("/AcroForm") is not None else None
+        fields = list(_resolve(form.get("/Fields")) or []) if form is not None and form.get("/Fields") is not None else []
+        seen = 0
+        while fields and seen < 10000:
+            seen += 1
+            f = _resolve(fields.pop())
+            if f is None:
+                continue
+            if f.get("/FT") == "/Sig" and f.get("/V") is not None and _resolve(f.get("/V")) is not None:
+                return "signed"
+            kids = f.get("/Kids")
+            if kids is not None:
+                fields.extend(_resolve(kids) or [])
+        return _embedded_state(root, reader)
+    except Exception:                                           # noqa: BLE001
+        return "unknown"
+
+
+EMBEDDED_PDF_CAP = 20
+
+
+def _embedded_state(root, reader, depth=0):
+    """unsigned, or signed when an embedded PDF carries a signature (see
+    signature_state); unknown past the cap or when one cannot be read."""
+    import io
+    names = _resolve(root.get("/Names")) if root.get("/Names") is not None else None
+    if names is None or names.get("/EmbeddedFiles") is None or depth > 1:
+        return "unsigned"
+    seen, unknown = 0, False
+    for _name, datas in reader.attachments.items():
+        for data in datas:
+            if not data.startswith(b"%PDF-"):
+                continue
+            seen += 1
+            if seen > EMBEDDED_PDF_CAP:
+                return "unknown"
+            try:
+                inner = PdfReader(io.BytesIO(data))
+                state = signature_state(inner) if depth == 0 else "unsigned"
+            except Exception:                                   # noqa: BLE001
+                state = "unknown"
+            if state in ("signed", "certified"):
+                return "signed"
+            unknown = unknown or state == "unknown"
+    return "unknown" if unknown else "unsigned"
 
 
 def analyze_pdf(path):
     long_path = to_long_path(path)
     reader = PdfReader(long_path)
+    try:
+        page_count = len(reader.pages)
+    except Exception as exc:                                    # noqa: BLE001
+        if reader.is_encrypted and type(exc).__name__ == "FileNotDecryptedError":
+            raise ValueError("password-protected document (an encrypted PDF; no password is tried)")
+        raise
     result = {
-        "PageCount": str(len(reader.pages)),
+        "PageCount": str(page_count),
         "IsEncrypted": str(reader.is_encrypted),
         "HasExtractableText": "Unknown",
         "Title": "", "Author": "", "Producer": "", "CreationDate": "",
+        "SignatureState": signature_state(reader),
     }
 
     meta = reader.metadata
