@@ -730,7 +730,14 @@ class AnalyzerEngine(object):
                     # back at us. The failure is preserved exactly --
                     # same file, same wording, still an error -- only the
                     # path representation becomes the ordinary one.
-                    result.fields = {}
+                    #
+                    # B18: an analyzer may state what it established
+                    # before refusing the file (`evidence_fields` on the
+                    # exception -- the PDF and Office analyzers' encryption
+                    # state of a password-protected file). Those are the
+                    # analyzer's own findings, not invented ones; nothing
+                    # else survives an exception.
+                    result.fields = dict(getattr(exc, "evidence_fields", None) or {})
                     result.extra = None
                     # A library that raises with no message (pdfminer's
                     # PdfminerException on a password-protected PDF) has

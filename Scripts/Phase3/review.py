@@ -58,7 +58,7 @@ from . import routing as RT
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED,
                        bulk_actions_for, METADATA_QUESTION)
-from .store import DecisionStore, new_command_id, export_decision_journal, SCOPE_RETENTION
+from .store import DecisionStore, new_command_id, export_decision_journal, export_current_state, SCOPE_RETENTION
 
 STATUS_WORDS = {R.PROTECTED: "Protected", R.KEEPER: "Keeper", R.REDUNDANT: "Redundant candidate", R.UNDECIDED: "Undecided"}
 REVIEW_WORDS = {R.UNREVIEWED: "Unreviewed", R.IN_PROGRESS: "In progress", R.DEFERRED: "Deferred",
@@ -214,6 +214,7 @@ class ReviewPage:
         self.summary_var = tk.StringVar(value="")
         ttk.Label(tools, textvariable=self.summary_var, font=("Segoe UI", 9, "bold")).pack(side="left")
         ttk.Button(tools, text="Export journal...", command=self.export_journal).pack(side="right")
+        ttk.Button(tools, text="Export current state...", command=self.export_state).pack(side="right", padx=(0, 6))
         ttk.Button(tools, text="Batches...", command=self.open_batches).pack(side="right", padx=(6, 0))
         ttk.Button(tools, text="Policies...", command=self.open_policies).pack(side="right", padx=6)
         ttk.Label(tools, text="Show:").pack(side="right", padx=(0, 4))
@@ -923,6 +924,25 @@ class ReviewPage:
             return
         messagebox.showinfo("Export journal", f"{n:,} operation(s) written to\n{path}", parent=self.app)
 
+    def export_state(self, path=None):
+        """(B18, S3) What the decisions say NOW, one CSV row per fact with its
+        decision ids -- apart from the journal (the history)."""
+        if path is None:
+            exports = self.app.project_dir / "Exports"
+            exports.mkdir(exist_ok=True)
+            path = filedialog.asksaveasfilename(parent=self.app, title="Export current state", initialdir=str(exports),
+                                                initialfile="CurrentState.csv", defaultextension=".csv",
+                                                filetypes=[("CSV", "*.csv")])
+        if not path:
+            return None
+        try:
+            n = export_current_state(self.app.conn, path)
+        except Exception as exc:                                    # noqa: BLE001
+            messagebox.showerror("Export current state", str(exc), parent=self.app)
+            return None
+        messagebox.showinfo("Export current state", f"{n:,} row(s) written to\n{path}", parent=self.app)
+        return n
+
 
 # ---------------------------------------------------------------------------
 # Defer: a return trigger, chosen
@@ -1625,6 +1645,12 @@ class BatchesDialog:
                         "    ON fp.file_path_id IN (vc.a_file_path_id, vc.b_file_path_id) "
                         " WHERE vc.candidate_id = ? ORDER BY fp.file_path_id", (int(ref),)).fetchall()
                     self._labels[key] = (" ~ ".join(_file_name(r["relative_path"]) for r in rows) + f" (pair #{ref})") if rows else f"pair {ref}"
+                elif target_kind == METADATA_QUESTION:                  # B18: a Confirm batch's member
+                    r = self.app.conn.execute(
+                        "SELECT fp.relative_path, q.semantic_field FROM p3_metadata_question q JOIN file_path fp "
+                        "    ON fp.file_path_id = q.file_path_id WHERE q.question_id = ?", (int(ref),)).fetchone()
+                    self._labels[key] = (f"{_file_name(r['relative_path'])} -- {r['semantic_field']} (question #{ref})"
+                                         if r else f"question {ref}")
                 else:
                     r = self.app.conn.execute(
                         "SELECT fp.relative_path FROM p2_current_duplicate_member m JOIN file_path fp ON fp.file_path_id = m.file_path_id "

@@ -240,8 +240,8 @@ def test_project(tmp: Path):
             "SELECT ar.* FROM analyzer_result ar JOIN file_state fs ON fs.current_observation_id = ar.file_observation_id "
             " WHERE fs.file_path_id = ? ORDER BY ar.analyzer_result_id DESC LIMIT 1", (int(by[name]),)).fetchone()
     sig = {n: latest(n)["signature_state"] for n in by if latest(n) is not None}
-    check("schema 15: analyzer_result.signature_state is a column, written by both analyzers",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 15
+    check("schema 15 (or later): analyzer_result.signature_state is a column, written by both analyzers",
+          conn.execute("PRAGMA user_version").fetchone()[0] >= 15
           and "signature_state" in [r[1] for r in conn.execute("PRAGMA table_info(analyzer_result)")])
     check("PDF: a filled signature field -> signed; /Perms /DocMDP -> certified; an EMPTY placeholder -> unsigned; a plain "
           "PDF -> unsigned", (sig["filled_sig.pdf"], sig["certified.pdf"], sig["empty_sig.pdf"], sig["plain.pdf"]) ==

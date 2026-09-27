@@ -32,3 +32,16 @@ visual candidates, Phase 2 evidence) `012_visual_candidates.sql`, `013_phase3_pl
 product's metadata questions: `writer_capability` is the capability record's status, the
 signed and hard-linked flags the integrity evidence; its metadata decisions are kept apart
 from the retention model, as the product's loader keeps them.
+
+## fingerprint_vectors.json (B18)
+
+The golden test vectors of the plan fingerprint
+(`Docs\Specifications\PLAN_FINGERPRINT_SPEC.md`, payload schema
+`fileorganizer.p3.plan-payload/1`): nine fixed payloads -- an empty plan, a
+removal with every kind of precondition result, a non-ASCII path composed
+and decomposed (two hashes: strings are hashed as stored), an Update Source
+Metadata item, a blocked item, an unpaired surrogate, escaping and key order,
+two items -- each with its canonical UTF-8 bytes (hex) and SHA-256.
+`Scripts\p3_fingerprint_check.py` recomputes every one through the product's
+`plans.canonical` and through an independent encoder written from the
+specification alone. The file is ASCII; its JSON escapes are its own.

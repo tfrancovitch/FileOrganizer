@@ -28,7 +28,8 @@ if HERE not in sys.path:
 import fo_inventory  # noqa: E402  (path_key, RootResolver)
 
 #: B17: 15 -- results carry analyzer_result.signature_state (migration 015).
-REQUIRED_SCHEMA_VERSION = 15
+#: B18: 16 -- and analyzer_result.encryption_state (migration 016).
+REQUIRED_SCHEMA_VERSION = 16
 
 #: Rows prepared and written per transaction. Matches the R3/R4 value.
 BATCH_ROWS = 2000
@@ -123,7 +124,8 @@ ANALYZER_SPECS = [
         promoted={"title": ("Title", _text_or_none),
                   "author": ("Author", _text_or_none),
                   "content_created_reported": ("CreationDate", _text_or_none),
-                  "signature_state": ("SignatureState", _text_or_none)},
+                  "signature_state": ("SignatureState", _text_or_none),
+                  "encryption_state": ("EncryptionState", _text_or_none)},
         detail=["PageCount", "IsEncrypted", "HasExtractableText", "Producer"],
         script_name="PDFAnalysis.ps1", engine_name="PDFAnalysis.py"),
 
@@ -132,7 +134,8 @@ ANALYZER_SPECS = [
         promoted={"title": ("Title", _text_or_none),
                   "author": ("Author", _text_or_none),
                   "content_created_reported": ("Created", _text_or_none),
-                  "signature_state": ("SignatureState", _text_or_none)},
+                  "signature_state": ("SignatureState", _text_or_none),
+                  "encryption_state": ("EncryptionState", _text_or_none)},
         detail=["OfficeType", "ExtractionMode", "Modified", "ContentCount"],
         script_name="OfficeAnalysis.ps1", engine_name="OfficeAnalysis.py"),
 
@@ -498,7 +501,7 @@ class AnalyzerPersistenceBase(object):
             }
             for column in ("title", "author", "content_created_reported",
                            "width_px", "height_px", "duration_seconds",
-                           "word_count", "char_count", "signature_state"):
+                           "word_count", "char_count", "signature_state", "encryption_state"):
                 entry[column] = None
 
             if observation is None:
@@ -566,14 +569,14 @@ class AnalyzerPersistenceBase(object):
             "  project_id, analyzer_run_id, file_observation_id, content_id, status,"
             "  legacy_db_id, unmatched_path, title, author, content_created_reported,"
             "  width_px, height_px, duration_seconds, word_count, char_count,"
-            "  detail_json, analyzed_utc, source_artifact, error_kind, error_message, signature_state"
-            ") VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  detail_json, analyzed_utc, source_artifact, error_kind, error_message, signature_state, encryption_state"
+            ") VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(analyzer_run_id, e["file_observation_id"], e["content_id"], e["status"],
               e["legacy_db_id"], e["unmatched_path"], e["title"], e["author"],
               e["content_created_reported"], e["width_px"], e["height_px"],
               e["duration_seconds"], e["word_count"], e["char_count"],
               e["detail_json"], e["analyzed_utc"], e["source_artifact"],
-              e["error_kind"], e["error_message"], e["signature_state"]) for e in prepared])
+              e["error_kind"], e["error_message"], e["signature_state"], e["encryption_state"]) for e in prepared])
 
     def _result_ids_by_path(self, analyzer_run_id, prepared_paths):
         r"""absolute path -> analyzer_result_id, in ONE query.

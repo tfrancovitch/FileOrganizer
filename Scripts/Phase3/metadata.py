@@ -86,6 +86,11 @@ def observe(results, semantic_field, capability, present=True, cloud_only=False,
     for r in sorted(current, key=lambda r: int(r[0])):
         latest[r[1]] = r
     ids = tuple(str(r[0]) for r in sorted(latest.values(), key=lambda r: int(r[0])))
+    if not present and current_observation_id is not None:
+        # (B18) A file the last scan did not find keeps its old readings on its
+        # last observation; they describe a file that is not there. Its value
+        # is unavailable -- a value-state change, so a decision on it returns.
+        return OBS_UNAVAILABLE, None, (), ids, "not present at the last scan"
     if not latest:
         if not present:
             return OBS_UNAVAILABLE, None, (), (), "not present at the last scan"
@@ -96,7 +101,10 @@ def observe(results, semantic_field, capability, present=True, cloud_only=False,
         if capability.read_support != "phase2_analyzer":
             return OBS_UNSUPPORTED, None, (), (), "no analyzer reads this field for this kind of file"
         return OBS_UNKNOWN, None, (), (), "not analyzed yet"
-    analyzed = [r for r in latest.values() if r[3] == "analyzed"]
+    # (B18) In the order of the readings themselves (newest attempt's id), not
+    # of which older rows happened to be read first: a conflict lists its values
+    # the same way however much history is loaded.
+    analyzed = [r for r in sorted(latest.values(), key=lambda r: int(r[0])) if r[3] == "analyzed"]
     if not analyzed:
         statuses = sorted({r[3] for r in latest.values()})
         if statuses == ["skipped_cloud_only"]:
@@ -216,30 +224,74 @@ def current_decisions(active) -> dict:
 
 
 def question_drift(q: MetadataQuestion, decision) -> tuple:
-    """What materially changed since the decision was recorded (R8 §53): the
-    file observed again, re-read by an analyzer, or gone. Empty: nothing.
-    A decision recorded without a binding (the fixture lab's) has nothing to
-    compare and never drifts."""
+    """What materially changed since the decision was recorded (R8 §53; see
+    binding_drift). Empty: nothing. A decision recorded without a binding
+    (the fixture lab's) has nothing to compare and never drifts."""
     return binding_drift(q, (decision.binding if decision is not None else None) or {})
 
 
+def value_key(values) -> tuple:
+    """The observed value(s) as compared: stripped, distinct, order-free."""
+    out = set()
+    for v in values or ():
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                continue
+        elif v is None:
+            continue
+        out.add(v if isinstance(v, str) else repr(v))
+    return tuple(sorted(out))
+
+
+def _shown(values):
+    vals = value_key(values)
+    return " / ".join(repr(v) for v in vals) if vals else "no value"
+
+
 def binding_drift(q: MetadataQuestion, b) -> tuple:
-    """(B17) question_drift against a binding itself -- a decision's, or the
-    one a deferral 'until the evidence changes' recorded."""
+    """(B17; narrowed in B18) What materially changed since a binding was
+    recorded -- a decision's, or the one a deferral 'until the evidence
+    changes' recorded. Judged by WHAT changed, never by a newer row existing:
+
+      1. the file's content identity changed -- a new observation (Phase 1/2
+         write one only when the file's size or times changed), unless both
+         sides carry the same authoritative content hash; or the file is no
+         longer in the current evidence;
+      2. the observed value of the field changed;
+      3. the field's value-state changed (known -> conflicting, -> unavailable...).
+
+    NOT material: a new analyzer row with the same value and state, an
+    analyzer version change, a rescan that finds the file unchanged, or a
+    change in integrity evidence (signature, encryption, hard link -- those
+    re-check plans, see plans._metadata_obsolescence, never the decision).
+
+    A B18 binding carries the value(s) it was decided on; a B16 / B17 one
+    carries analyzer-result ids, resolved to values at load
+    (evidence.resolve_bound_values). One whose ids could not be resolved
+    falls back to comparing ids, B17's rule -- conservative, never silent."""
     b = b or {}
     if not b:
         return ()
     out = []
     bound_obs = b.get("observation_id")
-    if bound_obs is not None and q.observation_id is not None and str(bound_obs) != str(q.observation_id):
-        out.append(f"observed again since (observation {bound_obs} -> {q.observation_id})")
-    elif bound_obs is not None and q.observation_id is None:
+    if bound_obs is not None and q.observation_id is None:
         out.append("no longer in the current evidence")
-    bound_ids = tuple(str(x) for x in (b.get("analyzer_result_ids") or ()))
-    if not out and bound_ids != tuple(q.analyzer_result_ids):
-        out.append("read again by an analyzer since")
+    elif bound_obs is not None and str(bound_obs) != str(q.observation_id):
+        bound_content = b.get("content_id")
+        if bound_content is None or q.content_id is None or str(bound_content) != str(q.content_id):
+            out.append(f"the file changed since (observation {bound_obs} -> {q.observation_id})")
     if not out and b.get("observed_state") and b.get("observed_state") != q.observed_state:
         out.append(f"its observed state changed ({b.get('observed_state')} -> {q.observed_state})")
+    if not out:
+        bound = b.get("observed_values") if "observed_values" in b else b.get("resolved_values")
+        if bound is not None:
+            if value_key(bound) != value_key(q.observed_values):
+                out.append(f"its observed value changed ({_shown(bound)} -> {_shown(q.observed_values)})")
+        elif "analyzer_result_ids" in b:
+            if tuple(str(x) for x in (b.get("analyzer_result_ids") or ())) != tuple(q.analyzer_result_ids):
+                out.append("read again by an analyzer since, and the reading it was decided on is no longer in "
+                           "the database to compare values")
     return tuple(out)
 
 
@@ -334,11 +386,13 @@ def _row(q, d, events, now, path=None):
         state = CLEAR_REQUESTED
     else:
         state = DESIRED
+    integ = integrity(q)
     return QuestionReview(
         q.question_id, q.location_id, path or q.path, q.semantic_field,
         spec.label if spec else q.semantic_field, spec.value_type if spec else "text",
         q.observed_state, q.observed_value, q.observed_values, cap.status, cap.read_support, cap.write_support,
-        integrity_blocks(q), [k for k, (r, _d) in integrity(q).items() if r == "unknown"], writer_check(q)[0],
+        [blocked_reason(k, r) for k, (r, _d) in integ.items() if r == "fail"],
+        [k for k, (r, _d) in integ.items() if r == "unknown"], writer_check(q)[0],
         d.decision_id if d else None, d.kind if d else None,
         d.value if d is not None and d.kind == "desired_source_metadata_set" else None, state, drift,
         deferral=deferral, returned=deferral is not None and fired, file_family=q.file_family)

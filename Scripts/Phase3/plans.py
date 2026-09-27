@@ -69,6 +69,9 @@ from .registry import (LOCATION, GROUP, VISUAL_PAIR, ACTION_REMOVE, ACTION_MOVE,
 from . import EVIDENCE_BINDING_SCHEMA
 
 PLAN_PAYLOAD_SCHEMA = "fileorganizer.p3.plan-payload/1"
+#: (B18, S4) The Evidence Preview's contract version (what _preview_* and
+#: _settle evaluate), recorded in every revision's basis.
+EVALUATOR_VERSION = "fileorganizer.p3.plan-evaluator/1"
 
 
 @dataclass
@@ -773,12 +776,71 @@ def payload(items) -> dict:
     return {"schema": PLAN_PAYLOAD_SCHEMA, "items": out}
 
 
+#: (B18) The canonical encoding of a plan payload, written down in
+#: Docs\Specifications\PLAN_FINGERPRINT_SPEC.md (with golden test vectors in
+#: Resources\Phase3\fingerprint_vectors.json, checked by p3_fingerprint_check):
+#:   JSON; object keys sorted by code point, and every key a string; no
+#:   whitespace (separators "," and ":"); strings as stored -- no Unicode
+#:   normalization -- written as UTF-8 without \u escapes except the ones JSON
+#:   requires (control characters, '"', '\'); an unpaired surrogate (a Windows
+#:   name that is not valid UTF-16) as its three-byte generalized-UTF-8 form;
+#:   integers in decimal; true / false / null; a finite float in its shortest
+#:   round-trip form, NaN and the infinities refused; tuples as arrays.
+#:   Nothing else is accepted: B15-B17's `default=str` would have written any
+#:   other type through Python's str(). The audit (p3_fingerprint_check) shows
+#:   no payload ever held one, so every existing fingerprint is unchanged and
+#:   the payload schema stays fileorganizer.p3.plan-payload/1. From here on,
+#:   any change to this encoding bumps PLAN_PAYLOAD_SCHEMA.
+_JSON_SCALARS = (str, int, bool, type(None))
+
+
+def plain(obj, where="payload"):
+    """The payload as JSON-native values, explicitly: anything the encoding
+    does not name is refused (TypeError), never converted by str()."""
+    if isinstance(obj, _JSON_SCALARS):
+        return obj
+    if isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            raise TypeError(f"{where}: NaN and the infinities have no canonical encoding")
+        return obj
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if not isinstance(k, str):
+                raise TypeError(f"{where}: object key {k!r} is not a string")
+            out[k] = plain(v, f"{where}.{k}")
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [plain(v, f"{where}[{i}]") for i, v in enumerate(obj)]
+    raise TypeError(f"{where}: {type(obj).__name__} has no canonical encoding (plan payload /1 is JSON-native only)")
+
+
 def canonical(obj) -> bytes:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
+    return json.dumps(plain(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).encode("utf-8", "surrogatepass")
 
 
 def fingerprint(items) -> str:
     return hashlib.sha256(canonical(payload(items))).hexdigest()
+
+
+#: The canonical form each payload schema was locked under -- verification
+#: uses the schema RECORDED with the revision (basis "payload_schema", B18),
+#: never assumed to be the current one. A revision locked before B18 records
+#: none: it is /1, whose encoding for every value it can hold is `canonical`.
+CANONICAL_BY_SCHEMA = {"fileorganizer.p3.plan-payload/1": canonical}
+
+
+def verify(items, fingerprint_, payload_schema=None) -> bool:
+    """Does this frozen item set still hash to the fingerprint it was locked
+    with, under the payload schema it was locked under?"""
+    schema = payload_schema or "fileorganizer.p3.plan-payload/1"
+    enc = CANONICAL_BY_SCHEMA.get(schema)
+    if enc is None:
+        raise ValueError(f"unknown plan payload schema: {schema}")
+    body = payload(items)
+    body["schema"] = schema
+    return hashlib.sha256(enc(body)).hexdigest() == fingerprint_
 
 
 def acyclic(items) -> bool:
@@ -883,9 +945,16 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
 
 
 def _metadata_obsolescence(it, ev: Evidence, add):
-    """A metadata item's own dependencies (Build 9): its file observed again
-    or re-read, its question gone, the capability record or the integrity
-    evidence no longer what the preview found."""
+    """A metadata item's own dependencies (Build 9): its question gone, its
+    file observed again or gone, the capability record or the integrity
+    evidence no longer what the preview found.
+
+    B18 -- judged by what changed, never by a newer row: a re-read that finds
+    the same value and value-state changes no previewed input, so it no
+    longer obsoletes the revision (B16 / B17 compared analyzer-result ids).
+    The previewed value and state are the item's own estimated effect, as
+    frozen; an item without them falls back to the ids. A change in any
+    previewed input still obsoletes it -- integrity evidence included."""
     b = it.evidence_binding or {}
     qb = b.get("question") or {}
     src = dict(it.sources).get(METADATA_QUESTION)
@@ -894,8 +963,19 @@ def _metadata_obsolescence(it, ev: Evidence, add):
         add("evidence_changed", f"item {it.item_no}: metadata question #{src} is no longer in the evidence")
         return
     drift = RT.binding_drift(ev, LOCATION, it.target_ref, {k: v for k, v in b.items() if k not in ("source", "question")})
-    if not drift and qb and tuple(str(x) for x in qb.get("analyzer_result_ids") or ()) != tuple(q.analyzer_result_ids):
+    was = it.estimated_effect or {}
+    if not drift and was.get("observed_state") is not None and was.get("observed_state") != q.observed_state:
+        drift = (f"{_name(ev, it.target_ref)}: {q.semantic_field}'s observed state changed "
+                 f"({was.get('observed_state')} -> {q.observed_state})",)
+    if not drift and "observed_values" in was and MD.value_key(was.get("observed_values")) != MD.value_key(q.observed_values):
+        drift = (f"{_name(ev, it.target_ref)}: {q.semantic_field}'s observed value changed",)
+    if not drift and "observed_values" not in was and qb \
+            and tuple(str(x) for x in qb.get("analyzer_result_ids") or ()) != tuple(q.analyzer_result_ids):
         drift = (f"{_name(ev, it.target_ref)}: {q.semantic_field} read again by an analyzer since",)
+    local = it.condition("source_local_if_required")
+    loc = ev.locations.get(str(it.target_ref))
+    if not drift and local is not None and loc is not None and local.result != ("fail" if loc.cloud_only else "pass"):
+        drift = (f"{_name(ev, it.target_ref)}: {'now' if loc.cloud_only else 'no longer'} cloud-only",)
     if drift:
         add("evidence_changed", f"item {it.item_no}: " + "; ".join(drift[:3]))
     was = it.condition("writer_supported")

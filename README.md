@@ -8,10 +8,32 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B17 changes a file either — not even the plan B15 builds, or
+a later phase; nothing in B8–B18 changes a file either — not even the plan B15 builds, or
 the metadata you ask for on the Metadata page.
 
 ---
+
+## B18 — Phase 3: the closeout round
+
+- **Re-analysing your files no longer sends your metadata decisions back for
+  review.** A decision returns to the Metadata queue only when what you
+  decided about changed: the file's content, the field's value, or whether it
+  can be read. When several do need another look, the queue's **Confirm...**
+  re-records the same decisions on the evidence as it is now, in one batch you
+  can undo.
+- The **Analyze** stage now records whether a PDF or an Office document is
+  **encrypted**, including old `.doc`, `.xls` and `.ppt` files (read from
+  their headers only). An encrypted file is blocked from any metadata write.
+- The **Decide** page can **Export current state...**: a spreadsheet of what
+  your decisions say now, each line with the decisions it rests on.
+- A plan's fingerprint is now written down exactly
+  (`Docs\Specifications\PLAN_FINGERPRINT_SPEC.md`), so the phase that acts on
+  a plan can check it without this program's code.
+
+Still nothing changes a file. `CHANGELOG-B18.md` has the detail;
+`PHASE3_B18_HANDBACK.md` reports against the B18 handoff;
+`Docs\Handoffs\P3_CLOSEOUT.md` is the Phase 3 closeout assessment (a draft for
+your decision).
 
 ## B17 — Phase 3: the Metadata page
 

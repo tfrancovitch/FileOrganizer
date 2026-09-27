@@ -36,6 +36,7 @@ random sessions, and so did the acceptance run on the real collection.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 from Phase2.core import utc_now
@@ -146,6 +147,90 @@ def full(conn, ev, proj, routing, now=None):
     before = {p.pair_id: p for p in proj.pairs}
     proj.pairs = PR.resolve_pairs(ev, R._index_decisions(active), active, previous=before)
     routing.pairs, routing.pair_counts = RT.route_pairs(ev, proj.pairs, ev.now, previous=routing.pairs)
+
+
+# -- B18: the Metadata Review queue's in-session cache --------------------------------------
+#
+# The same two facts, for the metadata slice: the record only grows, so what
+# changed since the page last read it lies above the watermarks (plus the
+# newest metadata question); and the evidence -- the observations, the
+# analyzer results, the capability record -- is one more mark. A change of
+# the evidence reloads the slice in full; a change of the record alone is
+# caught up by reading only what lies above the marks. The cache is
+# REBUILDABLE AND NEVER AUTHORITATIVE (S9): every write goes to the database
+# through the store; the cache is only ever read for display, `reset` drops
+# it, and a fresh load is always correct. `p3_revalidation_check` compares it
+# with a fresh load after every step of random sessions.
+
+def metadata_marks(conn) -> dict:
+    """The record watermarks, the newest question, and the metadata evidence
+    mark (evidence_mark + the newest analyzer result + the capability record).
+    Taken BEFORE a load, like `marks`."""
+    m = E.record_marks(conn)
+    m["question"] = int(conn.execute("SELECT COALESCE(MAX(question_id), 0) FROM p3_metadata_question").fetchone()[0] or 0)
+    caps = conn.execute("SELECT COUNT(*), COALESCE(group_concat(file_family || ':' || semantic_field || ':' || status || ':' "
+                        "|| read_support || ':' || write_support, '|'), '') FROM p3_metadata_capability").fetchone()
+    m["evidence"] = f"{E.metadata_mark(conn)}; capability {caps[0]}:{hashlib.sha1(caps[1].encode()).hexdigest()[:12]}"
+    return m
+
+
+class MetadataCache:
+    """The Metadata Review queue's slice (evidence.load_metadata) and the
+    surfaced conflicts (evidence.conflicting_fields), kept for the session.
+    `load(conn)` returns (md, conflicts) as a fresh load would, reading as
+    little as the watermarks allow. `last` says what the last load did:
+    'full', 'hit' or 'catch_up'."""
+
+    def __init__(self):
+        self.md = self.conflicts = self.marks = None
+        self.last = None
+
+    def reset(self):
+        self.md = self.conflicts = self.marks = None
+
+    def load(self, conn):
+        now = metadata_marks(conn)
+        was = self.marks
+        if (self.md is None or was is None or now["evidence"] != was["evidence"]
+                or any(now[k] < was[k] for k in ("decision", "withdrawal", "event", "question"))):
+            self.md, self.conflicts = E.load_metadata(conn), E.conflicting_fields(conn)
+            self.marks, self.last = now, "full"
+            return self.md, self.conflicts
+        if all(now[k] == was[k] for k in ("decision", "withdrawal", "event", "question")):
+            self.marks, self.last = now, "hit"
+            return self.md, self.conflicts
+        md = self.md
+        if now["question"] > was["question"]:
+            ids = [r[0] for r in conn.execute("SELECT question_id FROM p3_metadata_question WHERE question_id > ? AND "
+                                              "question_id <= ?", (was["question"], now["question"]))]
+            md.questions.update(E.load_metadata(conn, ids).questions)
+            asked = {(q.location_id, q.semantic_field) for q in md.questions.values()}
+            self.conflicts = [q for q in self.conflicts if (q.location_id, q.semantic_field) not in asked]
+        new = E.load_decisions(conn, "d.decision_id > ? AND d.decision_id <= ?", (was["decision"], now["decision"]),
+                               metadata=True)
+        held = {d.decision_id for d in md.decisions}
+        added = [d for d in new if d.decision_id not in held]
+        gone = {did for wid, did in E.withdrawals_after(conn, was["withdrawal"], metadata=True) if wid <= now["withdrawal"]}
+        md.decisions = [replace(d, withdrawn=True) if d.decision_id in gone and not d.withdrawn else d
+                        for d in md.decisions] + added
+        events = [e for e in E.load_events(conn, after=was["event"], metadata=True) if int(e.review_event_id) <= now["event"]]
+        held_e = {e.review_event_id for e in md.events}
+        events = [e for e in events if e.review_event_id not in held_e]
+        E.resolve_bound_values(conn, added, events)
+        md.events = md.events + events
+        self.marks, self.last = now, "catch_up"
+        return md, self.conflicts
+
+
+def metadata_fingerprint(md, conflicts) -> dict:
+    """The metadata slice in comparable form (the cache's equivalence test)."""
+    return {
+        "questions": sorted((qid, repr(q)) for qid, q in md.questions.items()),
+        "decisions": sorted(_decision_key(d) for d in md.decisions),
+        "events": sorted((e.review_event_id, e.target_kind, e.target_ref, e.kind, e.return_kind, e.refers_to,
+                          repr(sorted((e.detail or {}).items()))) for e in md.events),
+        "conflicts": sorted((q.location_id, q.semantic_field, q.observed_state, repr(q.observed_values)) for q in conflicts),
+    }
 
 
 def _decision_key(d: Decision):

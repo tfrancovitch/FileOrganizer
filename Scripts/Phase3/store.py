@@ -47,6 +47,12 @@ Build 6 commits batches over visual candidate pairs through the same
 comparison of the image hashes and the newest observation), and the commit
 refuses when the evidence moved since -- a re-analysis or a scan adds no
 operation, so the record guard alone would not see it.
+
+B18 adds bulk Confirm on the Metadata queue (member kind metadata_question):
+the same commit, judged on the metadata evidence mark (the newest analyzer
+result too); its Undo re-applies, per question, the decision the Confirm
+superseded -- same kind, value and original binding -- so undoing puts the
+question back exactly where it was (needs revalidation), never undecided.
 """
 from __future__ import annotations
 
@@ -67,7 +73,7 @@ from .registry import (decision_kind, policy_kind, event_kind, return_kind, orig
                        DISP_DECIDED, MODE_PRESERVE)
 from .resolve import _policy_covers
 from .registry import action_kind, PLAN_EVENT_KINDS, LINK_JUSTIFIES, LINK_RETAINS
-from .registry import METADATA_QUESTION, METADATA_DECISION_KINDS, metadata_field, validate_field_value
+from .registry import METADATA_QUESTION, METADATA_DECISION_KINDS, METADATA_CONFIRM, metadata_field, validate_field_value
 
 #: Which decision kinds a read covers (B17, review R1), as
 #: evidence.load_decisions(metadata=...) takes it.
@@ -619,7 +625,8 @@ class DecisionStore:
             # since Build 6, groups since Build 7 -- one check for every target
             # kind). A scan, a re-hash or a re-analysis adds no operation, so
             # the record guard alone would not see it; the evidence mark does.
-            now_evidence = ev_mod.evidence_mark(self.conn)
+            now_evidence = (ev_mod.metadata_mark(self.conn) if spec.member_kind == METADATA_QUESTION
+                            else ev_mod.evidence_mark(self.conn))
             if now_evidence != preview.evidence_mark:
                 raise ValueError("the evidence changed since this preview was made (a scan, a re-hash or a re-analysis: "
                                  f"{preview.evidence_mark} -> {now_evidence}); preview again")
@@ -768,16 +775,39 @@ class DecisionStore:
         if not active and not open_events:
             raise ValueError("nothing from this batch is still in force")
         why = reason or f"batch #{int(batch_id)} undone"
+        # (B18) A Confirm superseded each question's decision with the same
+        # one on fresh evidence; withdrawing the Confirm alone would leave the
+        # question undecided (a withdrawal never revives -- Build 1's rule).
+        # So its Undo re-applies the superseded decision as it was recorded:
+        # same kind, same value, its ORIGINAL binding (F09's re-application).
+        reapply = self._confirm_originals(active) if b["action"] == METADATA_CONFIRM else []
 
         def work():
             op = self._operation("bulk_undo", command_id, why)
             for did in active:
                 self._withdraw_row(did, op, why)
+            for kind, tk, ref, value, binding in reapply:
+                self._decision_row(op, kind, tk, ref, value, binding, why)
             for e in open_events:
                 self._event_row(op, e["target_kind"], e["target_ref"], EVENT_RESTORED, RETURN_MANUAL, why, None, {},
                                 e["review_event_id"])
-            return {"batch_id": int(batch_id), "operation_id": op, "withdrawn": len(active), "restored": len(open_events)}
+            return {"batch_id": int(batch_id), "operation_id": op, "withdrawn": len(active), "restored": len(open_events),
+                    "reapplied": len(reapply)}
         return self._run(work)
+
+    def _confirm_originals(self, decision_ids):
+        """The decisions these Confirm rows superseded, as (kind, target_kind,
+        target_ref, value, binding) -- what an Undo re-applies."""
+        out = []
+        for did in decision_ids:
+            row = self.conn.execute(
+                "SELECT o.decision_kind, o.target_kind, o.target_ref, o.value_json, o.evidence_binding_json "
+                "  FROM p3_decision c JOIN p3_decision o ON o.decision_id = c.supersedes_decision_id "
+                " WHERE c.decision_id = ?", (int(did),)).fetchone()
+            if row is not None:
+                out.append((row["decision_kind"], row["target_kind"], row["target_ref"], json.loads(row["value_json"]),
+                            json.loads(row["evidence_binding_json"] or "{}")))
+        return out
 
     # -- policies --------------------------------------------------------------
 
@@ -904,8 +934,18 @@ class DecisionStore:
                 "ORDER BY revision_no DESC", (int(pid),)).fetchall()
             revision_no = (int(prev[0]["revision_no"]) + 1) if prev else 1
             record, evidence = self._marks()
+            # B18 (S4): the versions that make the projection reproducible, beside
+            # routing_version -- the registry (version and a digest of its
+            # vocabulary), the resolver, the plan evaluator, the payload schema
+            # the fingerprint is computed under -- and the newest analyzer result,
+            # which the lock guard compares too (a re-analysis between preview and
+            # lock moves metadata evidence that evidence_mark does not see).
+            from . import resolve as RS
+            from .registry import REGISTRY_VERSION, registry_digest
             basis = {"record_mark": record, "evidence_mark": evidence, "routing_version": RT.ROUTING_VERSION,
-                     "built_utc": utc_now()}
+                     "built_utc": utc_now(), "registry_version": REGISTRY_VERSION, "registry_digest": registry_digest(),
+                     "resolver_version": RS.RESOLVER_VERSION, "evaluator_version": PL.EVALUATOR_VERSION,
+                     "payload_schema": PL.PLAN_PAYLOAD_SCHEMA, "analyzer_mark": ev_mod.analyzer_mark(self.conn)}
             rid = int(self.conn.execute(
                 "INSERT INTO p3_plan_revision(plan_id, revision_no, operation_id, status, locked, obsolete, "
                 "supersedes_plan_revision_id, basis_json, summary_json) VALUES(?,?,?,?,0,0,?,?,?)",
@@ -1045,6 +1085,11 @@ class DecisionStore:
         if record != rev["basis"].get("record_mark") or evidence != rev["basis"].get("evidence_mark"):
             raise ValueError("the decision record or the evidence changed since this revision was previewed "
                              f"(operations {rev['basis'].get('record_mark')} -> {record}); build a new revision")
+        if "analyzer_mark" in rev["basis"] and rev["basis"]["analyzer_mark"] != ev_mod.analyzer_mark(self.conn):
+            raise ValueError("the files were analyzed again since this revision was previewed; build a new revision")
+        schema = rev["basis"].get("payload_schema") or PL.PLAN_PAYLOAD_SCHEMA
+        if schema != PL.PLAN_PAYLOAD_SCHEMA:
+            raise ValueError(f"this revision was previewed under payload schema {schema}; build a new revision")
         fp = PL.fingerprint(items)
         deps = {"decisions": sorted({d for it in items for d in it.decision_ids + it.retaining_ids}, key=PL._id_order),
                 "policy_versions": sorted({p for it in items for p in it.policy_version_ids}, key=PL._id_order),
@@ -1058,6 +1103,45 @@ class DecisionStore:
             self._plan_event(revision_id, op, "locked", {"fingerprint": fp, "dependencies": deps})
             return {"plan_revision_id": int(revision_id), "fingerprint": fp, "operation_id": op}
         return self._run(work)
+
+    #: (B18, S6) p3_plan_revision.status / locked / obsolete are a CACHE of the
+    #: revision's p3_plan_event rows (written beside them, in the same
+    #: operation); the events are the record. The status is the newest
+    #: status-setting event's word; locked / obsolete say whether such an
+    #: event exists at all.
+    _EVENT_STATUS = {"previewed": "previewed", "superseded": "superseded", "locked": "locked", "obsolete": "obsolete",
+                     "archived": "archived"}
+
+    def plan_status_from_events(self):
+        """{revision_id: (status, locked, obsolete)} rebuilt from p3_plan_event
+        alone -- what the cached columns must equal."""
+        out = {}
+        for rid, kind in self.conn.execute("SELECT plan_revision_id, event_kind FROM p3_plan_event ORDER BY plan_event_id"):
+            status, locked, obsolete = out.get(int(rid), ("draft", 0, 0))
+            out[int(rid)] = (self._EVENT_STATUS.get(kind, status), int(bool(locked) or kind == "locked"),
+                             int(bool(obsolete) or kind == "obsolete"))
+        return out
+
+    def plan_status_drift(self):
+        """Revisions whose cached columns disagree with their events:
+        [(id, cached, rebuilt)]; empty when the cache holds."""
+        rebuilt = self.plan_status_from_events()
+        bad = []
+        for r in self.conn.execute("SELECT plan_revision_id, status, locked, obsolete FROM p3_plan_revision ORDER BY 1"):
+            cached = (r["status"], int(r["locked"]), int(r["obsolete"]))
+            if rebuilt.get(int(r["plan_revision_id"]), ("draft", 0, 0)) != cached:
+                bad.append((int(r["plan_revision_id"]), cached, rebuilt.get(int(r["plan_revision_id"]))))
+        return bad
+
+    def verify_plan_revision(self, revision_id):
+        """(B18) Does a locked revision still hash to its fingerprint -- under
+        the payload schema RECORDED in its basis (a revision locked before B18
+        records none: /1)? True / False; None when it is not locked."""
+        from . import plans as PL
+        rev, items = self.plan_revision(revision_id)
+        if rev is None or not rev.get("locked") or not rev.get("fingerprint"):
+            return None
+        return PL.verify(items, rev["fingerprint"], rev["basis"].get("payload_schema"))
 
     def mark_plans_obsolete(self, findings, note=None):
         """The detector's verdicts: {revision_id: [(code, words, detail)]}. One
@@ -1128,3 +1212,86 @@ def export_decision_journal(conn, path):
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(lines))
     return len(ops)
+
+
+# -- B18 (S3, principle 38): the current-state export ----------------------------------------
+
+#: One CSV row per current fact, each naming the decision(s) it rests on.
+CURRENT_STATE_COLUMNS = ("section", "subject", "file_path_id", "path", "state", "field", "value", "decision_ids")
+
+
+def current_state_rows(conn) -> list:
+    """What the project's decisions say NOW -- not the history (the journal
+    is that): every current exact-duplicate group's copies with their
+    resolution (keeper / protected / redundant candidate / undecided, and the
+    canonical), every decided visual pair's relationship and retention, every
+    active desired-source-metadata decision, and the project's own metadata.
+    Each row names the decision ids it rests on. Read only."""
+    from . import resolve as RS
+    from . import metadata as MD
+    from .registry import METADATA_FIELDS
+    ev = ev_mod.load_evidence(conn)
+    proj = RS.resolve_all(ev)
+    rows = []
+
+    def path_of(lid):
+        loc = ev.locations.get(str(lid))
+        return loc.path if loc is not None else None
+    for gp in proj.groups:
+        for v in gp.members:
+            ids = list(v.decision_ids)
+            canonical = gp.canonical == v.location_id
+            if canonical and gp.canonical_decision_id and gp.canonical_decision_id not in ids:
+                ids.append(gp.canonical_decision_id)
+            state = v.status + ("; canonical" if canonical else "; suggested canonical (policy)"
+                                if gp.suggested_canonical == v.location_id and not gp.canonical else "")
+            rows.append({"section": "exact_duplicate_group", "subject": f"group {gp.group_id}", "file_path_id": v.location_id,
+                         "path": v.path, "state": state, "field": "", "value": "",
+                         "decision_ids": " ".join(f"#{d}" for d in sorted(set(ids), key=_num))})
+    for pp in getattr(proj, "pairs", ()):
+        if not (pp.relationship or pp.keep_both or pp.canonical):
+            continue
+        retention = ("keep both" if pp.keep_both else f"prefer {pp.canonical}" if pp.canonical else
+                     "keep both (a related variant's default)" if pp.default_retention else "")
+        for lid in (pp.a_id, pp.b_id):
+            rows.append({"section": "visual_pair", "subject": f"pair {pp.pair_id}", "file_path_id": lid, "path": path_of(lid),
+                         "state": ("keeper" if lid in pp.keeper_set else "redundant candidate" if lid == pp.redundant_candidate
+                                   else ""), "field": pp.relationship or "", "value": retention,
+                         "decision_ids": " ".join(f"#{d}" for d in pp.decision_ids)})
+    md = ev.metadata
+    for qid, d in sorted(MD.current_decisions(MD.active_metadata(ev)).items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
+        q = md.questions.get(qid)
+        if q is None:
+            continue
+        value = (d.value if d.kind == "desired_source_metadata_set" else
+                 "(clear)" if d.kind == "desired_source_metadata_clear" else "(leave unchanged)")
+        rows.append({"section": "desired_source_metadata", "subject": f"question {qid}", "file_path_id": q.location_id,
+                     "path": q.path, "state": d.kind, "field": METADATA_FIELDS[q.semantic_field].label,
+                     "value": "; ".join(map(str, value)) if isinstance(value, list) else value, "decision_ids": f"#{d.decision_id}"})
+    for lid, fields in sorted(MD.project_metadata(ev).items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
+        for f, v in sorted(fields.items()):
+            if v["value"] is None:
+                continue
+            rows.append({"section": "project_metadata", "subject": f"location {lid}", "file_path_id": lid,
+                         "path": path_of(lid) or _stored_path(conn, lid),
+                         "state": "stored in the project", "field": f,
+                         "value": "; ".join(map(str, v["value"])) if isinstance(v["value"], list) else v["value"],
+                         "decision_ids": f"#{v['decision_id']}"})
+    return rows
+
+
+def _num(x):
+    return (0, int(x)) if str(x).isdigit() else (1, str(x))
+
+
+def _stored_path(conn, lid):
+    loc = ev_mod.location(conn, lid)
+    return loc.path if loc is not None else None
+
+
+def export_current_state(conn, path):
+    """The current-state export as CSV (UTF-8 with BOM), through Phase 2's own
+    writer and its formula guard (Y-018 / Y-019): a cell beginning with = + -
+    @, a tab or a return gets a leading apostrophe. Returns the row count."""
+    from Phase2.gui import write_rows_csv
+    return write_rows_csv(path, current_state_rows(conn), CURRENT_STATE_COLUMNS)

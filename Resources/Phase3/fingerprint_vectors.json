@@ -1,0 +1,700 @@
+{
+ "specification": "Docs\\Specifications\\PLAN_FINGERPRINT_SPEC.md (The File Organizer, B18)",
+ "payload_schema": "fileorganizer.p3.plan-payload/1",
+ "how_to_use": "For each vector: canonicalize `payload` by the specification; the UTF-8 bytes must equal `canonical_utf8_hex` and their SHA-256 (lower-case hex) must equal `sha256`. This file is ASCII: JSON escapes here are this file's own, not the canonical form's.",
+ "vectors": [
+  {
+   "name": "empty_plan",
+   "description": "A revision with no items.",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": []
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89"
+  },
+  {
+   "name": "remove_with_preconditions",
+   "description": "One Remove Location item: its sources, decisions, policy version, evidence binding, evidence-stage results and a live-stage condition (result null), a dependency.",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 1,
+      "action": "remove_location",
+      "target": [
+       "file_location",
+       "12"
+      ],
+      "sources": [
+       [
+        "exact_duplicate_group_version",
+        "7"
+       ]
+      ],
+      "effect": {
+       "effect": "location_absent",
+       "path": "C:\\Backup\\a.pdf"
+      },
+      "decisions": [
+       "3",
+       "11"
+      ],
+      "retaining": [],
+      "policies": [
+       "2"
+      ],
+      "binding": {
+       "schema": "fileorganizer.p3.evidence-binding/1",
+       "target_kind": "file_location",
+       "file_path_id": 12,
+       "observation_id": 40,
+       "content_id": 7,
+       "members": [
+        {
+         "file_path_id": 5,
+         "observation_id": 33
+        }
+       ],
+       "source": {
+        "target_kind": "exact_duplicate_group_version",
+        "target_ref": "7",
+        "members": [
+         {
+          "file_path_id": 5,
+          "observation_id": 33
+         },
+         {
+          "file_path_id": 12,
+          "observation_id": 40
+         }
+        ]
+       }
+      },
+      "pre": [
+       [
+        "target_exists",
+        "identity",
+        "hard",
+        "evidence_preview",
+        {
+         "observation_id": "40"
+        },
+        "pass"
+       ],
+       [
+        "keeper_exists",
+        "retention",
+        "hard",
+        "evidence_preview",
+        {
+         "keepers": [
+          "5"
+         ]
+        },
+        "pass"
+       ],
+       [
+        "minimum_location_count_satisfied",
+        "retention",
+        "hard",
+        "evidence_preview",
+        {
+         "minimum": 1
+        },
+        "pass"
+       ],
+       [
+        "target_content_matches",
+        "identity",
+        "hard",
+        "live_preflight",
+        {},
+        null
+       ]
+      ],
+      "post": [
+       "location_absent"
+      ],
+      "deps": [
+       2
+      ],
+      "state": "ready",
+      "blocked": null,
+      "impact": "high"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a2272656d6f76655f6c6f636174696f6e222c2262696e64696e67223a7b22636f6e74656e745f6964223a372c2266696c655f706174685f6964223a31322c226d656d62657273223a5b7b2266696c655f706174685f6964223a352c226f62736572766174696f6e5f6964223a33337d5d2c226f62736572766174696f6e5f6964223a34302c22736368656d61223a2266696c656f7267616e697a65722e70332e65766964656e63652d62696e64696e672f31222c22736f75726365223a7b226d656d62657273223a5b7b2266696c655f706174685f6964223a352c226f62736572766174696f6e5f6964223a33337d2c7b2266696c655f706174685f6964223a31322c226f62736572766174696f6e5f6964223a34307d5d2c227461726765745f6b696e64223a2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c227461726765745f726566223a2237227d2c227461726765745f6b696e64223a2266696c655f6c6f636174696f6e227d2c22626c6f636b6564223a6e756c6c2c226465636973696f6e73223a5b2233222c223131225d2c2264657073223a5b325d2c22656666656374223a7b22656666656374223a226c6f636174696f6e5f616273656e74222c2270617468223a22433a5c5c4261636b75705c5c612e706466227d2c22696d70616374223a2268696768222c226e223a312c22706f6c6963696573223a5b2232225d2c22706f7374223a5b226c6f636174696f6e5f616273656e74225d2c22707265223a5b5b227461726765745f657869737473222c226964656e74697479222c2268617264222c2265766964656e63655f70726576696577222c7b226f62736572766174696f6e5f6964223a223430227d2c2270617373225d2c5b226b65657065725f657869737473222c22726574656e74696f6e222c2268617264222c2265766964656e63655f70726576696577222c7b226b656570657273223a5b2235225d7d2c2270617373225d2c5b226d696e696d756d5f6c6f636174696f6e5f636f756e745f736174697366696564222c22726574656e74696f6e222c2268617264222c2265766964656e63655f70726576696577222c7b226d696e696d756d223a317d2c2270617373225d2c5b227461726765745f636f6e74656e745f6d617463686573222c226964656e74697479222c2268617264222c226c6976655f707265666c69676874222c7b7d2c6e756c6c5d5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c2237225d5d2c227374617465223a227265616479222c22746172676574223a5b2266696c655f6c6f636174696f6e222c223132225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "1f7667b29a2f94a185f4c1f6edf4b6686089eeb24e4f12b3b091237cc3c9fbd2"
+  },
+  {
+   "name": "non_ascii_path_nfc",
+   "description": "A preserved copy whose path is non-ASCII, composed (NFC).",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 1,
+      "action": "no_op_preserve",
+      "target": [
+       "file_location",
+       "5"
+      ],
+      "sources": [
+       [
+        "exact_duplicate_group_version",
+        "7"
+       ]
+      ],
+      "effect": {
+       "effect": "retain",
+       "path": "C:\\Docs\\R\u00e9sum\u00e9 \u2014 \u65e5\u672c\u8a9e.pdf",
+       "why": [
+        "the group's canonical"
+       ]
+      },
+      "decisions": [
+       "11"
+      ],
+      "retaining": [],
+      "policies": [],
+      "binding": {},
+      "pre": [],
+      "post": [],
+      "deps": [],
+      "state": "preserve",
+      "blocked": null,
+      "impact": "none"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a226e6f5f6f705f7072657365727665222c2262696e64696e67223a7b7d2c22626c6f636b6564223a6e756c6c2c226465636973696f6e73223a5b223131225d2c2264657073223a5b5d2c22656666656374223a7b22656666656374223a2272657461696e222c2270617468223a22433a5c5c446f63735c5c52c3a973756dc3a920e2809420e697a5e69cace8aa9e2e706466222c22776879223a5b227468652067726f757027732063616e6f6e6963616c225d7d2c22696d70616374223a226e6f6e65222c226e223a312c22706f6c6963696573223a5b5d2c22706f7374223a5b5d2c22707265223a5b5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c2237225d5d2c227374617465223a227072657365727665222c22746172676574223a5b2266696c655f6c6f636174696f6e222c2235225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "22297c5c80458414acedc1b405bad896de81603c23e292f26a741c1c84c97e7d"
+  },
+  {
+   "name": "non_ascii_path_nfd",
+   "description": "The same path decomposed (NFD): a DIFFERENT hash -- strings are hashed as stored.",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 1,
+      "action": "no_op_preserve",
+      "target": [
+       "file_location",
+       "5"
+      ],
+      "sources": [
+       [
+        "exact_duplicate_group_version",
+        "7"
+       ]
+      ],
+      "effect": {
+       "effect": "retain",
+       "path": "C:\\Docs\\Re\u0301sume\u0301 \u2014 \u65e5\u672c\u8a9e.pdf",
+       "why": [
+        "the group's canonical"
+       ]
+      },
+      "decisions": [
+       "11"
+      ],
+      "retaining": [],
+      "policies": [],
+      "binding": {},
+      "pre": [],
+      "post": [],
+      "deps": [],
+      "state": "preserve",
+      "blocked": null,
+      "impact": "none"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a226e6f5f6f705f7072657365727665222c2262696e64696e67223a7b7d2c22626c6f636b6564223a6e756c6c2c226465636973696f6e73223a5b223131225d2c2264657073223a5b5d2c22656666656374223a7b22656666656374223a2272657461696e222c2270617468223a22433a5c5c446f63735c5c5265cc8173756d65cc8120e2809420e697a5e69cace8aa9e2e706466222c22776879223a5b227468652067726f757027732063616e6f6e6963616c225d7d2c22696d70616374223a226e6f6e65222c226e223a312c22706f6c6963696573223a5b5d2c22706f7374223a5b5d2c22707265223a5b5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c2237225d5d2c227374617465223a227072657365727665222c22746172676574223a5b2266696c655f6c6f636174696f6e222c2235225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "a20a089e33a1d8df08499c2cd57b6ea0bde91e47c5619edb4d49b7bc3f963602"
+  },
+  {
+   "name": "metadata_item",
+   "description": "An Update Source Metadata item: a keyword list, a writer 'unsupported', the integrity checks.",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 3,
+      "action": "update_source_metadata",
+      "target": [
+       "file_location",
+       "21"
+      ],
+      "sources": [
+       [
+        "metadata_question",
+        "4"
+       ]
+      ],
+      "effect": {
+       "effect": "metadata_value",
+       "field": "keywords",
+       "operation": "set",
+       "path": "C:\\Docs\\report.docx",
+       "value": [
+        "tax",
+        "2024"
+       ]
+      },
+      "decisions": [
+       "30"
+      ],
+      "retaining": [],
+      "policies": [],
+      "binding": {
+       "file_path_id": 21,
+       "observation_id": 50,
+       "content_id": null,
+       "members": [],
+       "question": {
+        "question_id": 4,
+        "semantic_field": "keywords",
+        "analyzer_result_ids": [
+         88
+        ],
+        "observed_state": "unsupported"
+       }
+      },
+      "pre": [
+       [
+        "writer_supported",
+        "environment",
+        "hard",
+        "evidence_preview",
+        {
+         "file_family": "ooxml",
+         "semantic_field": "keywords",
+         "capability_status": "unknown"
+        },
+        "unsupported"
+       ],
+       [
+        "source_not_signed_or_certified",
+        "integrity",
+        "hard",
+        "evidence_preview",
+        {},
+        "pass"
+       ],
+       [
+        "source_not_encrypted",
+        "integrity",
+        "hard",
+        "evidence_preview",
+        {},
+        "pass"
+       ],
+       [
+        "source_not_hardlinked",
+        "integrity",
+        "hard",
+        "evidence_preview",
+        {},
+        "pass"
+       ]
+      ],
+      "post": [
+       "desired_metadata_observed"
+      ],
+      "deps": [],
+      "state": "unsupported_action",
+      "blocked": "writer_unsupported",
+      "impact": "medium"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a227570646174655f736f757263655f6d65746164617461222c2262696e64696e67223a7b22636f6e74656e745f6964223a6e756c6c2c2266696c655f706174685f6964223a32312c226d656d62657273223a5b5d2c226f62736572766174696f6e5f6964223a35302c227175657374696f6e223a7b22616e616c797a65725f726573756c745f696473223a5b38385d2c226f627365727665645f7374617465223a22756e737570706f72746564222c227175657374696f6e5f6964223a342c2273656d616e7469635f6669656c64223a226b6579776f726473227d7d2c22626c6f636b6564223a227772697465725f756e737570706f72746564222c226465636973696f6e73223a5b223330225d2c2264657073223a5b5d2c22656666656374223a7b22656666656374223a226d657461646174615f76616c7565222c226669656c64223a226b6579776f726473222c226f7065726174696f6e223a22736574222c2270617468223a22433a5c5c446f63735c5c7265706f72742e646f6378222c2276616c7565223a5b22746178222c2232303234225d7d2c22696d70616374223a226d656469756d222c226e223a332c22706f6c6963696573223a5b5d2c22706f7374223a5b22646573697265645f6d657461646174615f6f62736572766564225d2c22707265223a5b5b227772697465725f737570706f72746564222c22656e7669726f6e6d656e74222c2268617264222c2265766964656e63655f70726576696577222c7b226361706162696c6974795f737461747573223a22756e6b6e6f776e222c2266696c655f66616d696c79223a226f6f786d6c222c2273656d616e7469635f6669656c64223a226b6579776f726473227d2c22756e737570706f72746564225d2c5b22736f757263655f6e6f745f7369676e65645f6f725f636572746966696564222c22696e74656772697479222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c2270617373225d2c5b22736f757263655f6e6f745f656e63727970746564222c22696e74656772697479222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c2270617373225d2c5b22736f757263655f6e6f745f686172646c696e6b6564222c22696e74656772697479222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c2270617373225d5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b226d657461646174615f7175657374696f6e222c2234225d5d2c227374617465223a22756e737570706f727465645f616374696f6e222c22746172676574223a5b2266696c655f6c6f636174696f6e222c223231225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "04412caa2b40755e965067fcc29647149d23f1cb5693e6542ac4276a9e3a8acb"
+  },
+  {
+   "name": "blocked_item",
+   "description": "A blocked removal: an unknown result, a failed retention check naming the decision, a warning.",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 2,
+      "action": "remove_location",
+      "target": [
+       "file_location",
+       "13"
+      ],
+      "sources": [
+       [
+        "visual_candidate_pair",
+        "9"
+       ]
+      ],
+      "effect": {
+       "effect": "location_absent",
+       "path": "C:\\Pics\\b.jpg"
+      },
+      "decisions": [
+       "40",
+       "41"
+      ],
+      "retaining": [
+       "42"
+      ],
+      "policies": [],
+      "binding": {},
+      "pre": [
+       [
+        "required_coverage_complete",
+        "evidence",
+        "hard",
+        "evidence_preview",
+        {},
+        "unknown"
+       ],
+       [
+        "no_retaining_decision",
+        "retention",
+        "hard",
+        "evidence_preview",
+        {
+         "decisions": [
+          "42"
+         ]
+        },
+        "fail"
+       ],
+       [
+        "minimum_physical_copy_count_satisfied",
+        "retention",
+        "hard",
+        "evidence_preview",
+        {
+         "minimum": 1
+        },
+        "not_applicable"
+       ],
+       [
+        "no_removal_metadata_overlap",
+        "collision",
+        "warning",
+        "evidence_preview",
+        {
+         "other_item": 3
+        },
+        "fail"
+       ]
+      ],
+      "post": [
+       "location_absent"
+      ],
+      "deps": [],
+      "state": "blocked",
+      "blocked": "no_retaining_decision",
+      "impact": "high"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a2272656d6f76655f6c6f636174696f6e222c2262696e64696e67223a7b7d2c22626c6f636b6564223a226e6f5f72657461696e696e675f6465636973696f6e222c226465636973696f6e73223a5b223430222c223431225d2c2264657073223a5b5d2c22656666656374223a7b22656666656374223a226c6f636174696f6e5f616273656e74222c2270617468223a22433a5c5c506963735c5c622e6a7067227d2c22696d70616374223a2268696768222c226e223a322c22706f6c6963696573223a5b5d2c22706f7374223a5b226c6f636174696f6e5f616273656e74225d2c22707265223a5b5b2272657175697265645f636f7665726167655f636f6d706c657465222c2265766964656e6365222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c22756e6b6e6f776e225d2c5b226e6f5f72657461696e696e675f6465636973696f6e222c22726574656e74696f6e222c2268617264222c2265766964656e63655f70726576696577222c7b226465636973696f6e73223a5b223432225d7d2c226661696c225d2c5b226d696e696d756d5f706879736963616c5f636f70795f636f756e745f736174697366696564222c22726574656e74696f6e222c2268617264222c2265766964656e63655f70726576696577222c7b226d696e696d756d223a317d2c226e6f745f6170706c696361626c65225d2c5b226e6f5f72656d6f76616c5f6d657461646174615f6f7665726c6170222c22636f6c6c6973696f6e222c227761726e696e67222c2265766964656e63655f70726576696577222c7b226f746865725f6974656d223a337d2c226661696c225d5d2c2272657461696e696e67223a5b223432225d2c22736f7572636573223a5b5b2276697375616c5f63616e6469646174655f70616972222c2239225d5d2c227374617465223a22626c6f636b6564222c22746172676574223a5b2266696c655f6c6f636174696f6e222c223133225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "524d1bc0ed167082ae7eb3966a5616855346b7c95e42d0ace41802a4de39f159"
+  },
+  {
+   "name": "unpaired_surrogate",
+   "description": "A path holding an unpaired surrogate (a Windows name that is not valid UTF-16): its three-byte generalized UTF-8 form.",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 1,
+      "action": "no_op_preserve",
+      "target": [
+       "file_location",
+       "6"
+      ],
+      "sources": [
+       [
+        "exact_duplicate_group_version",
+        "8"
+       ]
+      ],
+      "effect": {
+       "effect": "retain",
+       "path": "C:\\Odd\\name\udc80.txt",
+       "why": [
+        "a keeper of its group"
+       ]
+      },
+      "decisions": [],
+      "retaining": [],
+      "policies": [],
+      "binding": {},
+      "pre": [],
+      "post": [],
+      "deps": [],
+      "state": "preserve",
+      "blocked": null,
+      "impact": "none"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a226e6f5f6f705f7072657365727665222c2262696e64696e67223a7b7d2c22626c6f636b6564223a6e756c6c2c226465636973696f6e73223a5b5d2c2264657073223a5b5d2c22656666656374223a7b22656666656374223a2272657461696e222c2270617468223a22433a5c5c4f64645c5c6e616d65edb2802e747874222c22776879223a5b2261206b6565706572206f66206974732067726f7570225d7d2c22696d70616374223a226e6f6e65222c226e223a312c22706f6c6963696573223a5b5d2c22706f7374223a5b5d2c22707265223a5b5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c2238225d5d2c227374617465223a227072657365727665222c22746172676574223a5b2266696c655f6c6f636174696f6e222c2236225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "9ef41bdf4ba4ac0c07a5b17bde58272ebe45bb0a50d983a6cff22dde676b42e3"
+  },
+  {
+   "name": "escaping_and_key_order",
+   "description": "A quote, a tab, DEL, U+2028, an astral character; object keys in code-point order (uppercase before lowercase, U+FF41 before U+1F600).",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 1,
+      "action": "no_op_preserve",
+      "target": [
+       "file_location",
+       "7"
+      ],
+      "sources": [
+       [
+        "exact_duplicate_group_version",
+        "8"
+       ]
+      ],
+      "effect": {
+       "effect": "retain",
+       "path": "C:\\Q\\say \"hi\"\t\u007f\u2028 \ud83d\ude00.txt",
+       "why": [
+        "z",
+        "a"
+       ],
+       "zeta": 1,
+       "Alpha": 2,
+       "\u00e9": 3,
+       "E": 4,
+       "\ud83d\ude00": 5,
+       "\uff41": 6
+      },
+      "decisions": [],
+      "retaining": [],
+      "policies": [],
+      "binding": {},
+      "pre": [],
+      "post": [],
+      "deps": [],
+      "state": "preserve",
+      "blocked": null,
+      "impact": "none"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a226e6f5f6f705f7072657365727665222c2262696e64696e67223a7b7d2c22626c6f636b6564223a6e756c6c2c226465636973696f6e73223a5b5d2c2264657073223a5b5d2c22656666656374223a7b22416c706861223a322c2245223a342c22656666656374223a2272657461696e222c2270617468223a22433a5c5c515c5c736179205c2268695c225c747fe280a820f09f98802e747874222c22776879223a5b227a222c2261225d2c227a657461223a312c22c3a9223a332c22efbd81223a362c22f09f9880223a357d2c22696d70616374223a226e6f6e65222c226e223a312c22706f6c6963696573223a5b5d2c22706f7374223a5b5d2c22707265223a5b5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c2238225d5d2c227374617465223a227072657365727665222c22746172676574223a5b2266696c655f6c6f636174696f6e222c2237225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "fee124baece5d47fc8f4737887a5c6ae4266bcf7f29b519a54be7a666a7c4097"
+  },
+  {
+   "name": "two_items",
+   "description": "A removal and a metadata item together, numbered 1 and 3 (numbers as recorded, never renumbered).",
+   "payload": {
+    "schema": "fileorganizer.p3.plan-payload/1",
+    "items": [
+     {
+      "n": 1,
+      "action": "remove_location",
+      "target": [
+       "file_location",
+       "12"
+      ],
+      "sources": [
+       [
+        "exact_duplicate_group_version",
+        "7"
+       ]
+      ],
+      "effect": {
+       "effect": "location_absent",
+       "path": "C:\\Backup\\a.pdf"
+      },
+      "decisions": [
+       "3",
+       "11"
+      ],
+      "retaining": [],
+      "policies": [
+       "2"
+      ],
+      "binding": {
+       "schema": "fileorganizer.p3.evidence-binding/1",
+       "target_kind": "file_location",
+       "file_path_id": 12,
+       "observation_id": 40,
+       "content_id": 7,
+       "members": [
+        {
+         "file_path_id": 5,
+         "observation_id": 33
+        }
+       ],
+       "source": {
+        "target_kind": "exact_duplicate_group_version",
+        "target_ref": "7",
+        "members": [
+         {
+          "file_path_id": 5,
+          "observation_id": 33
+         },
+         {
+          "file_path_id": 12,
+          "observation_id": 40
+         }
+        ]
+       }
+      },
+      "pre": [
+       [
+        "target_exists",
+        "identity",
+        "hard",
+        "evidence_preview",
+        {
+         "observation_id": "40"
+        },
+        "pass"
+       ],
+       [
+        "keeper_exists",
+        "retention",
+        "hard",
+        "evidence_preview",
+        {
+         "keepers": [
+          "5"
+         ]
+        },
+        "pass"
+       ],
+       [
+        "minimum_location_count_satisfied",
+        "retention",
+        "hard",
+        "evidence_preview",
+        {
+         "minimum": 1
+        },
+        "pass"
+       ],
+       [
+        "target_content_matches",
+        "identity",
+        "hard",
+        "live_preflight",
+        {},
+        null
+       ]
+      ],
+      "post": [
+       "location_absent"
+      ],
+      "deps": [
+       2
+      ],
+      "state": "ready",
+      "blocked": null,
+      "impact": "high"
+     },
+     {
+      "n": 3,
+      "action": "update_source_metadata",
+      "target": [
+       "file_location",
+       "21"
+      ],
+      "sources": [
+       [
+        "metadata_question",
+        "4"
+       ]
+      ],
+      "effect": {
+       "effect": "metadata_value",
+       "field": "keywords",
+       "operation": "set",
+       "path": "C:\\Docs\\report.docx",
+       "value": [
+        "tax",
+        "2024"
+       ]
+      },
+      "decisions": [
+       "30"
+      ],
+      "retaining": [],
+      "policies": [],
+      "binding": {
+       "file_path_id": 21,
+       "observation_id": 50,
+       "content_id": null,
+       "members": [],
+       "question": {
+        "question_id": 4,
+        "semantic_field": "keywords",
+        "analyzer_result_ids": [
+         88
+        ],
+        "observed_state": "unsupported"
+       }
+      },
+      "pre": [
+       [
+        "writer_supported",
+        "environment",
+        "hard",
+        "evidence_preview",
+        {
+         "file_family": "ooxml",
+         "semantic_field": "keywords",
+         "capability_status": "unknown"
+        },
+        "unsupported"
+       ],
+       [
+        "source_not_signed_or_certified",
+        "integrity",
+        "hard",
+        "evidence_preview",
+        {},
+        "pass"
+       ],
+       [
+        "source_not_encrypted",
+        "integrity",
+        "hard",
+        "evidence_preview",
+        {},
+        "pass"
+       ],
+       [
+        "source_not_hardlinked",
+        "integrity",
+        "hard",
+        "evidence_preview",
+        {},
+        "pass"
+       ]
+      ],
+      "post": [
+       "desired_metadata_observed"
+      ],
+      "deps": [],
+      "state": "unsupported_action",
+      "blocked": "writer_unsupported",
+      "impact": "medium"
+     }
+    ]
+   },
+   "canonical_utf8_hex": "7b226974656d73223a5b7b22616374696f6e223a2272656d6f76655f6c6f636174696f6e222c2262696e64696e67223a7b22636f6e74656e745f6964223a372c2266696c655f706174685f6964223a31322c226d656d62657273223a5b7b2266696c655f706174685f6964223a352c226f62736572766174696f6e5f6964223a33337d5d2c226f62736572766174696f6e5f6964223a34302c22736368656d61223a2266696c656f7267616e697a65722e70332e65766964656e63652d62696e64696e672f31222c22736f75726365223a7b226d656d62657273223a5b7b2266696c655f706174685f6964223a352c226f62736572766174696f6e5f6964223a33337d2c7b2266696c655f706174685f6964223a31322c226f62736572766174696f6e5f6964223a34307d5d2c227461726765745f6b696e64223a2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c227461726765745f726566223a2237227d2c227461726765745f6b696e64223a2266696c655f6c6f636174696f6e227d2c22626c6f636b6564223a6e756c6c2c226465636973696f6e73223a5b2233222c223131225d2c2264657073223a5b325d2c22656666656374223a7b22656666656374223a226c6f636174696f6e5f616273656e74222c2270617468223a22433a5c5c4261636b75705c5c612e706466227d2c22696d70616374223a2268696768222c226e223a312c22706f6c6963696573223a5b2232225d2c22706f7374223a5b226c6f636174696f6e5f616273656e74225d2c22707265223a5b5b227461726765745f657869737473222c226964656e74697479222c2268617264222c2265766964656e63655f70726576696577222c7b226f62736572766174696f6e5f6964223a223430227d2c2270617373225d2c5b226b65657065725f657869737473222c22726574656e74696f6e222c2268617264222c2265766964656e63655f70726576696577222c7b226b656570657273223a5b2235225d7d2c2270617373225d2c5b226d696e696d756d5f6c6f636174696f6e5f636f756e745f736174697366696564222c22726574656e74696f6e222c2268617264222c2265766964656e63655f70726576696577222c7b226d696e696d756d223a317d2c2270617373225d2c5b227461726765745f636f6e74656e745f6d617463686573222c226964656e74697479222c2268617264222c226c6976655f707265666c69676874222c7b7d2c6e756c6c5d5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b2265786163745f6475706c69636174655f67726f75705f76657273696f6e222c2237225d5d2c227374617465223a227265616479222c22746172676574223a5b2266696c655f6c6f636174696f6e222c223132225d7d2c7b22616374696f6e223a227570646174655f736f757263655f6d65746164617461222c2262696e64696e67223a7b22636f6e74656e745f6964223a6e756c6c2c2266696c655f706174685f6964223a32312c226d656d62657273223a5b5d2c226f62736572766174696f6e5f6964223a35302c227175657374696f6e223a7b22616e616c797a65725f726573756c745f696473223a5b38385d2c226f627365727665645f7374617465223a22756e737570706f72746564222c227175657374696f6e5f6964223a342c2273656d616e7469635f6669656c64223a226b6579776f726473227d7d2c22626c6f636b6564223a227772697465725f756e737570706f72746564222c226465636973696f6e73223a5b223330225d2c2264657073223a5b5d2c22656666656374223a7b22656666656374223a226d657461646174615f76616c7565222c226669656c64223a226b6579776f726473222c226f7065726174696f6e223a22736574222c2270617468223a22433a5c5c446f63735c5c7265706f72742e646f6378222c2276616c7565223a5b22746178222c2232303234225d7d2c22696d70616374223a226d656469756d222c226e223a332c22706f6c6963696573223a5b5d2c22706f7374223a5b22646573697265645f6d657461646174615f6f62736572766564225d2c22707265223a5b5b227772697465725f737570706f72746564222c22656e7669726f6e6d656e74222c2268617264222c2265766964656e63655f70726576696577222c7b226361706162696c6974795f737461747573223a22756e6b6e6f776e222c2266696c655f66616d696c79223a226f6f786d6c222c2273656d616e7469635f6669656c64223a226b6579776f726473227d2c22756e737570706f72746564225d2c5b22736f757263655f6e6f745f7369676e65645f6f725f636572746966696564222c22696e74656772697479222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c2270617373225d2c5b22736f757263655f6e6f745f656e63727970746564222c22696e74656772697479222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c2270617373225d2c5b22736f757263655f6e6f745f686172646c696e6b6564222c22696e74656772697479222c2268617264222c2265766964656e63655f70726576696577222c7b7d2c2270617373225d5d2c2272657461696e696e67223a5b5d2c22736f7572636573223a5b5b226d657461646174615f7175657374696f6e222c2234225d5d2c227374617465223a22756e737570706f727465645f616374696f6e222c22746172676574223a5b2266696c655f6c6f636174696f6e222c223231225d7d5d2c22736368656d61223a2266696c656f7267616e697a65722e70332e706c616e2d7061796c6f61642f31227d",
+   "sha256": "4df32f05f9d17dd83d1c7d853e44c8b9c35a2e103e17f3d89a313a54e6b29adb"
+  }
+ ]
+}

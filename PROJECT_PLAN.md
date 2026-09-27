@@ -4,7 +4,7 @@
 Supersedes the scattered planning documents; the detail they contain is preserved
 under `Docs\` and indexed at the end of this file.
 
-**Last updated:** 2026-09-26 (later) — **B17, finishing metadata** (the Metadata page, signature and encryption evidence, plan notes S1/S2, review fixes R1-R3) in `FileOrganizer-Phase3-B17\` on branch `phase3-b17` from tag `phase3-b16` (`d65863d`, B16 committed and tagged at the start of the round, as its handoff asked); schema 15; `PHASE3_B17_HANDBACK.md` reports against the B17 handoff; **B18, the Phase 3 closeout, is next**. Earlier 2026-09-26 — **Phase 3 Build 9 (project metadata / desired source metadata) built as B16** in `FileOrganizer-Phase3-B16\` on branch `phase3-b16` from tag `phase3-b15` (`98a1b1a`, B15 committed and tagged at the start of the round, as the Build 9 handoff assumed; clean checkouts of `phase3-b14` and `phase3-b15` verified); schema 14; `PHASE3_B16_HANDBACK.md` reports against its handoff. 2026-09-25 (evening) — **Phase 3 Build 8 (Plan Builder) built as B15** in `FileOrganizer-Phase3-B15\` on branch `phase3-b15` from tag `phase3-b14` (`989294b`, B14 committed and tagged at the start of the round); schema 13; first, tag `phase3-b13` was re-pointed to `e48fbf0` (the five manifest hashes re-computed on LF files, no code change), as the Build 8 handoff approved; `PHASE3_B15_HANDBACK.md` reports against its handoff. Earlier 2026-09-25 — **B14, a maintenance round (not Build 8)** in `FileOrganizer-Phase3-B14\` on branch `phase3-b14` from tag `phase3-b13` (`1f16ac2`, B13 committed and tagged at the start of the round, as its handoff asked): the Similar Images page's refresh made incremental (P3.R10 §22 UI-6, answered for this page from B13's real-scale measurements) and fixture F16 (P3.R3 §34's non-edge) added to the lab; `PHASE3_B14_HANDBACK.md` reports against its handoff. Earlier 2026-09-25 — **Phase 3 Build 7 (Survey Mode, with the group evidence-guard patch) built as B13** in `FileOrganizer-Phase3-B13\` on branch `phase3-b13` from tag `phase3-b12` (`84e8e44`, B12 committed and tagged at the start of this round, as the Build 7 handoff asked); `PHASE3_BUILD7_HANDBACK.md` reports against its handoff. 2026-09-24 — **Phase 3 Build 6 (Bulk Visual Review) built as B12** in `FileOrganizer-Phase3-B12\` on branch `phase3-b12` from tag `phase3-b11` (`15b5966`, B11 committed and tagged at the owner's instruction); `PHASE3_BUILD6_HANDBACK.md` reports against its handoff. The Phase 3 sequence is now nine builds (Build 6 inserted; Survey Mode 7, Plan Builder 8, Project Metadata 9). 2026-09-23 — **Phase 3 Build 5 (Image Game) built as B11** in `FileOrganizer-Phase3-B11\` on branch `phase3-b11` from tag `phase3-b10` (`a0cfa1c`); `PHASE3_BUILD5_HANDBACK.md` reports against its handoff. 2026-09-21 — **Phase 3 Build 4 (bulk / policy) built as B10** in `FileOrganizer-Phase3-B10\` on branch `phase3-b10` from the B9 commit (`94dfc76`, committed so Build 4 could branch from the reviewed state; tag `phase3-b9` the owner's); `PHASE3_BUILD4_HANDBACK.md` reports against its handoff. 2026-09-20, night — **Phase 3 Build 3 (review routing) built as B9** in `FileOrganizer-Phase3-B9\` on branch `phase3-b9` from the B8 commit; `PHASE3_BUILD3_HANDBACK.md` reports against its handoff. Earlier the same day — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2` (committed as `e44613a`, reviewed, tag `phase3-b8` the owner's); `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
+**Last updated:** 2026-09-27 — **B18, the Phase 3 closeout round** in `FileOrganizer-Phase3-B18\` on branch `phase3-b18` from tag `phase3-b17` (`711fd43`, B17 committed and tagged at the start of the round, as its handoff asked; the root `PROJECT_PLAN.md` / `README.md` / `STAGE_MAP.md` synced from that tag, the stale copies archived); schema 16; the research's remaining gates closed (fingerprint spec M3, mutation tests M5, state machines M6, S3-S6), B17's real-scale findings fixed (the material-change rule, bulk Confirm, legacy encryption evidence, the structured encryption field, the queue's cold open), and `Docs\Handoffs\P3_CLOSEOUT.md` drafted -- **its decision (§5a) is the owner's, and it cannot close until P3.R12 (organizing intent) is dispositioned**; `PHASE3_B18_HANDBACK.md` reports against the B18 handoff. Earlier 2026-09-26 (later) — **B17, finishing metadata** (the Metadata page, signature and encryption evidence, plan notes S1/S2, review fixes R1-R3) in `FileOrganizer-Phase3-B17\` on branch `phase3-b17` from tag `phase3-b16` (`d65863d`, B16 committed and tagged at the start of the round, as its handoff asked); schema 15; `PHASE3_B17_HANDBACK.md` reports against the B17 handoff; **B18, the Phase 3 closeout, is next**. Earlier 2026-09-26 — **Phase 3 Build 9 (project metadata / desired source metadata) built as B16** in `FileOrganizer-Phase3-B16\` on branch `phase3-b16` from tag `phase3-b15` (`98a1b1a`, B15 committed and tagged at the start of the round, as the Build 9 handoff assumed; clean checkouts of `phase3-b14` and `phase3-b15` verified); schema 14; `PHASE3_B16_HANDBACK.md` reports against its handoff. 2026-09-25 (evening) — **Phase 3 Build 8 (Plan Builder) built as B15** in `FileOrganizer-Phase3-B15\` on branch `phase3-b15` from tag `phase3-b14` (`989294b`, B14 committed and tagged at the start of the round); schema 13; first, tag `phase3-b13` was re-pointed to `e48fbf0` (the five manifest hashes re-computed on LF files, no code change), as the Build 8 handoff approved; `PHASE3_B15_HANDBACK.md` reports against its handoff. Earlier 2026-09-25 — **B14, a maintenance round (not Build 8)** in `FileOrganizer-Phase3-B14\` on branch `phase3-b14` from tag `phase3-b13` (`1f16ac2`, B13 committed and tagged at the start of the round, as its handoff asked): the Similar Images page's refresh made incremental (P3.R10 §22 UI-6, answered for this page from B13's real-scale measurements) and fixture F16 (P3.R3 §34's non-edge) added to the lab; `PHASE3_B14_HANDBACK.md` reports against its handoff. Earlier 2026-09-25 — **Phase 3 Build 7 (Survey Mode, with the group evidence-guard patch) built as B13** in `FileOrganizer-Phase3-B13\` on branch `phase3-b13` from tag `phase3-b12` (`84e8e44`, B12 committed and tagged at the start of this round, as the Build 7 handoff asked); `PHASE3_BUILD7_HANDBACK.md` reports against its handoff. 2026-09-24 — **Phase 3 Build 6 (Bulk Visual Review) built as B12** in `FileOrganizer-Phase3-B12\` on branch `phase3-b12` from tag `phase3-b11` (`15b5966`, B11 committed and tagged at the owner's instruction); `PHASE3_BUILD6_HANDBACK.md` reports against its handoff. The Phase 3 sequence is now nine builds (Build 6 inserted; Survey Mode 7, Plan Builder 8, Project Metadata 9). 2026-09-23 — **Phase 3 Build 5 (Image Game) built as B11** in `FileOrganizer-Phase3-B11\` on branch `phase3-b11` from tag `phase3-b10` (`a0cfa1c`); `PHASE3_BUILD5_HANDBACK.md` reports against its handoff. 2026-09-21 — **Phase 3 Build 4 (bulk / policy) built as B10** in `FileOrganizer-Phase3-B10\` on branch `phase3-b10` from the B9 commit (`94dfc76`, committed so Build 4 could branch from the reviewed state; tag `phase3-b9` the owner's); `PHASE3_BUILD4_HANDBACK.md` reports against its handoff. 2026-09-20, night — **Phase 3 Build 3 (review routing) built as B9** in `FileOrganizer-Phase3-B9\` on branch `phase3-b9` from the B8 commit; `PHASE3_BUILD3_HANDBACK.md` reports against its handoff. Earlier the same day — **Phase 3 begun**: the Phase 3 handoff (Builds 1–2, core persistence + exact-duplicate decisions) built as **B8** in `FileOrganizer-Phase3-B8\` on branch `phase3` from tag `phase2-b7.2` (committed as `e44613a`, reviewed, tag `phase3-b8` the owner's); `PHASE3_HANDBACK.md` reports against it, item by item. Before that, 2026-09-19 evening — **the P2.12 closeout approved by the user**; build **B7** tagged `phase2-b7` and pushed to GitHub with branch `phase2`; the adversarial round is the last part of Phase 2. Earlier that day — the adversarial corpus is built: 260 cases across three truths, 199 of the Master Matrix's 289 rows embodied and 90 declined with a reason; the readers fixed against real files (defects 29–32); seven engine defects the corpus found stand recorded as DEFECT cases
 **Current position:** Phase 2 (Understand) — built; used three times by a person,
 twice on a real 41,056-file corpus; every note acted on; the crash fixed; all seven
 analyzers run on the real corpus with source immutability confirmed; extraction
@@ -129,7 +129,7 @@ A nineteenth, adopted 2026-09-10:
 |---|---|---|
 | **1** | **Observe** | **Shipped** — B6.2 |
 | **2** | **Understand** | **Shipped — B7.2. Closeout approved 2026-09-19; the adversarial round (P2.13) closed 2026-09-20 with B7.1 and B7.2 (defects 33–51; A-014 kept by decision)** |
-| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 (core persistence, exact-duplicate decisions); B9 (2026-09-20): Build 3 (review routing); B10 (2026-09-21): Build 4 (bulk / policy); B11 (2026-09-23): Build 5 (Image Game); B12 (2026-09-24): Build 6 (Bulk Visual Review); B13 (2026-09-25): Build 7 (Survey Mode); B14 (2026-09-25): maintenance (incremental review refresh, fixture F16); B15 (2026-09-25): Build 8 (Plan Builder); B16 (2026-09-26): Build 9 (project metadata / desired source metadata; no writer); B17 (2026-09-26): the Metadata page and signature / encryption evidence. Next: B18, the Phase 3 closeout** |
+| 3 | Decide / Plan | **In progress — B8 (2026-09-20): Builds 1–2 of 7 (core persistence, exact-duplicate decisions); B9 (2026-09-20): Build 3 (review routing); B10 (2026-09-21): Build 4 (bulk / policy); B11 (2026-09-23): Build 5 (Image Game); B12 (2026-09-24): Build 6 (Bulk Visual Review); B13 (2026-09-25): Build 7 (Survey Mode); B14 (2026-09-25): maintenance (incremental review refresh, fixture F16); B15 (2026-09-25): Build 8 (Plan Builder); B16 (2026-09-26): Build 9 (project metadata / desired source metadata; no writer); B17 (2026-09-26): the Metadata page and signature / encryption evidence; B18 (2026-09-27): the closeout round. **Built — closeout assessment drafted; awaiting P3.R12 and the owner's decision** |
 | 4 | Act and Verify | Not started |
 | 5 | Maintain | Not started — *product completion boundary* |
 | 6 | Local LLMs | Research horizon |
@@ -142,7 +142,33 @@ changing embedded metadata is an *action*, so metadata editing is Phase 4, not 3
 
 ---
 
-## 4a. Where Phase 3 stands — B8 to B17, 2026-09-26
+## 4a. Where Phase 3 stands — B8 to B18, 2026-09-27
+
+**B18 — the Phase 3 closeout round** (handoff `FileOrganizer-Phase3\phase_3_handoff_b18\`;
+handback `PHASE3_B18_HANDBACK.md`; closeout `Docs\Handoffs\P3_CLOSEOUT.md`).
+- **Task 0:** B17 committed (`711fd43`) and tagged `phase3-b17`; clean checkouts of
+  `phase3-b16` and `phase3-b17` pass Test-Installation; the workspace root's three
+  documents synced from the tag (owner's Q1), the stale copies moved to
+  `_Archive\2026-09-26_root_docs\`.
+- **The research's gates:** the plan fingerprint specified with 9 golden vectors
+  and an independent encoder (`Docs\Specifications\PLAN_FINGERPRINT_SPEC.md`,
+  `p3_fingerprint_check`) -- explicit encoders replace `default=str`, no existing
+  fingerprint changed, revisions locked by the B15, B16 and B17 code verify;
+  32 source mutants, every one killed after three survivors got their missing
+  tests (`p3_mutation_check`); the state machines written in ARCHITECTURE.md
+  with invalid-transition tests (`p3_closeout_check`).
+- **What B17's real scale exposed:** a metadata decision returns only when the
+  file's content, the field's value or its value-state changed (owner's Q2) --
+  three real re-analyses of 4,904 documents now drift **0** decisions (B17: 4,902)
+  and obsolete no locked revision; bulk **Confirm** on the queue; legacy OLE2
+  encryption read from header structures (Q4: all 341 unknowns now known);
+  `analyzer_result.encryption_state` (migration 016); the queue's cold open
+  0.71-0.94 s over five runs (target 1 s).
+- **Smaller:** the current-state export (S3), the revision basis's versions (S4),
+  a stated path-matching rule (S5), plan status as a cache of its events (S6).
+- **Not added, by decision:** no move / rename decision kinds (P3.R12 first), no
+  metadata writer, no bulk setting of desired values, no Phase 4 code.
+
 
 **B17 — finishing metadata** (handoff `FileOrganizer-Phase3\phase_3_handoff_b17\`,
 from the B16 review and the research coverage review; handback
@@ -727,7 +753,25 @@ rather than time-boxed, and it does not exist for network shares.
 
 ## 6. Next
 
-**Phase 3, what comes after B17: B18, the Phase 3 closeout** (see `FileOrganizer-Phase3\PHASE3_RESEARCH_COVERAGE_2026-09-26.md` for what B18 closes). Survey Mode is built (B13), B14 was maintenance, the Plan Builder is built (B15, see §4a -- it resolved B13's judgment call 5 below as a blocked removal), project / desired source metadata is built without a writer (B16), and its page and evidence are finished (B17); every build of the sequence below now exists; the rest of the revised sequence (the Build 6
+**Phase 3 is built; what comes next** (B18, 2026-09-27):
+1. **P3.R12 -- organizing intent (move / rename).** The research round the owner
+   commissioned before Phase 3 closes (`FileOrganizer-Phase3\P3.R12_ORGANIZING_INTENT_RESEARCH_BRIEF.md`),
+   then its technical evaluation. Its one-paragraph disposition goes into
+   `P3_CLOSEOUT.md` §4.
+2. **The owner's closeout decision** -- `Docs\Handoffs\P3_CLOSEOUT.md` §5a, left
+   empty. If P3.R12 recommends decision kinds, they are one more build round
+   (fixtures F17 onward) and the assessment is revised first.
+3. **Phase 4 scoping**, from the closeout's §7 (the handoff seed), with its two
+   engineering preconditions: a **cross-process action lock**, and the **transaction
+   boundary** of the action journal (the autocommit connection revisited). Writer
+   certification comes one format and field at a time.
+4. Add-soon-after items the closeout lists (§4): bulk setting of a desired
+   value; flicker / blink and a preview cache in the Image Game; per-group
+   re-resolution on the Decide page; a "Reviewed" status.
+5. At the start of the next round, after the owner tags B18: sync the root
+   `PROJECT_PLAN.md` / `README.md` / `STAGE_MAP.md` from the tag.
+
+**Earlier (B17, kept for the record): what came after B17 was B18, the Phase 3 closeout** (see `FileOrganizer-Phase3\PHASE3_RESEARCH_COVERAGE_2026-09-26.md` for what B18 closes). Survey Mode is built (B13), B14 was maintenance, the Plan Builder is built (B15, see §4a -- it resolved B13's judgment call 5 below as a blocked removal), project / desired source metadata is built without a writer (B16), and its page and evidence are finished (B17); every build of the sequence below now exists; the rest of the revised sequence (the Build 6
 handoff, synthesis §10; R10 §24 allows the order to change on usability
 evidence): 7 **Survey Mode** for small crowds (3–8 images) — a display over
 pairwise decisions, never a group-level one; 8 the plan builder,
@@ -877,16 +921,17 @@ C:\FileOrganizerTesting\
   FileOrganizer-Phase3-B14\    B14: git worktree of branch phase3-b14 (maintenance, committed 989294b, tag phase3-b14)
   FileOrganizer-Phase3-B15\    B15: git worktree of branch phase3-b15 (Build 8, committed 98a1b1a, tag phase3-b15)
   FileOrganizer-Phase3-B16\    B16: git worktree of branch phase3-b16 (Build 9, committed d65863d, tag phase3-b16)
-  FileOrganizer-Phase3-B17\    B17: git worktree of branch phase3-b17 (finishing metadata, uncommitted)
-  FileOrganizer-Phase3\        the Phase 3 handoff packages (Builds 1-2; phase_3_handoff_build3\; _build4\; _build5\; _build6\; _build7\; phase_3_handoff_b14\; phase_3_handoff_build8\; phase_3_handoff_build9\; phase_3_handoff_b17\; PHASE3_RESEARCH_COVERAGE_2026-09-26.md)
+  FileOrganizer-Phase3-B17\    B17: git worktree of branch phase3-b17 (finishing metadata, committed 711fd43, tag phase3-b17)
+  FileOrganizer-Phase3-B18\    B18: git worktree of branch phase3-b18 (the Phase 3 closeout round, uncommitted)
+  FileOrganizer-Phase3\        the Phase 3 handoff packages (Builds 1-2; phase_3_handoff_build3\; _build4\; _build5\; _build6\; _build7\; phase_3_handoff_b14\; phase_3_handoff_build8\; phase_3_handoff_build9\; phase_3_handoff_b17\; phase_3_handoff_b18\; PHASE3_RESEARCH_COVERAGE_2026-09-26.md; P3.R12_ORGANIZING_INTENT_RESEARCH_BRIEF.md)
   Docs\
     Charter\          the phase model, requirements, question catalog, decisions
-    Specifications\   query model, information model, report catalog, GUI contract
+    Specifications\   query model, information model, report catalog, GUI contract; PLAN_FINGERPRINT_SPEC.md (B18)
     Research\         comparative studies, retention, undo, ecosystem
     Validation\       every test, benchmark and acceptance report
-    Handoffs\         handoff and installation documents
+    Handoffs\         handoff and installation documents; P2.12_CLOSEOUT.md; P3_CLOSEOUT.md (B18 draft)
     Reference\        the Phase 2 living plan, the GUI prototype, archived build
-  _Archive\           superseded builds and documents, with an index
+  _Archive\           superseded builds and documents, with an index; 2026-09-26_root_docs\ (the root copies B18 replaced)
 ```
 
 The test corpus is `C:\FOTest\Corpus` with `GROUND_TRUTH.json` beside it

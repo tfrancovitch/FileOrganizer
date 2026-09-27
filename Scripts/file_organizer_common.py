@@ -47,6 +47,19 @@ def to_long_path(path_str):
     return "\\\\?\\" + path_str
 
 
+class PasswordProtectedError(ValueError):
+    """A file an analyzer refuses because it needs a password to open (B18).
+
+    Still an analyzer error -- nothing is read and no password is tried --
+    but the refusal is itself evidence: the row records EncryptionState
+    'encrypted'. The engine keeps `evidence_fields` on the error row
+    (fo_analyzer_engine), and nothing else from a failed file."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.evidence_fields = {"EncryptionState": "encrypted"}
+
+
 def is_ffprobe_available():
     return shutil.which("ffprobe") is not None
 

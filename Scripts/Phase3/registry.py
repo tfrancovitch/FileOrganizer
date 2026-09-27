@@ -879,3 +879,45 @@ PLANNED_METADATA_KINDS = ("desired_source_metadata_set", "desired_source_metadat
 #: re-read). It is not a routing target (owner's decision Q3): these events are
 #: kept out of the retention model and read by metadata.py alone.
 DEFER_CHOICES[METADATA_QUESTION] = ("defer_indefinitely", "snooze_until_date", "snooze_until_evidence_change")
+
+#: (B18) Bulk Confirm on the Metadata Review queue (the owner's Q2 decision):
+#: B10's frozen batch over metadata questions -- a `metadata_question` member
+#: kind. Each member whose decision needs revalidation gets the SAME decision
+#: re-recorded (same kind, same value) on the evidence as it is now: a
+#: supersession with a fresh binding. Never a new desired value, never a
+#: question without a decision, never a Clear or Leave unchanged turned into
+#: anything else. Not offered by the Decide page or Similar Images (its member
+#: kind is neither's). Bulk SETTING of a desired value is not this.
+METADATA_CONFIRM = "metadata_confirm"
+BULK_ACTIONS[METADATA_CONFIRM] = BulkAction(
+    METADATA_CONFIRM, "Confirm", METADATA_QUESTION, SOURCE_METADATA_KINDS, False, None, False,
+    "Re-record each checked or listed question's current decision -- the same kind and the same value -- on the "
+    "evidence as it is now, for the questions whose decision needs revalidation. A question that is already current, "
+    "has no decision, or whose evidence cannot support a decision is left as it is.",
+    kinds_text="the same decision, re-recorded on the evidence as it is now")
+
+
+# -- B18: what a plan revision records about the vocabulary it was built with (S4) --------
+
+#: The registry's contract version; bumped when a kind, a precondition or a
+#: vocabulary word changes meaning. `registry_digest()` is the content check
+#: beside it: a SHA-256 over every decision kind, policy kind, action kind and
+#: precondition (sorted, JSON) -- so a vocabulary that changed without a bump
+#: still shows.
+REGISTRY_VERSION = "fileorganizer.p3.registry/1"
+
+
+def registry_digest() -> str:
+    import hashlib
+    import json
+    body = {
+        "decision_kinds": sorted([k.key, sorted(k.target_kinds), k.value_kind, k.resolution_class, k.conflict_domain,
+                                  k.requires_evidence, k.supersedable, k.affects_reclaim, k.confirmation]
+                                 for k in DECISION_KINDS.values()),
+        "policy_kinds": sorted(POLICY_KINDS),
+        "action_kinds": list(ACTION_KINDS),
+        "preconditions": sorted([k, v] for k, v in PRECONDITIONS.items()),
+        "action_preconditions": sorted([a, [list(x) for x in v]] for a, v in ACTION_PRECONDITIONS.items()),
+        "plan_states": list(PLAN_STATES), "plan_event_kinds": list(PLAN_EVENT_KINDS),
+    }
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

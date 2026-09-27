@@ -209,13 +209,14 @@ def load_decisions_after(conn, after) -> list:
     return load_decisions(conn, "d.decision_id > ?", (int(after),))
 
 
-def withdrawals_after(conn, after) -> list:
+def withdrawals_after(conn, after, metadata=False) -> list:
     """(withdrawal_id, decision_id) for each withdrawal row newer than `after`
     -- of the decisions `load_decisions` reads by default (Build 9: not the
-    metadata decisions, which the model it refreshes never held)."""
+    metadata decisions, which the model it refreshes never held); B18:
+    `metadata=True` for the metadata decisions only (the queue's cache)."""
     return [(int(r[0]), str(r[1])) for r in conn.execute(
         "SELECT w.withdrawal_id, w.decision_id FROM p3_decision_withdrawal w JOIN p3_decision d ON d.decision_id = w.decision_id "
-        " WHERE w.withdrawal_id > ?" + _kind_filter(False) + " ORDER BY w.withdrawal_id",
+        " WHERE w.withdrawal_id > ?" + _kind_filter(metadata) + " ORDER BY w.withdrawal_id",
         (int(after),))]
 
 
@@ -405,16 +406,30 @@ def load_capabilities(conn) -> dict:
 
 _QUESTION_LOCATION_SQL = """
 SELECT fp.file_path_id, fp.relative_path, sr.root_path, fs.state, fs.current_observation_id,
-       fs.is_offline_or_cloud, fs.hard_link_count
+       fs.is_offline_or_cloud, fs.hard_link_count,
+       CASE WHEN fs.content_id IS NOT NULL AND fs.content_observation_id = fs.current_observation_id
+            THEN fs.content_id END AS current_content_id
   FROM file_path fp JOIN source_root sr ON sr.source_root_id = fp.source_root_id
   LEFT JOIN file_state fs ON fs.file_path_id = fp.file_path_id
 """
 _READ_ANALYZERS = tuple(sorted({a for readers in METADATA_READ_MAP.values() for a, _k, _s in readers}))
 
 
+_READING_COLUMNS = ("ar.analyzer_result_id, a.analyzer_key, ar.file_observation_id, ar.status, ar.title, ar.author, "
+                    "ar.content_created_reported, ar.detail_json, ar.error_message, ar.signature_state, ar.encryption_state, "
+                    "fo.file_path_id")
+
+
 def _analyzer_readings(conn, file_path_ids) -> dict:
-    """file_path_id -> [(analyzer_result_id, analyzer_key, observation_id, status, row)] for the
-    analyzers that read metadata, every observation (staleness is judged later). Read only."""
+    """file_path_id -> [analyzer_result rows] for the analyzers that read
+    metadata. Read only.
+
+    (B18, the queue's cold open) What observe() and _integrity_evidence use is
+    the newest attempt of each analyzer on the location's CURRENT observation;
+    an older observation's rows matter only when the current one has none (the
+    reading is then 'stale'). So those newest rows are read first, and every
+    observation's rows only for the locations that have none -- the same
+    answers, without re-reading every past analysis run of every file."""
     out = {}
     ids = sorted({int(i) for i in file_path_ids if str(i).isdigit()})
     marks_a = ",".join("?" for _ in _READ_ANALYZERS)
@@ -422,9 +437,23 @@ def _analyzer_readings(conn, file_path_ids) -> dict:
         chunk = ids[start:start + 500]
         marks = ",".join("?" for _ in chunk)
         for r in conn.execute(
-                "SELECT ar.analyzer_result_id, a.analyzer_key, ar.file_observation_id, ar.status, ar.title, ar.author, "
-                "       ar.content_created_reported, ar.detail_json, ar.error_message, ar.signature_state, fo.file_path_id "
-                "  FROM file_observation fo JOIN analyzer_result ar ON ar.file_observation_id = fo.file_observation_id "
+                f"SELECT {_READING_COLUMNS} FROM file_state fs "
+                "  JOIN file_observation fo ON fo.file_observation_id = fs.current_observation_id "
+                "  JOIN analyzer_result ar ON ar.file_observation_id = fo.file_observation_id "
+                "  JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id JOIN analyzer a ON a.analyzer_id = rr.analyzer_id "
+                f" WHERE fs.file_path_id IN ({marks}) AND a.analyzer_key IN ({marks_a}) "
+                "   AND ar.analyzer_result_id = (SELECT MAX(x.analyzer_result_id) FROM analyzer_result x "
+                "        JOIN analyzer_run y ON y.analyzer_run_id = x.analyzer_run_id "
+                "       WHERE x.file_observation_id = ar.file_observation_id AND y.analyzer_id = rr.analyzer_id)",
+                tuple(chunk) + _READ_ANALYZERS):
+            out.setdefault(str(r["file_path_id"]), []).append(r)
+    rest = [i for i in ids if str(i) not in out]
+    for start in range(0, len(rest), 500):
+        chunk = rest[start:start + 500]
+        marks = ",".join("?" for _ in chunk)
+        for r in conn.execute(
+                f"SELECT {_READING_COLUMNS} FROM file_observation fo "
+                "  JOIN analyzer_result ar ON ar.file_observation_id = fo.file_observation_id "
                 "  JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id JOIN analyzer a ON a.analyzer_id = rr.analyzer_id "
                 f" WHERE fo.file_path_id IN ({marks}) AND a.analyzer_key IN ({marks_a})",
                 tuple(chunk) + _READ_ANALYZERS):
@@ -452,12 +481,23 @@ def _reading(row, semantic_field):
 _PASSWORD_MARKS = ("password-protected document", "file has not been decrypted")
 
 
+#: (B18) analyzer_result.encryption_state -> the `encrypted` flag. 'unknown'
+#: stays None (unknown); 'not_applicable' marks the check not applicable.
+_ENCRYPTION_STATES = {"encrypted": True, "not_encrypted": False}
+
+
 def _integrity_evidence(readings, observation_id, family):
     """(signed_or_certified, signature word, encrypted, not-applicable keys)
     from the newest PDF / Office attempt on the current observation (B17).
     Absent evidence is None -- unknown -- never False: a result analyzed
     before B17 has no signature_state, and reading that as 'unsigned' would
-    unblock every metadata item on it."""
+    unblock every metadata item on it.
+
+    B18: encryption is the structured column analyzer_result.encryption_state
+    (migration 016), written by both analyzers -- also on the error row of a
+    file refused as password-protected. The column speaks whenever it is set;
+    B17's reading (the error wording, IsEncrypted, "an opened package") is
+    the fallback ONLY for a row whose column is NULL, i.e. written before B18."""
     latest = None
     for r in readings:
         if r["analyzer_key"] in ("pdf", "office") and observation_id is not None \
@@ -466,8 +506,12 @@ def _integrity_evidence(readings, observation_id, family):
                 latest = r
     if latest is None:
         return None, None, None, ()
+    column = latest["encryption_state"] if "encryption_state" in latest.keys() else None
     message = (latest["error_message"] or "").lower()
     if latest["status"] != "analyzed":
+        if column is not None:
+            na = ("source_not_encrypted",) if column == "not_applicable" else ()
+            return None, None, _ENCRYPTION_STATES.get(column), na
         encrypted = True if any(m in message for m in _PASSWORD_MARKS) else None
         return None, None, encrypted, ()
     try:
@@ -479,7 +523,13 @@ def _integrity_evidence(readings, observation_id, family):
     na = ()
     if detail.get("OfficeType") == "RTF (legacy)" or word == "not_applicable":
         na = ("source_not_signed_or_certified", "source_not_encrypted")
-    if latest["analyzer_key"] == "pdf":
+    if column is not None:
+        encrypted = _ENCRYPTION_STATES.get(column)
+        if column == "not_applicable" and "source_not_encrypted" not in na:
+            na = na + ("source_not_encrypted",)
+        elif column != "not_applicable" and "source_not_encrypted" in na:
+            na = tuple(k for k in na if k != "source_not_encrypted")
+    elif latest["analyzer_key"] == "pdf":
         encrypted = {"true": True, "false": False}.get(str(detail.get("IsEncrypted", "")).lower())
     elif na:
         encrypted = None
@@ -490,25 +540,37 @@ def _integrity_evidence(readings, observation_id, family):
     return signed, word, encrypted, na
 
 
-def _question(question_id, loc_row, semantic_field, readings, capabilities) -> MetadataQuestion:
+def _location_facts(loc_row, readings):
+    """(B18) What every question on one location shares -- its path, family,
+    integrity evidence and content identity -- worked out once per location,
+    not once per question (the queue's cold open, task 4)."""
     path = full_path(loc_row["root_path"], loc_row["relative_path"])
     family = file_family(path)
+    obs = loc_row["current_observation_id"]
+    links = loc_row["hard_link_count"]
+    content = loc_row["current_content_id"] if "current_content_id" in loc_row.keys() else None
+    return {"path": path, "family": family, "obs": obs, "integrity": _integrity_evidence(readings, obs, family),
+            "hardlinked": None if links is None else int(links) > 1, "present": loc_row["state"] == "present",
+            "cloud_only": bool(loc_row["is_offline_or_cloud"]), "content_id": str(content) if content is not None else None}
+
+
+def _question(question_id, loc_row, semantic_field, readings, capabilities, facts=None) -> MetadataQuestion:
+    f = facts or _location_facts(loc_row, readings)
+    family, obs = f["family"], f["obs"]
     cap = capability_for(capabilities, family, semantic_field)
     results = [(int(r["analyzer_result_id"]), r["analyzer_key"], r["file_observation_id"], r["status"],
                 _reading(r, semantic_field)) for r in readings]
-    obs = loc_row["current_observation_id"]
-    present = loc_row["state"] == "present"
-    state, value, values, ids, detail = observe(results, semantic_field, cap, present=present,
-                                                cloud_only=bool(loc_row["is_offline_or_cloud"]), current_observation_id=obs)
-    links = loc_row["hard_link_count"]
-    signed, sig_word, encrypted, na = _integrity_evidence(readings, obs, family)
+    state, value, values, ids, detail = observe(results, semantic_field, cap, present=f["present"],
+                                                cloud_only=f["cloud_only"], current_observation_id=obs)
+    signed, sig_word, encrypted, na = f["integrity"]
     return MetadataQuestion(
         question_id=str(question_id) if question_id is not None else None, location_id=str(loc_row["file_path_id"]),
-        semantic_field=semantic_field, path=path, observed_state=state, observed_value=value, observed_values=values,
+        semantic_field=semantic_field, path=f["path"], observed_state=state, observed_value=value, observed_values=values,
         file_family=family, capability=cap,
         signed_or_certified=signed, signature_state=sig_word, encrypted=encrypted, integrity_na=na,
-        hardlinked=None if links is None else int(links) > 1,
-        observation_id=str(obs) if obs is not None else None, analyzer_result_ids=ids, detail=detail)
+        hardlinked=f["hardlinked"],
+        observation_id=str(obs) if obs is not None else None, analyzer_result_ids=ids, detail=detail,
+        content_id=f["content_id"])
 
 
 def load_metadata(conn, question_ids=None) -> MetadataEvidence:
@@ -529,13 +591,59 @@ def load_metadata(conn, question_ids=None) -> MetadataEvidence:
     except sqlite3.OperationalError:
         return MetadataEvidence(capabilities=caps)
     readings = _analyzer_readings(conn, [r["file_path_id"] for r in rows])
-    questions = {}
+    questions, facts = {}, {}
     for r in rows:
-        q = _question(r["question_id"], r, r["semantic_field"], readings.get(str(r["file_path_id"]), []), caps)
+        fid = str(r["file_path_id"])
+        mine = readings.get(fid, [])
+        if fid not in facts:
+            facts[fid] = _location_facts(r, mine)
+        q = _question(r["question_id"], r, r["semantic_field"], mine, caps, facts[fid])
         questions[q.question_id] = q
     decisions = load_decisions(conn, metadata=True) if question_ids is None else []
     events = load_events(conn, metadata=True) if question_ids is None else []
+    resolve_bound_values(conn, decisions, events)
     return MetadataEvidence(questions, decisions, caps, events)
+
+
+def resolve_bound_values(conn, decisions=(), events=()):
+    """(B18) A B16 / B17 metadata binding holds analyzer-result ids only; the
+    material-change rule compares VALUES (metadata.binding_drift). So, at
+    load, each such binding's ids are resolved to the value(s) they were
+    read as -- the same reading observe() makes (analyzed rows, stripped,
+    distinct) -- and kept on the in-memory binding as `resolved_values`.
+    Nothing is written back. An id that is no longer in the database leaves
+    the binding unresolved, and the comparison falls back to ids (B17's
+    rule): an old decision may drift, it never goes silently current."""
+    wanted = []
+    for b in [d.binding for d in decisions if d.target_kind == METADATA_QUESTION] + \
+             [e.detail for e in events if e.target_kind == METADATA_QUESTION and e.kind == "deferred"]:
+        if isinstance(b, dict) and b and "observed_values" not in b and "resolved_values" not in b \
+                and b.get("analyzer_result_ids") is not None and b.get("semantic_field"):
+            wanted.append(b)
+    ids = sorted({int(x) for b in wanted for x in b["analyzer_result_ids"] if str(x).isdigit()})
+    rows = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        for r in conn.execute(
+                "SELECT ar.analyzer_result_id, a.analyzer_key, ar.status, ar.title, ar.author, ar.content_created_reported, "
+                "       ar.detail_json FROM analyzer_result ar JOIN analyzer_run rr ON rr.analyzer_run_id = ar.analyzer_run_id "
+                f"  JOIN analyzer a ON a.analyzer_id = rr.analyzer_id WHERE ar.analyzer_result_id IN ({','.join('?' for _ in chunk)})",
+                chunk):
+            rows[int(r["analyzer_result_id"])] = r
+    for b in wanted:
+        found = [rows.get(int(x)) for x in b["analyzer_result_ids"] if str(x).isdigit()]
+        if any(r is None for r in found) or len(found) != len(b["analyzer_result_ids"]):
+            continue
+        values = []
+        for r in sorted(found, key=lambda r: int(r["analyzer_result_id"])):
+            if r["status"] != "analyzed":
+                continue
+            v = _reading(r, b["semantic_field"])
+            if isinstance(v, str):
+                v = v.strip() or None
+            if v is not None and v not in values:
+                values.append(v)
+        b["resolved_values"] = values
 
 
 def location(conn, file_path_id):
@@ -557,6 +665,7 @@ def file_metadata(conn, file_path_id):
                                      "(d.target_kind = ? AND d.target_ref = ?)",
                                (METADATA_QUESTION, *asked, LOCATION, str(int(file_path_id))), metadata=True)
     events = [e for e in load_events(conn, metadata=True) if e.target_ref in set(asked)]
+    resolve_bound_values(conn, decisions, events)
     return MetadataEvidence({q.question_id or f"field:{q.semantic_field}": q for q in questions}, decisions,
                             load_capabilities(conn), events)
 
@@ -595,27 +704,39 @@ def location_metadata(conn, file_path_id) -> list:
         pass
     caps = load_capabilities(conn)
     readings = _analyzer_readings(conn, [file_path_id]).get(str(int(file_path_id)), [])
-    return [_question(asked.get(f), row, f, readings, caps) for f in METADATA_FIELDS]
+    facts = _location_facts(row, readings)
+    return [_question(asked.get(f), row, f, readings, caps, facts) for f in METADATA_FIELDS]
 
 
 def question_binding(conn, question_id) -> dict:
-    """What a metadata decision rests on (Build 1's pattern, ids only): the
-    question, its location's current observation, and the analyzer results
-    the observed value was read from -- plus the value-state word, so a
-    material change (R8 §53) can be told from a re-read that found the same."""
+    """What a metadata decision rests on: see question_binding_from."""
     md = load_metadata(conn, [question_id])
     q = md.questions.get(str(question_id))
-    if q is None:
-        return {}
+    return question_binding_from(q) if q is not None else {}
+
+
+def question_binding_from(q) -> dict:
+    """What a metadata decision rests on (B18): the question; its location's
+    current observation and, when authoritative, content identity; the
+    observed value(s) and value-state the person decided about. Those three
+    are what the material-change rule compares (metadata.binding_drift) --
+    a re-read that finds the same value is not a change. The analyzer-result
+    ids stay as provenance only (B16 / B17 bindings had nothing else; they are
+    resolved to values when loaded -- resolve_bound_values). Integrity
+    evidence (signature, encryption, hard link) is deliberately NOT bound:
+    it re-checks plans, never the decision."""
     return {
         "schema": EVIDENCE_BINDING_SCHEMA,
         "target_kind": METADATA_QUESTION,
-        "question_id": int(question_id),
+        "question_id": int(q.question_id),
         "file_path_id": int(q.location_id),
         "semantic_field": q.semantic_field,
         "observation_id": int(q.observation_id) if q.observation_id is not None else None,
+        "content_id": int(q.content_id) if q.content_id is not None and str(q.content_id).isdigit() else q.content_id,
         "analyzer_result_ids": [int(i) for i in q.analyzer_result_ids],
         "observed_state": q.observed_state,
+        "observed_value": q.observed_value,
+        "observed_values": list(q.observed_values),
     }
 
 
@@ -722,6 +843,19 @@ def evidence_mark(conn) -> str:
         "       COALESCE(MAX(content_run_id), 0), COALESCE(MAX(hash_run_id), 0) FROM file_state").fetchone()
     run = max(int(obs[2] or 0), int(obs[3] or 0), int(obs[4] or 0))
     return f"generation {int(gen or 0)}; observation {int(obs[0] or 0)}; locations {int(obs[1] or 0)}; run {run}"
+
+
+def analyzer_mark(conn) -> int:
+    """(B18) The newest analyzer result: a re-analysis moves it. Metadata
+    evidence is read from analyzer results, which evidence_mark does not see
+    (an analysis run writes no observation and no file_state run id)."""
+    return int(conn.execute("SELECT COALESCE(MAX(analyzer_result_id), 0) FROM analyzer_result").fetchone()[0] or 0)
+
+
+def metadata_mark(conn) -> str:
+    """(B18) evidence_mark plus the newest analyzer result -- what a metadata
+    batch (bulk Confirm) is judged on and checked against at commit."""
+    return f"{evidence_mark(conn)}; analyzer result {analyzer_mark(conn)}"
 
 
 def pair_binding_from(ev, pair) -> dict:

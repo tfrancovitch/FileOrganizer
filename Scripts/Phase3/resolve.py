@@ -36,6 +36,10 @@ came first, and the research is emphatic on the point.
 """
 from __future__ import annotations
 
+#: (B18, S4) The resolver's contract version, recorded in every plan revision's
+#: basis: bumped when the same evidence and decisions could resolve differently.
+RESOLVER_VERSION = "fileorganizer.p3.resolver/1"
+
 from dataclasses import dataclass, field, asdict
 
 from .model import Evidence, Location, Group, active_decisions, active_policies, under, path_key
@@ -189,7 +193,7 @@ def _policy_covers(policy, loc: Location) -> bool:
     if kind is None:
         return False
     if kind.scope_kind == "source_root":
-        return str(policy.scope.get("root_key", "")).lower() == str(loc.root_key).lower()
+        return path_key(policy.scope.get("root_key", "")) == path_key(loc.root_key)
     return under(loc.path_key, path_key(policy.scope.get("path_key") or policy.scope.get("path") or ""))
 
 

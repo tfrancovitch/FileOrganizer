@@ -62,7 +62,8 @@ from .model import Evidence, Decision, PolicyVersion, active_decisions, under, p
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, decision_kind, policy_kind, bulk_action, scope_kind as _scope_kind,
                        SOURCE_ROOT, SCOPE_EXPLICIT_SELECTION, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        DISP_DECIDED, DISP_SATISFIED, DISP_PRESERVED, DISP_CONFLICT, DISP_BLOCKED, DISP_NOT_APPLICABLE,
-                       DISPOSITIONS, MODE_PRESERVE)
+                       DISPOSITIONS, MODE_PRESERVE, METADATA_QUESTION, METADATA_CONFIRM, METADATA_FIELDS,
+                       OBS_UNAVAILABLE, OBS_STALE, OBS_CONFLICTING)
 
 # -- the Show filter: routes, then lenses -- filters over the same groups ----------
 
@@ -159,6 +160,11 @@ def describe_query(query, parameters=None) -> str:
         parts.append(f"root {q['root']}")
     if q.get("extension"):
         parts.append(f"extension {q['extension']}")
+    if q.get("targets") == METADATA_QUESTION:
+        f = q.get("filters") or {}
+        words = [f"{k.replace('_', ' ')} {v}" for k, v in sorted(f.items()) if v]
+        return ("the Metadata Review queue" + (" filtered by " + ", ".join(words) if words else "")
+                if q.get("queue") else _n(len(q.get("question_ids") or ()), "checked question"))
     if not parts and parameters and parameters.get("selection"):
         parts.append(_n(len(parameters["selection"]), "checked pair" if q.get("targets") == VISUAL_PAIR
                         or parameters.get("targets") == VISUAL_PAIR else "checked group"))
@@ -501,11 +507,13 @@ class BulkPreview:
 
     @property
     def member_word(self) -> str:
-        return {LOCATION: "copies", VISUAL_PAIR: "pairs"}.get(bulk_action(self.action).member_kind, "groups")
+        return {LOCATION: "copies", VISUAL_PAIR: "pairs", METADATA_QUESTION: "questions"}.get(
+            bulk_action(self.action).member_kind, "groups")
 
     @property
     def member_singular(self) -> str:
-        return {LOCATION: "copy", VISUAL_PAIR: "pair"}.get(bulk_action(self.action).member_kind, "group")
+        return {LOCATION: "copy", VISUAL_PAIR: "pair", METADATA_QUESTION: "question"}.get(
+            bulk_action(self.action).member_kind, "group")
 
     def samples(self, disposition, n=3):
         return [(c.label, c.detail) for c in self.candidates if c.disposition == disposition][:n]
@@ -684,7 +692,7 @@ def pair_query_targets(query, ev: Evidence, proj: R.ProjectProjection, routing: 
     q = query or {}
     pairs = filter_pairs(proj, routing, ev, q["show"]) if q.get("show") else list(proj.pairs)
     if q.get("folder_key") or q.get("folder"):
-        key = q.get("folder_key") or path_key(q["folder"])
+        key = path_key(q.get("folder_key") or q["folder"])
         subfolders = q.get("subfolders", True)
         pairs = [p for p in pairs if pair_in_folder(p, ev, key, subfolders)]
     return [p.pair_id for p in pairs]
@@ -1045,3 +1053,82 @@ def policy_preview(conn, kind, scope, effect=None) -> dict:
             "covers_locations": covered_total, "covers_samples": covered_samples, "covers_members": len(covered_members),
             "groups_touched": len(groups_touched), "groups_changed": len(changes), "changes": changes, "totals": totals,
             "lines": lines}
+
+
+# -- B18: bulk Confirm on the Metadata Review queue --------------------------------------
+
+#: Why a question's evidence cannot carry a re-recorded decision now.
+_CONFIRM_BLOCKING_STATES = (OBS_UNAVAILABLE, OBS_STALE)
+
+
+def metadata_confirm_query(question_ids, filters=None, queue=False) -> dict:
+    """The frozen scope of a Confirm batch: the checked questions, or (queue)
+    what the Metadata Review queue listed under these filters, by id."""
+    return {"schema": BULK_QUERY_SCHEMA, "targets": METADATA_QUESTION, "queue": bool(queue),
+            "filters": {k: v for k, v in (filters or {}).items() if v}, "question_ids": [str(q) for q in question_ids]}
+
+
+def classify_confirm(md, question_ids, now=None) -> list:
+    """One Candidate per question (pure, over the metadata slice): what a
+    Confirm would record for it. Buckets:
+
+      decided           its decision needs revalidation -> the SAME kind and
+                        value re-recorded on the evidence as it is now
+      already_satisfied its decision is current: nothing to confirm
+      not_applicable    no decision to confirm (undecided, or no question)
+      conflict          the readings now disagree: a person decides
+      blocked           the evidence cannot carry a decision now (not in the
+                        current evidence, unavailable, or stale)
+    """
+    from . import metadata as MD
+    ev = Evidence({}, {}, [], [], now=now or utc_now())
+    ev.metadata = md
+    current = MD.current_decisions(MD.active_metadata(ev))
+    out, seen = [], set()
+    for qid in question_ids:
+        qid = str(qid)
+        if qid in seen:
+            continue
+        seen.add(qid)
+        q = md.questions.get(qid)
+        field_label = METADATA_FIELDS[q.semantic_field].label if q is not None and q.semantic_field in METADATA_FIELDS else "?"
+        label = f"{file_name(q.path or '') if q is not None else 'question ' + qid} -- {field_label}"
+        c = Candidate(METADATA_QUESTION, qid, (), label=label)
+        d = current.get(qid) if q is not None else None
+        if q is None:
+            c.disposition, c.detail = DISP_NOT_APPLICABLE, "no such metadata question"
+        elif d is None:
+            c.disposition, c.detail = DISP_NOT_APPLICABLE, "no decision to confirm (undecided)"
+        else:
+            drift = MD.question_drift(q, d)
+            if not drift:
+                c.disposition, c.detail = DISP_SATISFIED, "its decision is current"
+            elif q.observation_id is None or q.observed_state in _CONFIRM_BLOCKING_STATES:
+                c.disposition, c.detail = DISP_BLOCKED, (f"the evidence cannot carry a decision now ({q.observed_state}"
+                                                         f"{': ' + q.detail if q.detail else ''})")
+            elif q.observed_state == OBS_CONFLICTING:
+                c.disposition, c.detail = DISP_CONFLICT, "the readings disagree now: " + " / ".join(map(repr, q.observed_values))
+            else:
+                c.decisions = ((d.kind, METADATA_QUESTION, qid, d.value),)
+                c.bindings = {(d.kind, METADATA_QUESTION, qid): ev_mod.question_binding_from(q)}
+                c.disposition, c.detail = DISP_DECIDED, f"re-record {decision_kind(d.kind).label}: {drift[0]}"
+        c.outcomes = tuple((c.disposition, c.detail) for _d in (c.decisions or ((None,),)))
+        out.append(c)
+    return out
+
+
+def preview_metadata_confirm(conn, question_ids, scope_kind=SCOPE_EXPLICIT_SELECTION, query=None, md=None,
+                             now=None) -> BulkPreview:
+    """The categorized preview of a Confirm batch, frozen at commit: the
+    candidates, the record mark (the last operation) and the metadata
+    evidence mark (evidence_mark plus the newest analyzer result) -- the
+    commit refuses if either moved. `md`: the metadata slice, when the caller
+    has it loaded (the queue page does)."""
+    _scope_kind(scope_kind)
+    ids = [str(q) for q in question_ids]
+    md = md if md is not None else ev_mod.load_metadata(conn)
+    candidates = classify_confirm(md, ids, now)
+    return BulkPreview(METADATA_CONFIRM, {}, scope_kind, query if query is not None else metadata_confirm_query(ids),
+                       len(ids), candidates, evaluated_utc=now or utc_now(), record_mark=record_mark(conn),
+                       evidence_mark=ev_mod.metadata_mark(conn))
+

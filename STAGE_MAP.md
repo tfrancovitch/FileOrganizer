@@ -338,3 +338,15 @@ interaction on the project database. Opening the queue or a file's page
 reads evidence and records nothing. Each action (a desired value, a clear,
 leave unchanged, a deferral, undo, project metadata) is one operation. No
 source file is opened, stat'ed or listed.
+The **Analyze** stage (B18) also records whether each PDF and Office document
+is encrypted (`analyzer_result.encryption_state`: encrypted, not_encrypted,
+unknown, not_applicable) -- for a legacy `.doc` / `.xls` / `.ppt` from its
+header structures only (Word's FIB flag, Excel's FILEPASS record,
+PowerPoint's encryption markers), a few bounded reads, never the content. A
+file refused as password-protected is still an analyzer error, and its row
+still says encrypted. Since B18 a re-analysis that finds the same values does
+NOT send decided metadata questions back: only a changed file, value or
+value-state does. The queue's **Confirm...** records one batch (a `bulk`
+operation) of the same decisions on fresh evidence; its Undo re-applies what
+it superseded. The Decide page's **Export current state...** reads the
+project database and writes one CSV under the project's `Exports\`.

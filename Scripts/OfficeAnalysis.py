@@ -2,7 +2,7 @@
 """
 OfficeAnalysis.py
 Part of: The File Organizer
-Version: 1.4.0
+Version: 1.5.0
 
 Extracts document properties from Office files selected by the database-backed analyzer engine:
 title, author, created/modified dates, and a type-appropriate content
@@ -41,6 +41,18 @@ relationship; a legacy OLE2 file when it holds a _signatures,
 \\x05DigitalSignature or _xmlsignatures stream. RTF saved as .doc has no
 signature scheme: not_applicable. Presence only -- never validated.
 
+1.5.0 (B18): whether the file is encrypted (EncryptionState: encrypted |
+not_encrypted | unknown | not_applicable), a structured field instead of
+error wording. A modern package that opens is not encrypted; one saved with a
+password to open is refused (PasswordProtectedError) and its error row still
+says encrypted. A legacy OLE2 file is judged from its header structures only,
+never its content: Word's FIB fEncrypted bit (FibBase, 0x0100), Excel's
+FILEPASS record (0x002F) after the first BOF of the Workbook / Book stream,
+PowerPoint's EncryptedSummary stream, CurrentUserAtom header token and
+UserEditAtom encryption-session reference. Every read is bounded and walks
+only the sectors it needs; a structure that cannot be read is unknown, never
+a crash. RTF saved as .doc has no encryption scheme: not_applicable.
+
 Requires:
     pip install python-docx openpyxl python-pptx olefile
 
@@ -53,7 +65,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "Database"))
 import fo_text
-from file_organizer_common import to_long_path
+from file_organizer_common import to_long_path, PasswordProtectedError
 
 try:
     import docx
@@ -83,7 +95,7 @@ MODERN_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt"}
 EXTENSIONS = MODERN_EXTENSIONS | LEGACY_EXTENSIONS
 CHECKPOINT_FIELDS = ["Key", "OfficeType", "ExtractionMode", "Title", "Author", "Created", "Modified", "ContentCount",
-                     "SignatureState", "Error"]
+                     "SignatureState", "EncryptionState", "Error"]
 
 #: What marks a signed file (B17), by container. Names only; nothing is verified.
 OOXML_SIGNATURE_PREFIX = "_xmlsignatures/"
@@ -317,10 +329,185 @@ def ole_signature_state(path):
         return "unknown"
 
 
+# -- legacy OLE2 encryption (B18) ------------------------------------------------
+#
+# Header structures only. olefile parses the compound file's header, FAT and
+# directory (structure, not content); the few bytes each check needs are then
+# read by walking the stream's own sector chain to exactly the sectors that
+# hold them -- a stream is never loaded whole, and no recorded size is
+# trusted beyond the chain that backs it.
+
+OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
+_CHAIN_END = {0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0xFFFFFFFC}   # end, free, FAT sector, DIFAT sector
+OLE_READ_CAP = 64 * 1024                                       # the most bytes one read may ask for
+WORD_IDENTS = {0xA5EC, 0xA5DC}                                 # FibBase.wIdent: Word 97+ / Word 6-95
+WORD_F_ENCRYPTED = 0x0100                                      # FibBase flags (offset 0x0A): fEncrypted
+XLS_BOFS = {0x0809, 0x0409, 0x0209, 0x0009}
+XLS_FILEPASS, XLS_WRITEPROTECT = 0x002F, 0x0086
+XLS_RECORD_CAP = 4                                             # FILEPASS is the 2nd, or 3rd after WRITEPROTECT
+OLE_ENCRYPTED_STREAMS = ("\tDRMContent", "\tDRMViewerContent", "EncryptedPackage")   # IRM content; an encrypted package
+PPT_CURRENT_USER_ATOM, PPT_USER_EDIT_ATOM = 0x0FF6, 0x0FF5
+PPT_TOKEN_PLAIN, PPT_TOKEN_ENCRYPTED = 0xE391C05F, 0xF3D1C4DF
+PPT_USER_EDIT_PLAIN, PPT_USER_EDIT_ENCRYPTED = 0x1C, 0x20      # UserEditAtom length without / with encryptSessionPersistIdRef
+
+
+def _ole_chain_read(fat, start, sector_size, offset, length, fetch):
+    """`length` bytes from `offset` of the stream whose chain starts at
+    `start`, reading only the sectors that hold them. None when the chain
+    ends early, loops, or leaves the table."""
+    out = bytearray()
+    sid, index, first = start, 0, offset // sector_size
+    seen = set()
+    for _step in range(len(fat) + 1):
+        if len(out) >= length:
+            return bytes(out)
+        if sid in _CHAIN_END or not (0 <= sid < len(fat)) or sid in seen:
+            return None                     # ended early, left the table, or came back to a sector: a loop
+        seen.add(sid)
+        if index >= first:
+            within = offset - index * sector_size if index == first else 0
+            n = min(sector_size - within, length - len(out))
+            chunk = fetch(sid, within, n)
+            if chunk is None or len(chunk) < n:
+                return None
+            out += chunk
+        sid, index = fat[sid], index + 1
+    return bytes(out) if len(out) >= length else None
+
+
+def ole_read(ole, name, offset, length):
+    """At most `length` bytes (never more than OLE_READ_CAP) of stream `name`
+    from `offset`; None when the stream is absent, the range lies outside
+    its recorded size, or the sectors behind it cannot be read."""
+    try:
+        sid = ole._find(name)
+    except (IOError, OSError, ValueError):
+        return None
+    entry = ole.direntries[sid]
+    if entry is None or entry.entry_type != olefile.STGTY_STREAM or offset < 0 or offset >= entry.size:
+        return None
+    length = min(length, entry.size - offset, OLE_READ_CAP)
+    fp, sector_size = ole.fp, ole.sectorsize
+
+    def regular(sect, within, n):
+        fp.seek(sector_size * (sect + 1) + within)
+        return fp.read(n)
+    if entry.size >= ole.minisectorcutoff:
+        return _ole_chain_read(ole.fat, entry.isectStart, sector_size, offset, length, regular)
+    if ole.minifat is None:
+        ole.loadminifat()
+    root = ole.root
+
+    def mini(sect, within, n):
+        at = sect * ole.minisectorsize + within
+        if at + n > root.size:
+            return None
+        return _ole_chain_read(ole.fat, root.isectStart, sector_size, at, n, regular)
+    return _ole_chain_read(ole.minifat, entry.isectStart, ole.minisectorsize, offset, length, mini)
+
+
+def _u16(b, at):
+    return int.from_bytes(b[at:at + 2], "little")
+
+
+def _u32(b, at):
+    return int.from_bytes(b[at:at + 4], "little")
+
+
+def word_encryption_state(ole):
+    """Word: FibBase at the start of the WordDocument stream -- wIdent
+    (0xA5EC, or 0xA5DC for Word 6/95), then the flags word at offset 0x0A,
+    whose fEncrypted bit is 0x0100 (set for RC4 and XOR obfuscation alike)."""
+    head = ole_read(ole, "WordDocument", 0, 12)
+    if head is None or len(head) < 12 or _u16(head, 0) not in WORD_IDENTS:
+        return "unknown"
+    return "encrypted" if _u16(head, 0x0A) & WORD_F_ENCRYPTED else "not_encrypted"
+
+
+def excel_encryption_state(ole, stream):
+    """Excel: the workbook-globals substream starts with BOF; when the
+    workbook is encrypted a FILEPASS record (0x002F) comes next, after an
+    optional WRITEPROTECT. Record headers stay plain even then."""
+    first = ole_read(ole, stream, 0, 4)
+    if first is None or len(first) < 4 or _u16(first, 0) not in XLS_BOFS:
+        return "unknown"
+    at = 4 + _u16(first, 2)
+    for _n in range(XLS_RECORD_CAP):
+        head = ole_read(ole, stream, at, 4)
+        if head is None or len(head) < 4:
+            return "unknown"
+        kind = _u16(head, 0)
+        if kind == XLS_FILEPASS:
+            return "encrypted"
+        if kind != XLS_WRITEPROTECT:
+            return "not_encrypted"          # the globals went on without a FILEPASS
+        at += 4 + _u16(head, 2)
+    return "unknown"
+
+
+def powerpoint_encryption_state(ole):
+    """PowerPoint: an EncryptedSummary stream; the CurrentUserAtom's header
+    token (0xF3D1C4DF encrypted, 0xE391C05F not); and the UserEditAtom that
+    atom points to, which carries encryptSessionPersistIdRef -- the
+    persist-directory reference to the CryptSession10Container -- exactly
+    when the document is encrypted."""
+    if ole.exists("EncryptedSummary"):
+        return "encrypted"
+    cu = ole_read(ole, "Current User", 0, 20)
+    if cu is None or len(cu) < 20 or _u16(cu, 2) != PPT_CURRENT_USER_ATOM:
+        return "unknown"
+    token, edit_at = _u32(cu, 12), _u32(cu, 16)
+    if token == PPT_TOKEN_ENCRYPTED:
+        return "encrypted"
+    edit = ole_read(ole, "PowerPoint Document", edit_at, 8)
+    if edit is None or len(edit) < 8 or _u16(edit, 2) != PPT_USER_EDIT_ATOM:
+        return "unknown"
+    length = _u32(edit, 4)
+    if length == PPT_USER_EDIT_ENCRYPTED:
+        return "encrypted"
+    if length == PPT_USER_EDIT_PLAIN and token == PPT_TOKEN_PLAIN:
+        return "not_encrypted"
+    return "unknown"
+
+
+def ole_encryption_state(path):
+    """encrypted | not_encrypted | not_applicable (RTF saved as .doc) |
+    unknown, for a legacy .doc / .xls / .ppt. The check follows the streams
+    the file holds, not its extension. Never raises."""
+    long_path = to_long_path(path)
+    try:
+        with open(long_path, "rb") as f:
+            header = f.read(8)
+        if header.startswith(b"{\\rtf"):
+            return "not_applicable"
+        if header != OLE_MAGIC:
+            return "unknown"
+        ole = olefile.OleFileIO(long_path)
+        try:
+            # Rights-managed (IRM) content lives in an encrypted DRM stream,
+            # and an encrypted OOXML package saved under a legacy name is an
+            # EncryptedPackage stream: either is encrypted, whatever else the
+            # file holds.
+            if any(ole.exists(n) for n in OLE_ENCRYPTED_STREAMS):
+                return "encrypted"
+            if ole.exists("WordDocument"):
+                return word_encryption_state(ole)
+            for stream in ("Workbook", "Book"):
+                if ole.exists(stream):
+                    return excel_encryption_state(ole, stream)
+            if ole.exists("PowerPoint Document") or ole.exists("Current User"):
+                return powerpoint_encryption_state(ole)
+            return "unknown"
+        finally:
+            ole.close()
+    except Exception:                                           # noqa: BLE001
+        return "unknown"
+
+
 def analyze_office(path):
     ext = Path(path).suffix.lower()
     if ext in MODERN_EXTENSIONS and _encrypted_package(path):
-        raise ValueError("password-protected document (an encrypted Office package; no password is tried)")
+        raise PasswordProtectedError("password-protected document (an encrypted Office package; no password is tried)")
     if ext == ".docx":
         result = analyze_docx(path)
     elif ext == ".xlsx":
@@ -332,6 +519,11 @@ def analyze_office(path):
     else:
         raise ValueError(f"Unsupported extension: {ext}")
     result["SignatureState"] = ooxml_signature_state(path) if ext in MODERN_EXTENSIONS else ole_signature_state(path)
+    # (B18) A modern package that opened is not encrypted -- a password-to-open
+    # package was refused above, before it was read.
+    result["EncryptionState"] = ("not_encrypted" if ext in MODERN_EXTENSIONS else
+                                 "not_applicable" if result.get("OfficeType") == "RTF (legacy)" else
+                                 ole_encryption_state(path))
     return result
 
 

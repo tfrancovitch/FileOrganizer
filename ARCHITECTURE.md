@@ -1,11 +1,12 @@
-# Architecture — The File Organizer, B17 (Phases 1–2 shipped, Phase 3 in progress)
+# Architecture — The File Organizer, B18 (Phases 1–2 shipped, Phase 3 built; closeout drafted)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
 routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
-refresh, the Plan Builder, metadata and its page) at the end say what B7 and B8–B17 added on top.
+refresh, the Plan Builder, metadata and its page, the closeout round) at the end say what B7 and B8–B18 added on top;
+the Phase 3 section also holds its written state machines, the path-matching rule and the plan fingerprint.
 
 ---
 
@@ -155,13 +156,15 @@ extracted text is reused rather than duplicated by source path.
 
 ## Database
 
-Schema **`user_version = 12`**, created by `fo_db.py` applying migrations
-`001`–`012`. Migration 006 introduced current-state separation; migration 007
+Schema **`user_version = 16`**, created by `fo_db.py` applying migrations
+`001`–`016`. Migration 006 introduced current-state separation; migration 007
 completes the A–F reconciliation/current projection; 008 is Phase 2's core
 (saved queries, retained executions, the derived-index registry, the current
 exact-duplicate projection, the FTS map); 009 is Phase 3's decision record;
 010 its review events; 011 its bulk batches; 012 the visual candidate pairs
-(Phase 2 evidence: the image hashes, compared).
+(Phase 2 evidence: the image hashes, compared); 013 the plans; 014 the metadata
+capability record and questions; 015 `analyzer_result.signature_state`; 016
+`analyzer_result.encryption_state` (both Phase 2 evidence).
 
 | Table group | Holds |
 |---|---|
@@ -801,3 +804,157 @@ exact-duplicate group would leave it) is an informational note in the
 item's estimated effect; S2 (a removal and a metadata update on the same
 location) is a warning precondition attached only to those two items, so a
 revision without metadata items is exactly Build 8's.
+
+### The closeout round (B18, schema 16)
+
+```
+   PDFAnalysis 1.3.0 / OfficeAnalysis 1.5.0 --> analyzer_result.encryption_state (016; promoted: two analyzers)
+        |   PDF: the /Encrypt dictionary (an owner-password-only file too); needs a password ->
+        |        PasswordProtectedError, whose ERROR row still says encrypted (engine keeps exc.evidence_fields)
+        |   Office: an opened .docx/.xlsx/.pptx -> not_encrypted; a password-to-open package -> the same error;
+        |        legacy OLE2 from header structures only (bounded sector-chain reads, never a whole stream):
+        |        Word FibBase fEncrypted 0x0100; Excel FILEPASS after the globals BOF (after an optional
+        |        WRITEPROTECT); PowerPoint EncryptedSummary / CurrentUserAtom token / UserEditAtom length
+        |        (encryptSessionPersistIdRef); IRM \tDRMContent -> encrypted; unreadable -> unknown; RTF -> n/a
+   evidence._integrity_evidence   the column first; B17's error-text reading only when it is NULL (pre-B18 rows)
+   metadata.binding_drift          THE MATERIAL-CHANGE RULE: content identity (a new observation, unless both
+        |                          sides hold the same authoritative content hash), the observed value, the
+        |                          value-state. Not: a re-read with the same value, an analyzer version, an
+        |                          unchanged rescan, integrity evidence. Governs revalidation, Leave Unchanged's
+        |                          return, the "until the evidence changes" deferral; plans._metadata_obsolescence
+        |                          compares the item's frozen observed value/state likewise (integrity still
+        |                          obsoletes: "integrity evidence changed")
+   evidence.question_binding_from  B18 bindings carry content_id + observed value(s) + state; B16/B17 bindings
+        |                          (ids only) are resolved to values at load (resolve_bound_values), or fall
+        |                          back to the ids when unresolvable -- never silently current
+   bulk.preview_metadata_confirm   bulk Confirm (member kind metadata_question): decided (the same kind and value
+        |                          re-recorded on fresh evidence) / already current / conflict / blocked / not
+        |                          applicable; store.commit_bulk judged on evidence.metadata_mark (+ newest
+        |                          analyzer result); undo_batch re-applies each superseded decision as recorded
+   refresh.MetadataCache           the queue's session cache: full load on an evidence change, catch-up above the
+                                   record watermarks otherwise; rebuildable, never authoritative
+```
+
+`observe()` reads a location the last scan did not find as `unavailable`
+even when its old readings remain (B18). `_analyzer_readings` reads the
+newest reading of each analyzer on the current observation, and every
+observation's rows only where there is none -- the same questions,
+without re-reading every past analysis run (the queue's cold open).
+
+Plan revisions record, in their basis, the registry version and a digest
+of its vocabulary, the resolver and evaluator versions, the payload schema
+and the newest analyzer result (S4); the lock refuses a revision whose
+files were analyzed again since its preview. `store.export_current_state`
+(the Decide page's "Export current state...") writes what the decisions say
+now -- group resolutions, decided pairs, desired and project metadata, each
+with its decision ids -- through Phase 2's CSV writer and formula guard (S3).
+
+### The plan fingerprint
+
+Specified in `Docs\Specifications\PLAN_FINGERPRINT_SPEC.md` (M3), with
+golden vectors in `Resources\Phase3\fingerprint_vectors.json`
+(`p3_fingerprint_check`). In short: SHA-256 over the canonical JSON of the
+payload `{"schema": "fileorganizer.p3.plan-payload/1", "items": [...]}`
+(15 members per item, in item-number order); keys sorted by code point;
+no whitespace; strings as stored (no Unicode normalization -- the path
+Phase 4 acts on is the byte-exact observed name); UTF-8, an unpaired
+surrogate in its generalized three-byte form; only JSON-native values (a
+date, path, decimal, set or NaN is refused, never `str()`-ed). B18 wrote
+this down without changing a fingerprint: B15-B17's `default=str` was
+never called. Verification uses the schema recorded in the revision's
+basis (none before B18: /1): `plans.verify`, `store.verify_plan_revision`.
+
+### Path matching (folder and root policies, bulk folder scopes)
+
+`model.path_key` is the one rule every folder policy, root policy and
+bulk folder scope compares through (S5; `p3_closeout_check` §4):
+
+1. separators: `/` is `\`; a run of separators is one; a UNC path's
+   leading `\\` is kept; an extended-length prefix (`\\?\`, `\\?\UNC\`) is
+   dropped;
+2. no trailing separator;
+3. Unicode: compared in **NFC** -- a folder typed composed matches the
+   name stored decomposed and the reverse. Two sibling folders differing
+   only by normalization become one scope: the conservative direction for
+   protection (a policy can over-cover, never silently miss). Plans and
+   fingerprints never normalize (see above);
+4. case-insensitive by simple lower-casing (`str.lower`), as Windows
+   compares names -- not full case folding (`ß` is not `ss`);
+5. the folder boundary is a whole segment: `C:\Docs` covers `C:\Docs` and
+   `C:\Docs\x`, never `C:\Docs2` (`model.under`).
+
+Symbolic links and reparse points are not followed by policy matching: a
+policy covers the path the evidence stores (Phase 1 records a link as the
+link, never its target), and mount boundaries and renamed roots are
+matched by the stored root key, not re-resolved.
+
+### State machines (M6)
+
+Each lifecycle below is enforced in the code named, and its invalid
+transitions are refused in the checks named (`p3_closeout_check` unless
+said otherwise). "Refused" means the store raises `ValueError` and writes
+nothing (one operation, one transaction).
+
+**(a) The decision lifecycle** -- states are derived (`model.active_decisions`),
+never stored: a row is *active* until a later row supersedes it or a
+withdrawal row names it.
+
+| From | Event | Guard | To | Code |
+|---|---|---|---|---|
+| (none) | record | the registry permits the kind on the target; its value validates; a GROUP/PAIR/QUESTION target is current; a canonical is a member | active; supersedes the chain head **in its own conflict domain** only | `store.record_decision`, `_validate_decision`, `_chain_head` |
+| (none) | record override | explicit confirmation + rationale + an active protection policy that covers the location | active | `store.record_override` |
+| active | supersede (a later row, same target, same domain) | -- | superseded | `_decision_row` |
+| active | withdraw | the row is active | withdrawn (a withdrawal row; the decision row stays) | `store.withdraw`, `_withdraw_row` |
+| withdrawn | re-apply | as record | the new row supersedes the withdrawn one (F09) | `_chain_head` includes withdrawn rows |
+| active (Confirm batch member) | batch Undo | the row still speaks | withdrawn, and the decision it superseded re-applied as recorded (B18) | `store.undo_batch` |
+
+Invalid, refused: withdraw a withdrawn or a superseded decision; an unknown
+kind; a kind on a target it cannot take; a group that is not current; a
+canonical that is not a member; `override_protection` through
+`record_decision`; an override without confirmation or rationale.
+Impossible by construction: supersession across conflict domains (a
+project note never supersedes a redundant mark; Keep all and the canonical
+are two domains), reviving a superseded row, editing or deleting a row
+(the store has no such statement; mutant M08 shows the suites catch one).
+
+**(b) Review routing** -- the route is derived, never stored: `routing.route_target`
+applies the precedence **conflict > needs revalidation > blocked > deferred >
+ready for plan > resolved > unresolved** (`routing.ROUTE_ORDER`); every one of
+the 127 combinations is tested in `p3_regression` §6. Review events are
+append-only rows (`p3_review_event`): a deferral opens, a restore closes the
+one it names (or all), a newer deferral replaces an open one; the detector
+writes needs_revalidation / blocked / restored under a system operation and
+never a decision. Invalid, refused: a restore naming an event that does not
+exist; a deferral whose disposition does not apply to the target (a preview
+trigger on a group; a hash trigger on a metadata field); an unparseable
+date; an unknown event kind (`store._event_row`, `store.defer`).
+
+**(c) The plan-revision lifecycle** -- the events (`p3_plan_event`) are the
+record; `p3_plan_revision.status / locked / obsolete` are a **cache** of
+them (S6), written in the same operation and rebuildable
+(`store.plan_status_from_events`, checked equal by `plan_status_drift`).
+
+| From | Event | Guard | To | Code |
+|---|---|---|---|---|
+| (none) | build | the dependency graph is acyclic | previewed (`previewed` event) | `record_plan_revision` |
+| previewed | a newer build of the same plan | -- | superseded | `record_plan_revision` |
+| previewed | lock | the record, the evidence and (B18) the analyzer results are where the preview found them; the payload schema is current | locked (fingerprint + `locked` event with the dependency set) | `lock_plan_revision` |
+| locked | its own dependency changed (detector) | `plans.obsolescence` names a reason | obsolete (`obsolete` event with reasons) | `reconcile_plans`, `mark_plans_obsolete` |
+
+Invalid, refused: lock twice; lock a superseded or an obsolete revision;
+lock after the record, the evidence or the analyzer results moved; an
+unknown plan event kind. "Edit a locked revision" has no statement: a new
+build makes a new revision and the locked one stays locked; an item
+altered in the database fails `verify_plan_revision`. Obsolete never
+reverts (the same decision recorded again leaves it obsolete; a new
+revision is how to go on).
+
+**(d) Conflicts** -- derived, never stored (`resolve.resolve_group`,
+`pairs.resolve_pairs`): a conflict *arises* from decisions against
+protection, the floors or each other; it is *resolved by a decision* (the
+mark withdrawn, Keep, a canonical), *by an override* (only
+`override_protection` naming the policy version), or *by the evidence*
+(the copy left the group; the pair is no longer a candidate). A policy of
+lower rank never resolves one; a blocking conflict withholds plan
+eligibility and routes first. Checked in `p3_closeout_check` §1d,
+`p3_regression` §2 and §6, `p3_visual_check`.

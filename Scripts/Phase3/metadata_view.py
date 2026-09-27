@@ -5,7 +5,12 @@ Two views of one page (R10 §21: no new top-level area beyond it):
   the Metadata Review queue   metadata.queue -- the questions that need a
                               person (see metadata.QUEUE_STATES), with filters
                               by field, file family, value-state and blocker,
-                              counts, and "Currently clear" when empty
+                              counts, and "Currently clear" when empty;
+                              B18: a check column and bulk Confirm (the same
+                              decision re-recorded on the evidence as it is
+                              now), on B10's frozen batch, with its Batches
+                              list and Undo; the slice is read through the
+                              session's cache (refresh.MetadataCache)
   one file's metadata         every semantic field as the evidence reads it
                               (value and value-state, capability, blockers,
                               your decision, review state, the plan item it
@@ -25,13 +30,16 @@ from tkinter import ttk, messagebox
 
 from Phase2.core import utc_now
 
+from . import bulk as BK
 from . import evidence as E
 from . import metadata as MD
 from . import plans as PL
+from . import refresh as RF
 from .model import Evidence, MetadataEvidence, active_decisions
 from .registry import (METADATA_FIELDS, PROJECT_METADATA_FIELDS, PROJECT_METADATA_LABEL, METADATA_QUESTION, LOCATION,
-                       OBSERVED_STATES, FILE_FAMILIES)
-from .review import store_for, DeferDialog
+                       OBSERVED_STATES, FILE_FAMILIES, BULK_ACTIONS, METADATA_CONFIRM, SCOPE_EXPLICIT_SELECTION,
+                       SCOPE_QUERY_SNAPSHOT)
+from .review import store_for, DeferDialog, CHECKED, UNCHECKED
 from .store import new_command_id
 
 #: The source section's label (R8 §50: every editable field says where it is stored).
@@ -111,6 +119,9 @@ class MetadataQueuePage:
         self.app = app
         self.store = store_for(app)
         self.rows, self.shown = [], []
+        self.checked = set()                    # B18: checked question ids (Confirm's explicit scope)
+        self.confirm_dialog = None
+        self.batches_dialog = None
 
     def build(self, parent):
         top = ttk.Frame(parent)
@@ -132,31 +143,52 @@ class MetadataQueuePage:
             box.pack(side="left", padx=(0, 12))
             box.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
         ttk.Button(frow, text="Open file", command=self.open_selected).pack(side="right")
+        brow = ttk.Frame(parent)
+        brow.pack(fill="x", pady=(0, 6))
+        ttk.Button(brow, text="Check all shown", command=self.check_all_shown).pack(side="left")
+        ttk.Button(brow, text="Clear checks", command=self.clear_checks).pack(side="left", padx=(6, 0))
+        self.checked_var = tk.StringVar(value="")
+        ttk.Label(brow, textvariable=self.checked_var, foreground="#444").pack(side="left", padx=(10, 0))
+        ttk.Button(brow, text="Batches...", command=self.open_batches).pack(side="right")
+        self.confirm_button = ttk.Button(brow, text="Confirm...", command=self.confirm)
+        self.confirm_button.pack(side="right", padx=(0, 6))
         mid = ttk.Frame(parent)
         mid.pack(fill="both", expand=True)
-        cols = (("file", "File", 220), ("field", "Field", 110), ("observed", "Observed", 220), ("why", "Needs you because", 170),
-                ("capability", "Write capability", 100), ("blockers", "Blockers", 240))
+        cols = (("check", "", 28), ("file", "File", 220), ("field", "Field", 110), ("observed", "Observed", 210),
+                ("why", "Needs you because", 170), ("capability", "Write capability", 100), ("blockers", "Blockers", 230))
         self.tree = ttk.Treeview(mid, columns=[c[0] for c in cols], show="headings", selectmode="browse", height=18)
         for key, heading, width in cols:
             self.tree.heading(key, text=heading)
-            self.tree.column(key, width=width, stretch=key in ("file", "observed", "blockers"), anchor="w")
+            self.tree.column(key, width=width, stretch=key in ("file", "observed", "blockers"),
+                             anchor="center" if key == "check" else "w")
         sy = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sy.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sy.pack(side="left", fill="y")
         self.tree.bind("<Double-1>", lambda e: self.open_selected())
         self.tree.bind("<Return>", lambda e: self.open_selected())
+        self.tree.bind("<space>", lambda e: (self.toggle_check(), "break")[1])
+        self.tree.bind("<Button-1>", self._table_click, add="+")
         self.empty_var = tk.StringVar(value="")
         ttk.Label(parent, textvariable=self.empty_var, foreground="#1f6244", wraplength=900, justify="left").pack(anchor="w", pady=(4, 0))
 
+    def cache(self):
+        """The session's metadata cache (refresh.MetadataCache) -- rebuildable,
+        never authoritative; dropped with the connection."""
+        if getattr(self.app, "p3_metadata_cache", None) is None:
+            self.app.p3_metadata_cache = RF.MetadataCache()
+        return self.app.p3_metadata_cache
+
     def reload(self):
         conn = self.app.conn
-        md = E.load_metadata(conn)
+        self.md, conflicts = self.cache().load(conn)
         ev = Evidence({}, {}, [], [], now=utc_now())
-        ev.metadata = md
+        ev.metadata = self.md
         self.all_rows = MD.review(ev)
-        self.rows = MD.queue(ev, E.conflicting_fields(conn), ev.now, reviewed=self.all_rows)
+        self.rows = MD.queue(ev, conflicts, ev.now, reviewed=self.all_rows)
         self.totals = {s: sum(1 for r in self.all_rows if r.review_state == s) for s in MD.REVIEW_WORDS}
+        listed = {r.question_id for r in self.rows if r.question_id is not None}
+        self.checked &= listed
         self.apply_filters()
 
     def _filters(self):
@@ -166,14 +198,19 @@ class MetadataQueuePage:
         blocker = next((k for k, w in BLOCKER_FILTERS if w == self.blocker_var.get()), "") or None
         return field, family, state, blocker
 
+    def filters_dict(self):
+        field, family, state, blocker = self._filters()
+        return {"field": field, "family": family, "value_state": state, "blocker": blocker}
+
     def apply_filters(self):
         self.shown = MD.queue_filter(self.rows, *self._filters())
         self.tree.delete(*self.tree.get_children())
         for i, r in enumerate(self.shown):
             why = ("two readings disagree" if r.question_id is None else
                    "a deferral came back" if r.returned else MD.REVIEW_WORDS[r.review_state])
-            self.tree.insert("", "end", iid=str(i), values=[_name(r.path), r.field_label, _observed(r), why,
-                                                              r.capability_status, _blockers(r)])
+            self.tree.insert("", "end", iid=str(i), values=[
+                (CHECKED if r.question_id in self.checked else UNCHECKED) if r.question_id is not None else "",
+                _name(r.path), r.field_label, _observed(r), why, r.capability_status, _blockers(r)])
         n = len(self.rows)
         t = self.totals
         others = (f"{len(self.all_rows):,} metadata question(s) in this project: {t[MD.LEFT_UNCHANGED]:,} left unchanged, "
@@ -186,6 +223,58 @@ class MetadataQueuePage:
             self.count_var.set(f"{n:,} metadata question(s) need you"
                                + (f" ({len(self.shown):,} shown by the filters)" if len(self.shown) != n else "") + ". " + others)
             self.empty_var.set("" if self.shown else "Nothing matches these filters.")
+        self._update_checked()
+
+    # -- checks (B18) ---------------------------------------------------------------------
+
+    def _update_checked(self):
+        self.checked_var.set(f"{len(self.checked):,} checked" if self.checked else "")
+
+    def _table_click(self, event):
+        if self.tree.identify_column(event.x) == "#1" and self.tree.identify_region(event.x, event.y) == "cell":
+            row = self.tree.identify_row(event.y)
+            if row:
+                self._toggle(int(row))
+                return "break"
+        return None
+
+    def _toggle(self, index):
+        r = self.shown[index]
+        if r.question_id is None:
+            return
+        self.checked.symmetric_difference_update({r.question_id})
+        self.tree.set(str(index), "check", CHECKED if r.question_id in self.checked else UNCHECKED)
+        self._update_checked()
+
+    def toggle_check(self):
+        sel = self.tree.selection()
+        if sel:
+            self._toggle(int(sel[0]))
+
+    def check_all_shown(self):
+        self.checked |= {r.question_id for r in self.shown if r.question_id is not None}
+        self.apply_filters()
+
+    def clear_checks(self):
+        self.checked.clear()
+        self.apply_filters()
+
+    # -- Confirm (B18) ---------------------------------------------------------------------
+
+    def confirm(self):
+        """Bulk Confirm: re-record the same decision on the evidence as it is
+        now, for the checked questions or every question the filters list."""
+        self.confirm_dialog = ConfirmDialog(self.app, self, self.store, self._confirmed)
+        return self.confirm_dialog
+
+    def _confirmed(self):
+        self.checked.clear()
+        self.reload()
+
+    def open_batches(self):
+        from .review import BatchesDialog
+        self.batches_dialog = BatchesDialog(self.app, self.store, self.reload)
+        return self.batches_dialog
 
     def open_selected(self):
         sel = self.tree.selection()
@@ -193,6 +282,82 @@ class MetadataQueuePage:
             return
         r = self.shown[int(sel[0])]
         show_metadata_review(self.app, file_path_id=int(r.location_id))
+
+
+class ConfirmDialog:
+    """(B18) Bulk Confirm on B10's frozen batch: choose the scope (the checked
+    questions, or every question the filters list now), preview the buckets,
+    record exactly the preview. The commit refuses if the record or the
+    evidence moved since; the batch undoes as one (Batches...)."""
+
+    def __init__(self, app, page, store, on_done):
+        self.app, self.page, self.store, self.on_done = app, page, store, on_done
+        self.preview = None
+        self.win = tk.Toplevel(app)
+        self.win.title("Confirm metadata decisions")
+        self.win.transient(app)
+        frame = ttk.Frame(self.win, padding=10)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=BULK_ACTIONS[METADATA_CONFIRM].description, wraplength=560, justify="left").pack(anchor="w")
+        self.scope_var = tk.StringVar(value="checked" if page.checked else "listed")
+        srow = ttk.Frame(frame)
+        srow.pack(fill="x", pady=(8, 4))
+        self.scope_buttons = {}
+        for key, text in (("checked", f"The {len(page.checked):,} checked question(s)"),
+                          ("listed", f"Every question the filters list now ({sum(1 for r in page.shown if r.question_id):,})")):
+            b = ttk.Radiobutton(srow, text=text, variable=self.scope_var, value=key, command=self._invalidate)
+            b.pack(anchor="w")
+            self.scope_buttons[key] = b
+        if not page.checked:
+            self.scope_buttons["checked"].configure(state="disabled")
+        self.text = tk.Text(frame, height=12, width=78, wrap="word", state="disabled", relief="flat", background="#fbfbfb")
+        self.text.pack(fill="both", expand=True, pady=(6, 6))
+        brow = ttk.Frame(frame)
+        brow.pack(fill="x")
+        ttk.Button(brow, text="Preview", command=self.run_preview).pack(side="left")
+        self.ok = ttk.Button(brow, text="Nothing to record", command=self._confirm, state="disabled")
+        self.ok.pack(side="right")
+        ttk.Button(brow, text="Cancel", command=self.win.destroy).pack(side="right", padx=(0, 6))
+
+    def _ids(self):
+        if self.scope_var.get() == "checked":
+            return [q for q in (r.question_id for r in self.page.rows) if q in self.page.checked]
+        return [r.question_id for r in self.page.shown if r.question_id is not None]
+
+    def _invalidate(self):
+        self.preview = None
+        self.ok.configure(text="Nothing to record", state="disabled")
+
+    def run_preview(self):
+        ids = self._ids()
+        listed = self.scope_var.get() == "listed"
+        query = BK.metadata_confirm_query(ids, self.page.filters_dict() if listed else None, queue=listed)
+        self.preview = BK.preview_metadata_confirm(self.app.conn, ids, SCOPE_QUERY_SNAPSHOT if listed else SCOPE_EXPLICIT_SELECTION,
+                                                   query, md=self.page.md)
+        self._show("\n".join(self.preview.lines()))
+        n = self.preview.decision_count
+        self.ok.configure(text=f"Confirm {n:,} decision{'s' if n != 1 else ''}" if n else "Nothing to record",
+                          state="normal" if n else "disabled")
+        return self.preview
+
+    def _show(self, text):
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", text)
+        self.text.configure(state="disabled")
+
+    def _confirm(self):
+        if self.preview is None or not self.preview.decision_count:
+            return None
+        try:
+            res = self.store.commit_bulk(self.preview, note="Confirm on the Metadata Review queue", command_id=new_command_id())
+        except ValueError as exc:
+            messagebox.showwarning("Confirm", f"Not recorded: {exc}", parent=self.win)
+            self._invalidate()
+            return None
+        self.win.destroy()
+        self.on_done()
+        return res
 
 
 # ---------------------------------------------------------------------------

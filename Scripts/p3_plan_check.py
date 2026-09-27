@@ -305,6 +305,23 @@ def test_retention_rule():
     ev, proj, rt = world(I, P, [pdec("D1", "equivalent_copy", "10"), pdec("D2", "canonical_location", "10", "1"),
                                 pdec("D3", "equivalent_copy", "11"), pdec("D4", "canonical_location", "11", "3")])
     d = PL.build(ev, proj, rt)
+    # (B18, found by mutation M04) An exact copy whose group's keeper a visual
+    # pair plans away: its removal fails keeper_exists AND both floors -- no
+    # location, and no physical copy, of the content would remain.
+    I4 = [replace(img("1", r"C:\A\a.jpg"), content_id="C1", physical_id="P1", in_current_group=True),
+          replace(img("2", r"C:\B\a.jpg"), content_id="C1", physical_id="P2", in_current_group=True), img("3", r"C:\C\c.jpg")]
+    ev4, proj4, rt4 = world(I4, [vp("21", "1", "3")], [gdec("D1", "canonical_location", GROUP, "C1", "1"),
+                                                       gdec("D2", "redundant_location", LOCATION, "2"),
+                                                       pdec("D9", "equivalent_copy", "21"), pdec("D10", "canonical_location", "21", "3")])
+    from Phase3.model import Group as _G
+    ev4.groups = {"C1": _G("C1", "C1", ("1", "2"))}
+    proj4 = R.resolve_all(ev4)
+    rt4 = RT.route_all(ev4, proj4, ev4.now)
+    z = items_by(PL.build(ev4, proj4, rt4)).get((REMOVE, "2"))
+    check("the group's keeper planned away by a pair: the copy's removal fails keeper_exists, the location floor AND the "
+          "physical-copy floor (nothing of the content would remain)",
+          z is not None and z.state == BLOCKED and res(z, "keeper_exists") == "fail"
+          and res(z, "minimum_location_count_satisfied") == "fail" and res(z, "minimum_physical_copy_count_satisfied") == "fail")
     check("a keeper planned for removal by another item: keeper_exists fails (the resolver's chain guard puts that pair in "
           "conflict; the plan holds nothing that relies on it)",
           all(i.state != READY for i in d.items if i.action_kind == REMOVE and "keeper_exists" == i.blocked_reason)

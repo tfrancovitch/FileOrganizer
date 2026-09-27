@@ -151,8 +151,8 @@ from datetime import datetime, timezone
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE_VERSION = "1.12.0"
-APP_VERSION = "B17"
+MODULE_VERSION = "1.13.0"
+APP_VERSION = "B18"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -191,7 +191,10 @@ APP_VERSION = "B17"
 #: 15 -> B17 (finishing Phase 3 Build 9): analyzer_result.signature_state,
 #:      signature evidence from the PDF and Office analyzers; see
 #:      migrations/015_signature_evidence.sql.
-APP_SCHEMA_VERSION = 15
+#: 16 -> B18 (the Phase 3 closeout round): analyzer_result.encryption_state,
+#:      encryption evidence from the PDF and Office analyzers; see
+#:      migrations/016_encryption_evidence.sql.
+APP_SCHEMA_VERSION = 16
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"

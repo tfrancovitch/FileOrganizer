@@ -14,15 +14,46 @@ here depends on their form.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
 
 def path_key(path) -> str:
-    r"""One comparable form of a Windows path: backslashes, no trailing
-    separator, lower-case. The same fold fo_db.path_key applies."""
-    s = str(path or "").replace("/", "\\").rstrip("\\").lower()
-    return s
+    r"""One comparable form of a Windows path -- THE path-matching rule for
+    folder and root policies and for bulk folder scopes (B18, S5; stated in
+    ARCHITECTURE.md, "Path matching"):
+
+      1. separators: '/' is '\'; a run of separators is one (a UNC path's
+         leading '\\' is kept); an extended-length prefix ('\\?\', '\\?\UNC\')
+         is dropped -- stored paths never carry one, a typed policy might;
+      2. no trailing separator ('C:\Docs\' is 'C:\Docs');
+      3. Unicode: compared in NFC -- a folder name typed composed matches the
+         same name stored decomposed (and the reverse). Two sibling folders
+         whose names differ ONLY by normalization are then one scope: the
+         conservative direction for a protection (it can over-cover, never
+         silently miss);
+      4. case-insensitive by simple lower-casing (str.lower), as Windows
+         compares names -- NOT full case folding ('ß' stays distinct from 'ss');
+      5. the folder boundary is a whole segment: 'C:\Docs' covers 'C:\Docs'
+         and 'C:\Docs\x', never 'C:\Docs2' (`under`).
+
+    Through B17 this was steps 2 and 4 only (and '/'); every path the product
+    stores already satisfied 1, so only a typed path with doubled separators,
+    an extended prefix or a different normalization matches differently."""
+    s = unicodedata.normalize("NFC", str(path or "")).replace("/", "\\")
+    low = s.lower()
+    if low.startswith("\\\\?\\unc\\"):
+        s = "\\\\" + s[8:]
+    elif s.startswith("\\\\?\\"):
+        s = s[4:]
+    lead = "\\\\" if s.startswith("\\\\") else ""
+    body = _SEPARATORS.sub("\\\\", s[len(lead):])
+    return (lead + body).rstrip("\\").lower()
+
+
+_SEPARATORS = re.compile(r"\\+")
 
 
 def under(candidate_key: str, folder_key: str) -> bool:
@@ -206,6 +237,7 @@ class MetadataQuestion:
     observation_id: str | None = None           # the location's observation the reading rests on
     analyzer_result_ids: tuple = ()             # the results it was read from (ids only)
     detail: str = ""
+    content_id: str | None = None               # B18: the file's content identity, when authoritative for this observation
 
 
 @dataclass

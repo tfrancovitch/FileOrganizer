@@ -401,9 +401,10 @@ def test_review_and_obsolescence():
     ev, proj, rt = routed(L, [])
     with_metadata(ev, moved, D2)
     rows = {r.question_id: r for r in MD.review(ev)}
-    check("the file observed again: a desired value and a Left Unchanged both need revalidation, and both return to the queue",
+    check("the file changed (a new observation, no common content hash): a desired value and a Left Unchanged both need "
+          "revalidation, and both return to the queue",
           rows["M1"].review_state == rows["M8"].review_state == MD.NEEDS_REVALIDATION
-          and {r.question_id for r in MD.queue(ev)} == {"M1", "M8"} and "observed again" in rows["M8"].drift[0])
+          and {r.question_id for r in MD.queue(ev)} == {"M1", "M8"} and "the file changed since" in rows["M8"].drift[0])
     same = [replace(Q[0], analyzer_result_ids=("1",)), replace(Q[7], analyzer_result_ids=("1",))]
     ev2, _p, _r = routed(L, [])
     with_metadata(ev2, same, [mdec("E1", "desired_source_metadata_set", "M1", "Thomas", binding=bound),
@@ -434,8 +435,12 @@ def test_review_and_obsolescence():
           == ["capability_changed"])
     check("the integrity evidence changed (found signed) -> integrity evidence changed",
           reasons([replace(q, signed_or_certified=True) if q.question_id == "M1" else q for q in Q]) == ["integrity_changed"])
-    check("re-read by an analyzer -> evidence changed", reasons(
-        [replace(q, analyzer_result_ids=("99",)) if q.question_id == "M1" else q for q in Q]) == ["evidence_changed"])
+    # B18 (the owner's Q2 decision): judged by what changed, not by a newer row.
+    check("re-read by an analyzer with the SAME value and state -> still stands (B18: no previewed input changed)", reasons(
+        [replace(q, analyzer_result_ids=("99",)) if q.question_id == "M1" else q for q in Q]) == [])
+    check("re-read with a DIFFERENT value -> evidence changed", reasons(
+        [replace(q, analyzer_result_ids=("99",), observed_value="Carol", observed_values=("Carol",)) if q.question_id == "M1"
+         else q for q in Q]) == ["evidence_changed"])
 
 
 # ---------------------------------------------------------------------------
@@ -597,12 +602,12 @@ def test_project(tmp: Path):
           "metadata_question with the question's id", ops == "decision" and qrow["operation_id"] == r1["operation_id"]
           and drow["target_kind"] == MQ and drow["target_ref"] == str(r1["question_id"]) and qrow["semantic_field"] == "creator"
           and str(qrow["file_path_id"]) == by["report.docx"])
-    check("its evidence binding is ids only: the question, the file's current observation, the analyzer result the value "
-          "came from, and the value-state word", set(binding) == {"schema", "target_kind", "question_id", "file_path_id",
-                                                                 "semantic_field", "observation_id", "analyzer_result_ids",
-                                                                 "observed_state"}
+    check("its evidence binding (B18): the question, the file's current observation and content identity, the value(s) and "
+          "value-state decided about -- what the material-change rule compares -- and the analyzer results as provenance",
+          set(binding) == {"schema", "target_kind", "question_id", "file_path_id", "semantic_field", "observation_id",
+                           "content_id", "analyzer_result_ids", "observed_state", "observed_value", "observed_values"}
           and binding["analyzer_result_ids"] == [int(x) for x in lm["creator"].analyzer_result_ids] and binding["observed_state"] == "known"
-          and "Alice" not in json.dumps(binding))
+          and binding["observed_value"] == "Alice" and binding["observed_values"] == ["Alice"])
     hist = st.history_for(MQ, r1["question_id"])
     check("set -> leave unchanged -> set again: one question, one domain, each superseding the last; the rows all kept",
           r2["question_id"] == r3["question_id"] == r1["question_id"] and r2["supersedes_decision_id"] == r1["decision_id"]

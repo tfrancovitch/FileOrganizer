@@ -2,7 +2,7 @@
 """
 PDFAnalysis.py
 Part of: The File Organizer
-Version: 1.2.0
+Version: 1.3.0
 
 Extracts metadata from every PDF file selected by the database-backed analyzer engine: page count,
 encryption status, whether the first page has extractable text (a cheap
@@ -17,6 +17,12 @@ password to open is reported as "password-protected document (an encrypted
 PDF; no password is tried)", the Office analyzer's own wording, instead of
 pypdf's "File has not been decrypted".
 
+1.3.0 (B18): EncryptionState (encrypted | not_encrypted), a structured field
+beside IsEncrypted: the document's /Encrypt dictionary, as pypdf reports it
+(an owner-password-only file is encrypted too). A PDF refused because it
+needs a password raises PasswordProtectedError, whose error row still records
+EncryptionState 'encrypted'.
+
 Requires:
     pip install pypdf pdfplumber
 
@@ -26,7 +32,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from file_organizer_common import to_long_path
+from file_organizer_common import to_long_path, PasswordProtectedError
 
 try:
     from pypdf import PdfReader
@@ -47,7 +53,7 @@ except ImportError:                                            # pragma: no cove
 
 EXTENSIONS = {".pdf"}
 CHECKPOINT_FIELDS = ["Key", "PageCount", "IsEncrypted", "HasExtractableText",
-                      "Title", "Author", "Producer", "CreationDate", "SignatureState", "Error"]
+                      "Title", "Author", "Producer", "CreationDate", "SignatureState", "EncryptionState", "Error"]
 
 
 def _resolve(obj):
@@ -125,7 +131,7 @@ def analyze_pdf(path):
         page_count = len(reader.pages)
     except Exception as exc:                                    # noqa: BLE001
         if reader.is_encrypted and type(exc).__name__ == "FileNotDecryptedError":
-            raise ValueError("password-protected document (an encrypted PDF; no password is tried)")
+            raise PasswordProtectedError("password-protected document (an encrypted PDF; no password is tried)")
         raise
     result = {
         "PageCount": str(page_count),
@@ -133,6 +139,7 @@ def analyze_pdf(path):
         "HasExtractableText": "Unknown",
         "Title": "", "Author": "", "Producer": "", "CreationDate": "",
         "SignatureState": signature_state(reader),
+        "EncryptionState": "encrypted" if reader.is_encrypted else "not_encrypted",
     }
 
     meta = reader.metadata

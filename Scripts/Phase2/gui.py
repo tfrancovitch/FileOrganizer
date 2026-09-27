@@ -192,7 +192,7 @@ class Phase2App(tk.Tk):
         # Phase 3: one session id for every decision this window records;
         # the store itself is built on the current connection when needed.
         import uuid
-        self.p3_session_id="session:"+str(uuid.uuid4()); self.p3_store=None
+        self.p3_session_id="session:"+str(uuid.uuid4()); self.p3_store=None; self.p3_metadata_cache=None
 
         self.title(f"The File Organizer {VERSION}")
         enable_fault_log(self.app_root)
@@ -330,7 +330,7 @@ class Phase2App(tk.Tk):
         if self.conn is not None:
             try: self.conn.close()
             except Exception: pass
-        self.conn=None; self.store=None; self.fts=None; self.engine=None; self.p3_store=None
+        self.conn=None; self.store=None; self.fts=None; self.engine=None; self.p3_store=None; self.p3_metadata_cache=None
 
     def close_project(self):
         """Leave the open project. Callers confirm first (see _confirm_leave)."""
