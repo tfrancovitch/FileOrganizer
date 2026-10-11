@@ -489,6 +489,7 @@ class BulkPreview:
     record_mark: int | None = None  # the last operation id when previewed: the commit refuses if the record moved
     evidence_mark: str | None = None    # the evidence it was judged on (pairs since Build 6, groups since Build 7): a scan,
                                         # a re-hash or a re-analysis voids it
+    warnings: list = field(default_factory=list)    # (B19) e.g. a folder scope that matched several spellings
 
     @property
     def counts(self) -> dict:
@@ -539,16 +540,51 @@ class BulkPreview:
         for disp in (DISP_PRESERVED, DISP_CONFLICT, DISP_BLOCKED, DISP_NOT_APPLICABLE):
             for label, why in self.samples(disp):
                 out.append(f"       {DISPOSITION_WORDS[disp]}: {label} -- {why}")
+        out.extend(f"Warning: {w}" for w in self.warnings)
         out.append("No source files will be changed.")
         return out
 
     def as_dict(self) -> dict:
-        return {"action": self.action, "parameters": self.parameters, "scope_kind": self.scope_kind, "query": self.query,
-                "scope_size": self.scope_size, "members": len(self.candidates), "counts": self.counts,
-                "decisions": self.decision_count, "events": self.event_count, "mode": self.mode,
-                "evidence_mark": self.evidence_mark,
-                "evaluated_utc": self.evaluated_utc,
-                "samples": {d: self.samples(d) for d in DISPOSITIONS if self.counts.get(d)}}
+        out = {"action": self.action, "parameters": self.parameters, "scope_kind": self.scope_kind, "query": self.query,
+               "scope_size": self.scope_size, "members": len(self.candidates), "counts": self.counts,
+               "decisions": self.decision_count, "events": self.event_count, "mode": self.mode,
+               "evidence_mark": self.evidence_mark,
+               "evaluated_utc": self.evaluated_utc,
+               "samples": {d: self.samples(d) for d in DISPOSITIONS if self.counts.get(d)}}
+        if self.warnings:                               # B19: present only when there are any
+            out["warnings"] = list(self.warnings)
+        return out
+
+
+def folder_spellings(paths, folder) -> list:
+    """(B19, W2) The distinct spellings, as scanned, of the scope folder among
+    the paths a folder scope matched. The matching rule (model.path_key)
+    compares in NFC and case-insensitively, so two sibling folders whose names
+    differ only by Unicode normalization are ONE scope -- the conservative
+    direction for a protection, but for a bulk action it can take in a folder
+    the person did not mean. More than one spelling here is that case."""
+    key = path_key(folder)
+    if not key:
+        return []
+    depth = len(key.split("\\"))
+    out = []
+    for p in paths:
+        s = str(p).replace("/", "\\")
+        if not under(path_key(s), key):
+            continue
+        spelled = "\\".join(s.split("\\")[:depth])
+        if spelled not in out:
+            out.append(spelled)
+    return sorted(out)
+
+
+def spelling_warning(paths, folder):
+    found = folder_spellings(paths, folder)
+    if len(found) < 2:
+        return None
+    return (f"the folder scope {folder} matched {len(found)} folders on disk whose names differ only by Unicode "
+            f"normalization or case -- the matching rule treats them as one: " + "; ".join(found)
+            + ". Every member is listed; check that each is one you mean.")
 
 
 def preview(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjection, action, params, scope_kind,
@@ -595,8 +631,14 @@ def preview(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingProjecti
                 cand.bindings[(kind, tk, ref)] = ev_mod.binding_for(conn, tk, ref)
         mark = record_mark(conn)
         emark = ev_mod.evidence_mark(conn)
+    warnings = []
+    if spec.needs_folder:
+        w = spelling_warning([ev.locations[c.target_ref].path for c in candidates if c.target_ref in ev.locations],
+                             params["folder"])
+        if w:
+            warnings.append(w)
     return BulkPreview(action, params, scope_kind, query, len(groups), candidates, utc_now(), record_mark=mark,
-                       evidence_mark=emark)
+                       evidence_mark=emark, warnings=warnings)
 
 
 def record_mark(conn) -> int:
@@ -936,7 +978,13 @@ def preview_pairs(ev: Evidence, proj: R.ProjectProjection, routing: RT.RoutingPr
                 cand.bindings[(kind, tk, ref)] = binding
         mark = record_mark(conn)
         emark = ev_mod.evidence_mark(conn)
-    return BulkPreview(action, params, scope_kind, query, len(pps), candidates, utc_now(), record_mark=mark, evidence_mark=emark)
+    warnings = []
+    if query and query.get("folder"):
+        w = spelling_warning([ev.locations[i].path for p in pps for i in p.members if i in ev.locations], query["folder"])
+        if w:
+            warnings.append(w)
+    return BulkPreview(action, params, scope_kind, query, len(pps), candidates, utc_now(), record_mark=mark,
+                       evidence_mark=emark, warnings=warnings)
 
 
 def preview_table(pv: BulkPreview) -> list:

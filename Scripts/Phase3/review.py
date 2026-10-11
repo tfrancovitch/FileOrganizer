@@ -55,6 +55,8 @@ from . import bulk as BK
 from . import evidence as E
 from . import resolve as R
 from . import routing as RT
+from . import scopes as SC
+from .model import PolicyVersion
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, DECISION_KINDS, POLICY_KINDS, BULK_ACTIONS, SOURCE_ROOT, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        SCOPE_EXPLICIT_SELECTION, SCOPE_QUERY_SNAPSHOT, ORIGIN_BULK_EXPLICIT_HUMAN, DISP_DECIDED,
                        bulk_actions_for, METADATA_QUESTION)
@@ -221,6 +223,13 @@ class ReviewPage:
         cb = ttk.Combobox(tools, textvariable=self.filter_var, values=FILTERS, state="readonly", width=26)
         cb.pack(side="right", padx=(0, 10))
         cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+        # B19: a policy whose scope matches nothing in the latest scan (a
+        # renamed or moved root / folder), named, with how to clear it.
+        self.dangling_frame = ttk.Frame(parent)
+        self.dangling_label = ttk.Label(self.dangling_frame, text="", style="Warn.TLabel", wraplength=1100, justify="left")
+        self.dangling_label.pack(side="left", fill="x", expand=True)
+        ttk.Button(self.dangling_frame, text="Re-point or retire...", command=self.open_policies).pack(side="right", padx=(8, 0))
+        self._dangling_anchor = tools
 
         panes = tk.PanedWindow(parent, orient="horizontal", sashrelief="raised", sashwidth=6, bd=0)
         panes.pack(fill="both", expand=True)
@@ -381,7 +390,26 @@ class ReviewPage:
         if t["orphaned_decisions"]:
             parts.append(f"{t['orphaned_decisions']} decision(s) on files no longer in a group")
         self.summary_var.set(" · ".join(parts))
+        self._show_dangling()
         self.refresh_list(select=select or self.selected_group)
+
+    def _show_dangling(self):
+        """(B19) Name every dangling policy -- a protection one blocks every
+        removal in a plan until it is re-pointed or retired; a prefer / avoid
+        one only shapes the recommendation, so it is a warning."""
+        found = SC.summary(self.ev)
+        self.dangling = found
+        if not found:
+            self.dangling_label.configure(text="")
+            self.dangling_frame.pack_forget()
+            return
+        lines = []
+        for d in found:
+            head = ("Protection matches nothing -- removals are blocked: " if d["effect"] == "protect"
+                    else "Policy matches nothing (the recommendation only): ")
+            lines.append(head + d["words"])
+        self.dangling_label.configure(text="\n".join(lines))
+        self.dangling_frame.pack(fill="x", pady=(0, 8), after=self._dangling_anchor)
 
     def _route(self, p):
         return self.routing.groups[p.group_id]
@@ -1097,32 +1125,50 @@ class PoliciesDialog:
         host.pack(fill="both", expand=True)
         host.rowconfigure(0, weight=1)
         host.columnconfigure(0, weight=1)
-        self.table = ttk.Treeview(host, columns=("id", "kind", "scope", "over", "status", "version", "since"), show="headings", selectmode="browse")
-        for key, heading, width in (("id", "#", 40), ("kind", "Policy", 150), ("scope", "Scope", 260), ("over", "Over", 150),
-                                    ("status", "Status", 70), ("version", "Version", 60), ("since", "Since (UTC)", 140)):
+        self.table = ttk.Treeview(host, columns=("id", "kind", "scope", "over", "status", "matches", "version", "since"),
+                                  show="headings", selectmode="browse")
+        for key, heading, width in (("id", "#", 40), ("kind", "Policy", 150), ("scope", "Scope", 240), ("over", "Over", 130),
+                                    ("status", "Status", 70), ("matches", "In the latest scan", 150),
+                                    ("version", "Version", 60), ("since", "Since (UTC)", 140)):
             self.table.heading(key, text=heading)
             self.table.column(key, width=width, minwidth=40, anchor="w", stretch=False)
+        self.table.tag_configure("dangling", foreground="#8a1c1c")
         sy = ttk.Scrollbar(host, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=sy.set)
         self.table.grid(row=0, column=0, sticky="nsew")
         sy.grid(row=0, column=1, sticky="ns")
         self.table.bind("<<TreeviewSelect>>", lambda e: self._selected())
+        # B19: where the selected policy's scope stands in the latest scan.
+        self.scope_label = ttk.Label(frame, text="", wraplength=900, justify="left", foreground="#444")
+        self.scope_label.pack(anchor="w", pady=(6, 0))
         row = ttk.Frame(frame)
         row.pack(fill="x", pady=(8, 0))
         ttk.Button(row, text="Add...", command=self.add).pack(side="left")
+        self.repoint_button = ttk.Button(row, text="Re-point...", command=self.repoint, state="disabled")
+        self.repoint_button.pack(side="left", padx=(6, 0))
         self.retire_button = ttk.Button(row, text="Retire", command=self.retire, state="disabled")
         self.retire_button.pack(side="left", padx=6)
         self.revive_button = ttk.Button(row, text="Reactivate", command=self.revive, state="disabled")
         self.revive_button.pack(side="left")
         ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        self.repoint_dialog = None
         self.refresh()
+
+    #: How the "In the latest scan" column words a scope's state.
+    MATCH_WORDS = {"present": "present", "unavailable": "not observed (offline?)", "dangling": "MATCHES NOTHING"}
 
     def refresh(self):
         self.table.delete(*self.table.get_children())
+        self.facts = E.load_scope_facts(self.app.conn)
+        self.status = {}
         for pol in self.store.policies(include_retired=True):
+            st = SC.status(policy_version(pol), self.facts)
+            self.status[str(pol["policy_id"])] = st
             self.table.insert("", "end", iid=str(pol["policy_id"]), values=[
                 pol["policy_id"], pol["label"], pol["scope_text"], pol["effect"].get("over", ""),
-                pol["status"], f"v{pol['version_no']}", (pol["occurred_utc"] or "")[:19].replace("T", " ")])
+                pol["status"], self.MATCH_WORDS.get(st.state, st.state), f"v{pol['version_no']}",
+                (pol["occurred_utc"] or "")[:19].replace("T", " ")],
+                tags=("dangling",) if st.state == "dangling" and pol["status"] == "active" else ())
         self._selected()
 
     def _selected(self):
@@ -1130,6 +1176,24 @@ class PoliciesDialog:
         pol = self.store.policy(sel[0]) if sel else None
         self.retire_button.configure(state="normal" if pol and pol["status"] == "active" else "disabled")
         self.revive_button.configure(state="normal" if pol and pol["status"] == "retired" else "disabled")
+        self.repoint_button.configure(state="normal" if pol else "disabled")
+        st = self.status.get(str(pol["policy_id"])) if pol else None
+        if st is None:
+            self.scope_label.configure(text="")
+        elif st.state == "dangling":
+            self.scope_label.configure(text=st.words(), style="Warn.TLabel")
+        else:
+            self.scope_label.configure(text=f"In the latest scan: {self.MATCH_WORDS.get(st.state, st.state)} -- {st.reason}.",
+                                       style="TLabel")
+
+    def repoint(self):
+        sel = self.table.selection()
+        if not sel:
+            return
+        pol = self.store.policy(sel[0])
+        if pol:
+            self.repoint_dialog = RepointDialog(self.win, self.app, self.store, pol, self.status.get(str(pol["policy_id"])),
+                                                self.facts, self._changed)
 
     def add(self):
         AddPolicyDialog(self.win, self.app, self.store, self._changed)
@@ -1155,6 +1219,125 @@ class PoliciesDialog:
     def _changed(self):
         self.refresh()
         self.on_change()
+
+
+def policy_version(pol) -> PolicyVersion:
+    """A store.policies() row as the model's PolicyVersion."""
+    return PolicyVersion(str(pol["policy_version_id"]), str(pol["policy_id"]), pol["kind"], pol["scope"], pol["effect"],
+                         int(pol["version_no"]), pol["status"] == "active")
+
+
+class RepointDialog:
+    """(B19) Point a policy at where its files are now: a new version of the
+    SAME policy (kind and effect unchanged) with a new scope -- its history,
+    and every decision that names it, stay. The identity evidence may suggest
+    the new place; the suggestion only fills the field when a person asks,
+    and nothing is recorded until they press Re-point (S3; axiom 17)."""
+
+    def __init__(self, parent, app, store, pol, st, facts, on_done):
+        from .model import path_key
+        self.app, self.store, self.pol, self.st, self.facts, self.on_done = app, store, pol, st, facts, on_done
+        self.kind = POLICY_KINDS[pol["kind"]]
+        win = tk.Toplevel(parent)
+        self.win = win
+        win.title("Re-point policy")
+        win.transient(parent)
+        win.grab_set()
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"{pol['label']} (policy #{pol['policy_id']}, v{pol['version_no']})",
+                  font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(frame, text=f"Now: {pol['scope_text']}", foreground="#444").grid(row=1, column=0, columnspan=3, sticky="w")
+        why = st.words() if st is not None and st.state == "dangling" else (
+            f"In the latest scan: {st.reason}." if st is not None else "")
+        ttk.Label(frame, text=why, wraplength=620, justify="left",
+                  style="Warn.TLabel" if st is not None and st.state == "dangling" else "TLabel").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(4, 8))
+        ttk.Label(frame, text="New scope:", font=("Segoe UI", 9, "bold")).grid(row=3, column=0, sticky="w")
+        self.roots = [dict(r) for r in app.conn.execute(
+            "SELECT source_root_id, root_path, root_path_key FROM source_root WHERE project_id=1 AND is_active=1 "
+            "ORDER BY root_ordinal, root_path")]
+        self.var = tk.StringVar(value="")
+        if self.kind.scope_kind == SOURCE_ROOT:
+            ttk.Combobox(frame, textvariable=self.var, values=[r["root_path"] for r in self.roots], state="readonly",
+                         width=60).grid(row=3, column=1, columnspan=2, sticky="w", pady=2)
+        else:
+            rowf = ttk.Frame(frame)
+            rowf.grid(row=3, column=1, columnspan=2, sticky="w", pady=2)
+            ttk.Entry(rowf, textvariable=self.var, width=52).pack(side="left")
+            ttk.Button(rowf, text="Browse...", command=self._browse).pack(side="left", padx=4)
+        self.suggestion = st.suggestion if st is not None else None
+        if self.suggestion is not None:
+            ttk.Label(frame, text=self.suggestion.words, wraplength=620, justify="left", foreground="#1f4f8a").grid(
+                row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+            usable = self.kind.scope_kind != SOURCE_ROOT or self.suggestion.is_root
+            self.use_button = ttk.Button(frame, text="Use the suggestion", command=self.use_suggestion,
+                                         state="normal" if usable else "disabled")
+            self.use_button.grid(row=5, column=0, sticky="w", pady=(4, 0))
+        else:
+            self.use_button = None
+            ttk.Label(frame, text="No suggestion: no file known under the old scope was seen elsewhere with the same "
+                                  "volume serial and file index.", foreground="#666", wraplength=620, justify="left").grid(
+                row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(frame, text="Why (optional):", font=("Segoe UI", 9, "bold")).grid(row=6, column=0, sticky="nw", pady=(8, 0))
+        self.reason = tk.Text(frame, height=2, width=60, wrap="word")
+        self.reason.grid(row=6, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        row = ttk.Frame(frame)
+        row.grid(row=7, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        self.ok = ttk.Button(row, text="Re-point", command=self._confirm)
+        self.ok.pack(side="right")
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        self._path_key = path_key
+
+    def _browse(self):
+        path = filedialog.askdirectory(parent=self.win, initialdir=self.var.get() or None, title="Choose the folder")
+        if path:
+            self.var.set(path.replace("/", "\\"))
+
+    def use_suggestion(self):
+        """Fill the field with the suggestion -- a person still presses Re-point."""
+        if self.suggestion is None:
+            return
+        if self.kind.scope_kind == SOURCE_ROOT:
+            root = next((r for r in self.roots if self._path_key(r["root_path_key"] or r["root_path"]) == self.suggestion.scope_key), None)
+            if root is not None:
+                self.var.set(root["root_path"])
+        else:
+            self.var.set(self.suggestion.path)
+
+    def new_scope(self):
+        text = self.var.get().strip()
+        if not text:
+            return None
+        if self.kind.scope_kind == SOURCE_ROOT:
+            root = next((r for r in self.roots if r["root_path"] == text), None)
+            if root is None:
+                return None
+            return {"root_key": root["root_path_key"] or self._path_key(root["root_path"]), "root_path": root["root_path"]}
+        return {"path_key": self._path_key(text), "path": text}
+
+    def _confirm(self, ask=True):
+        scope = self.new_scope()
+        if scope is None:
+            messagebox.showwarning("Re-point policy", "Choose where the policy should point.", parent=self.win)
+            return None
+        if scope == self.pol["scope"]:
+            messagebox.showwarning("Re-point policy", "That is where it points now.", parent=self.win)
+            return None
+        after = SC.status(PolicyVersion("new", str(self.pol["policy_id"]), self.pol["kind"], scope, self.pol["effect"]), self.facts)
+        if after.state == "dangling" and ask and not messagebox.askyesno(
+                "Re-point policy", f"{scope.get('root_path') or scope.get('path')} matches nothing in the latest scan either "
+                                   f"({after.reason}). Re-point anyway?", parent=self.win):
+            return None
+        reason = self.reason.get("1.0", "end").strip() or f"re-pointed from {self.pol['scope_text']}"
+        try:
+            out = self.store.revise_policy(self.pol["policy_id"], scope=scope, rationale=reason, command_id=new_command_id())
+        except ValueError as exc:
+            messagebox.showwarning("Re-point policy", str(exc), parent=self.win)
+            return None
+        self.win.destroy()
+        self.on_done()
+        return out
 
 
 class AddPolicyDialog:

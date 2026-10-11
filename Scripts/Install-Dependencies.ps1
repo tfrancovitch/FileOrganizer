@@ -106,6 +106,7 @@ $Packages = @(
     [PSCustomObject]@{ PipName = "pypdfium2";   ImportName = "pypdfium2";    Optional = $true;  UsedBy = "PDFAnalysis.py, ContentExtraction.py (fast PDF text; pdfplumber is the fallback)" }
     [PSCustomObject]@{ PipName = "winocr";      ImportName = "winocr";       Optional = $true;  UsedBy = "ContentExtraction.py (OCR of scanned pages and pictures through Windows' own engine)" }
     [PSCustomObject]@{ PipName = "pillow-heif"; ImportName = "pillow_heif";  Optional = $true;  UsedBy = "ImageHash.py (HEIC/HEIF only)" }
+    [PSCustomObject]@{ PipName = "jsonschema";  ImportName = "jsonschema";   Optional = $true;  UsedBy = "p3_registry_schema_check.py (the test suite only; the product never imports it)" }
 )
 
 # ----------------------------------------------------------------------------

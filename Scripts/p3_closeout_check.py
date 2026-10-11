@@ -29,6 +29,9 @@ machines", with the code that enforces it and the check here that proves it):
      resolver and evaluator versions, the payload schema and the analyzer
      mark; a revision with B15-B17's basis still reads, locks and verifies.
   4. (S5) The path-matching rule, clause by clause, through real policies.
+     b. (B19, W2) NFC also widens a bulk folder scope: a preview whose folder
+        matched more than one on-disk spelling warns, naming them (pure, and
+        on disk with sibling composed / decomposed folders).
   5. (S3) The current-state export: every section, the decision ids, Phase 2's
      formula guard (a file named '=SUM(1).txt' is exported inert), a button on
      the Decide page; zero source reads.
@@ -145,6 +148,68 @@ def test_conflicts_pure():
     ev = model([A, C], [], [root])
     check("...and a root policy compares its root key by the same rule (case-insensitively)",
           R.resolve_group(ev, ev.groups["C1"]).verdict("C").status == R.PROTECTED)
+
+
+def test_spellings(tmp: Path):
+    """B19 (W2): NFC matching also widens a BULK folder scope -- a folder action
+    over one folder takes in a sibling whose name differs only by Unicode
+    normalization. The preview lists every member (it always did) and now
+    says so in a warning."""
+    section("4b. (B19, W2) A bulk folder scope that matched more than one on-disk spelling warns")
+    from Phase3 import bulk as BK
+    nfc, nfd = "C:\\Photos\\Caf\u00e9", unicodedata.normalize("NFD", "C:\\Photos\\Caf\u00e9")
+    locs = [loc("A", nfc + "\\a.jpg", content="C1", phys="P1"), loc("B", nfd + "\\a.jpg", content="C1", phys="P2"),
+            loc("C", "C:\\Photos\\Other\\a.jpg", content="C1", phys="P3")]
+    ev = model(locs)
+    proj = R.resolve_all(ev)
+    rt = RT.route_all(ev, proj, "2026-09-27T00:00:00Z")
+    pv = BK.preview(ev, proj, rt, "redundant_under", {"folder": nfc}, REG.SCOPE_QUERY_SNAPSHOT,
+                    query=BK.snapshot_query(show="All"))
+    members = sorted(c.target_ref for c in pv.candidates)
+    check("typed 'Café' (composed), the folder scope takes in BOTH siblings -- the composed and the decomposed 'Café' "
+          "(the matching rule, unchanged)", members == ["A", "B"], str(members))
+    check("...and the preview WARNS, naming both spellings; the warning is in its lines and its record",
+          len(pv.warnings) == 1 and nfc in pv.warnings[0] and nfd in pv.warnings[0]
+          and any(l.startswith("Warning:") for l in pv.lines()) and pv.as_dict().get("warnings") == pv.warnings,
+          str(pv.warnings))
+    plain = BK.preview(ev, proj, rt, "redundant_under", {"folder": "C:\\Photos\\Other"}, REG.SCOPE_QUERY_SNAPSHOT,
+                       query=BK.snapshot_query(show="All"))
+    check("a folder with one spelling: no warning, and a preview record exactly as before (no 'warnings' key)",
+          not plain.warnings and "warnings" not in plain.as_dict() and not any(l.startswith("Warning:") for l in plain.lines()))
+    check("folder_spellings: the spellings as scanned, one per sibling; case alone is one Windows folder, told apart "
+          "only if the scan stored it differently", BK.folder_spellings([nfc + "\\x", nfd + "\\y", nfc.upper() + "\\z"], nfc)
+          == sorted([nfc, nfd, nfc.upper()]) and BK.folder_spellings([nfc + "\\x"], nfc) == [nfc])
+    # On disk: NTFS keeps the two names apart; the scan stores both.
+    from Phase2.runner import RunRequest, RunWorker, PRESCAN, DUPLICATES
+    from Phase2.core import connect
+    from Phase3 import evidence as E
+    base = tmp / "Spell" / "Photos"
+    d1, d2 = base / "Caf\u00e9", base / unicodedata.normalize("NFD", "Caf\u00e9")
+    d1.mkdir(parents=True)
+    try:
+        d2.mkdir()
+    except FileExistsError:
+        check("NTFS keeps a composed and a decomposed folder name apart", False, "the second folder already existed")
+        return
+    for d in (d1, d2):
+        (d / "a.jpg").write_bytes(b"same bytes" * 5000)
+    app_root = tmp / "SpellRoot"
+    (app_root / "Projects").mkdir(parents=True)
+    ok = RunWorker(app_root, None, RunRequest(PRESCAN, "Pre-Scan", source_roots=[str(base)], project_name="Spell")).run().ok
+    project_dir = app_root / "Projects" / "Spell"
+    ok = ok and RunWorker(app_root, project_dir, RunRequest(DUPLICATES, "Find My Duplicates")).run().ok
+    conn = connect(project_dir, write=True)
+    try:
+        ev = E.load_evidence(conn)
+        proj = R.resolve_all(ev)
+        rt = RT.route_all(ev, proj, ev.now)
+        pv = BK.preview(ev, proj, rt, "redundant_under", {"folder": str(d1)}, REG.SCOPE_QUERY_SNAPSHOT,
+                        query=BK.snapshot_query(show="All"))
+        check("on disk: two sibling folders 'Café' (composed and decomposed) scanned as two; a bulk action over one takes "
+              "in both copies and warns, naming both folders", ok and len(pv.candidates) == 2 and len(pv.warnings) == 1
+              and str(d1) in pv.warnings[0] and str(d2) in pv.warnings[0], f"{len(pv.candidates)} / {pv.warnings}")
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -402,12 +467,13 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="p3close_"))
     try:
         test_conflicts_pure()
+        test_spellings(tmp)
         app_root, corpus, project_dir = test_project(tmp)
         test_gui(app_root, corpus, project_dir, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     passed = sum(1 for _, ok, _ in RESULTS if ok)
-    print(f"\n{'=' * 70}\nP3 CLOSEOUT (B18): {passed}/{len(RESULTS)} checks passed")
+    print(f"\n{'=' * 70}\nP3 CLOSEOUT (B18; B19 adds 4b): {passed}/{len(RESULTS)} checks passed")
     if passed != len(RESULTS):
         print("\nFailures:")
         for name, ok, detail in RESULTS:

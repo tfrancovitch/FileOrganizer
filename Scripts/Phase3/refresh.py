@@ -130,6 +130,7 @@ def apply(conn, ev, proj, routing, since, now=None):
     by_target = RT._by_target([d for d in active if d.target_kind == VISUAL_PAIR and d.target_ref in only])
     routing.pairs, routing.pair_counts = RT.route_pairs(ev, proj.pairs, ev.now, opened, by_target,
                                                         previous=routing.pairs, only=only)
+    routing.sequence.update((d.decision_id, d.sequence) for d in new_rows)       # B19: queue order by sequence
     return now_marks, {"decisions": len(new_rows), "withdrawals": len(withdrawals), "events": len(new_events),
                        "resolved": len(ring1), "routed": len(only)}
 
@@ -147,6 +148,7 @@ def full(conn, ev, proj, routing, now=None):
     before = {p.pair_id: p for p in proj.pairs}
     proj.pairs = PR.resolve_pairs(ev, R._index_decisions(active), active, previous=before)
     routing.pairs, routing.pair_counts = RT.route_pairs(ev, proj.pairs, ev.now, previous=routing.pairs)
+    routing.sequence = RT.decision_sequence(ev)
 
 
 # -- B18: the Metadata Review queue's in-session cache --------------------------------------

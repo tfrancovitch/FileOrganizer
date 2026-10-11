@@ -497,9 +497,14 @@ def main() -> int:
     if not FIXTURES.is_dir():
         print(f"fixture lab not found: {FIXTURES}")
         return 2
+    import p3_report as REP                                          # B19: the machine-readable report
+    started = REP.utc_now()
     dirs = sorted(d for d in FIXTURES.iterdir() if d.is_dir() and (d / "fixture.sqlite").is_file())
     print(f"Phase 3 fixture check: {len(dirs)} fixtures under {FIXTURES}")
+    per_fixture = []
     for d in dirs:
+        first = len(RESULTS)
+        per_fixture.append((d.name, first))
         print(f"\n{d.name}\n{'-' * len(d.name)}")
         con = sqlite3.connect(str(d / "fixture.sqlite"))
         qc = con.execute("PRAGMA quick_check").fetchone()[0]
@@ -525,7 +530,16 @@ def main() -> int:
         check("identical projection and routes from shuffled rows (3 seeds) and a second run", same and _canon(R.resolve_all(ev), ev) == base)
 
     passed = sum(1 for _, ok, _ in RESULTS if ok)
-    print(f"\n{'=' * 70}\nP3 FIXTURES: {passed}/{len(RESULTS)} checks passed")
+    bounds = [first for _n, first in per_fixture[1:]] + [len(RESULTS)]
+    fixtures = [{"fixture": name, "checks": end - first, "passed": sum(1 for _c, ok, _d in RESULTS[first:end] if ok),
+                 "pass": all(ok for _c, ok, _d in RESULTS[first:end])}
+                for (name, first), end in zip(per_fixture, bounds)]
+    out = REP.write("p3_fixture_check", __file__, started, RESULTS,
+                    {"fixtures": fixtures, "fixture_summary": {"total": len(fixtures),
+                                                               "passed": sum(1 for f in fixtures if f["pass"]),
+                                                               "failed": sum(1 for f in fixtures if not f["pass"])},
+                     "reference_evaluator_used": False})
+    print(f"\n{'=' * 70}\nP3 FIXTURES: {passed}/{len(RESULTS)} checks passed -- report Logs\\{out.name}")
     if passed != len(RESULTS):
         print("\nFailures:")
         for name, ok, detail in RESULTS:

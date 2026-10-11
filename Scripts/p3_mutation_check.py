@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""B18: mutation sensitivity (task 1.2, M5) -- break each safety-critical rule
+r"""B18 (extended in B19): mutation sensitivity (task 1.2, M5) -- break each safety-critical rule
 on purpose and show the suites fail.
 
 Each mutant is ONE exact text substitution in the product source, applied to a
@@ -54,6 +54,13 @@ SLICES = {
     "reval.all": ("p3_revalidation_check", "main", False),
     "close.pure": ("p3_closeout_check", "test_conflicts_pure", False),
     "close.all": ("p3_closeout_check", "main", False),
+    # B19
+    "dangle.pure": ("p3_dangling_check", "test_pure", False),
+    "dangle.root": ("p3_dangling_check", "test_root_rename", True),
+    "dangle.offline": ("p3_dangling_check", "test_offline", True),
+    "relabel.hand": ("p3_relabel_check", "test_hand_built", False),
+    "schema.committed": ("p3_registry_schema_check", "test_committed", False),
+    "schema.cross": ("p3_registry_schema_check", "test_cross_check", False),
 }
 
 #: (id, rule, file under Scripts, old text, new text, slices)
@@ -162,6 +169,44 @@ MUTANTS = [
     ("M32", "Decision lifecycle: a decision supersedes only the head of its own conflict domain",
      "Phase3/store.py", "                 if decision_kind(r[\"decision_kind\"]).domain_key(json.loads(r[\"value_json\"])) == domain]",
      "                 ]", ["close.all"]),
+    # -- B19: renamed roots and folders (the dangling guard) --------------------------------
+    ("M33", "Dangling guard (B19): every removal carries no_dangling_protection while a protection dangles",
+     "Phase3/plans.py", "    if not dangling:\n        return\n    c = Precondition(DANGLING_KEY",
+     "    return\n    c = Precondition(DANGLING_KEY", ["dangle.pure"]),
+    ("M34", "Dangling guard (B19): its result is unknown -- never pass",
+     "Phase3/plans.py", '    c.result = "unknown"\n    c.detail = (" ".join(s.words() for s in dangling)',
+     '    c.result = "pass"\n    c.detail = (" ".join(s.words() for s in dangling)', ["dangle.pure"]),
+    ("M35", "Dangling detection (B19): a folder scope with nothing under it in a scanned root is dangling",
+     "Phase3/scopes.py", "    return out(SCOPE_DANGLING, reason, suggest(key, facts))",
+     "    return out(SCOPE_PRESENT, reason, suggest(key, facts))", ["dangle.pure"]),
+    ("M36", "Renamed is not offline (B19): a root missing from a volume that answered is absent (dangling)",
+     "Phase3/evidence.py", "            st = RootState(key, path, ROOT_ABSENT, f\"{path} was not found",
+     "            st = RootState(key, path, ROOT_UNAVAILABLE, f\"{path} was not found", ["dangle.root"]),
+    ("M37", "Offline is not renamed (B19): a root whose volume was not there is unavailable, never dangling",
+     "Phase3/evidence.py", "        elif run_root is not None and run_root[0] == 0 and run_root[1] in _VOLUME_TYPES and run_root[2]:",
+     "        elif run_root is not None and run_root[0] == 0:", ["dangle.offline"]),
+    ("M38", "The suggestion is identity only (B19): a copy -- a new file index -- is never suggested",
+     "Phase3/scopes.py", "        for new_key, new_path in facts.identities.get(phys, ()):",
+     "        for new_key, new_path in [x for v in facts.identities.values() for x in v]:", ["dangle.pure"]),
+    # -- B19: I15, identifiers never order or decide anything -------------------------------
+    ("M39", "I15 (B19): a queue's 'oldest decision' is recording sequence, never the smallest id",
+     "Phase3/routing.py", "    seqs = [sequence[d] for c in route.conditions for d in c.decision_ids if d in sequence]\n"
+                          "    return min(seqs) if seqs else float(\"inf\")",
+     "    return min((str(d) for c in route.conditions for d in c.decision_ids), default=\"~\")", ["relabel.hand"]),
+    ("M40", "I15 (B19): which protection a copy shows as its rule follows the policies' content, never their ids",
+     "Phase3/resolve.py", "    covering = sorted((p for p in protect_policies if _policy_covers(p, loc)), key=policy_order)",
+     "    covering = [p for p in protect_policies if _policy_covers(p, loc)]", ["relabel.hand"]),
+    ("M41", "I15 (B19): a pair's place in the list follows its images' display order, not which has the lower id",
+     "Phase3/pairs.py", "        a, b = sorted((_display(ev, pp.a_id), _display(ev, pp.b_id)))",
+     "        a, b = _display(ev, pp.a_id), _display(ev, pp.b_id)", ["relabel.hand"]),
+    # -- B19: the registry as JSON Schema ----------------------------------------------------
+    ("M42", "The schema (B19): registry_digest covers registry.schema.json's bytes",
+     "Phase3/registry.py", '        "schema_sha256": hashlib.sha256(schema_bytes()).hexdigest(),', "", ["schema.committed"]),
+    ("M43", "The schema (B19): the code accepts a value exactly when the schema does (keep_both ids carry no whitespace)",
+     "Phase3/registry.py", "    if not all(isinstance(v, str) and v and v == v.strip() for v in ids):",
+     "    if not all(isinstance(v, str) and v.strip() for v in ids):", ["schema.cross"]),
+    ("M44", "W2 (B19): a bulk folder scope that matched more than one on-disk spelling warns",
+     "Phase3/bulk.py", "    if len(found) < 2:\n        return None", "    if True:\n        return None", ["close.all"]),
 ]
 
 
@@ -297,7 +342,7 @@ def main(argv):
           f"{len(results) - len(survived)}/{len(results)}; real tree untouched: {untouched}")
     if survived:
         print("SURVIVED (findings): " + ", ".join(survived))
-    print(f"P3 MUTATION (B18): {(len(results) - len(survived)) + (len(controls) - len(bad_controls)) + int(untouched)}/"
+    print(f"P3 MUTATION (B19): {(len(results) - len(survived)) + (len(controls) - len(bad_controls)) + int(untouched)}/"
           f"{len(results) + len(controls) + 1} checks passed")
     return 0 if not survived and not bad_controls and untouched else 1
 

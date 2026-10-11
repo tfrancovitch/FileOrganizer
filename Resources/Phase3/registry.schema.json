@@ -1,0 +1,1126 @@
+{
+ "$defs": {
+  "decision": {
+   "description": "A recorded decision: p3_decision's kind, target kind and value.",
+   "oneOf": [
+    {
+     "$ref": "#/$defs/decision.must_keep_location"
+    },
+    {
+     "$ref": "#/$defs/decision.keep_all_group"
+    },
+    {
+     "$ref": "#/$defs/decision.canonical_location"
+    },
+    {
+     "$ref": "#/$defs/decision.redundant_location"
+    },
+    {
+     "$ref": "#/$defs/decision.defer_review"
+    },
+    {
+     "$ref": "#/$defs/decision.override_protection"
+    },
+    {
+     "$ref": "#/$defs/decision.equivalent_copy"
+    },
+    {
+     "$ref": "#/$defs/decision.related_variant"
+    },
+    {
+     "$ref": "#/$defs/decision.different"
+    },
+    {
+     "$ref": "#/$defs/decision.keep_both"
+    },
+    {
+     "$ref": "#/$defs/decision.project_metadata_set"
+    },
+    {
+     "$ref": "#/$defs/decision.desired_source_metadata_set"
+    },
+    {
+     "$ref": "#/$defs/decision.desired_source_metadata_clear"
+    },
+    {
+     "$ref": "#/$defs/decision.leave_source_metadata_unchanged"
+    }
+   ],
+   "properties": {
+    "decision_kind": {
+     "enum": [
+      "must_keep_location",
+      "keep_all_group",
+      "canonical_location",
+      "redundant_location",
+      "defer_review",
+      "override_protection",
+      "equivalent_copy",
+      "related_variant",
+      "different",
+      "keep_both",
+      "project_metadata_set",
+      "desired_source_metadata_set",
+      "desired_source_metadata_clear",
+      "leave_source_metadata_unchanged"
+     ]
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "type": "object"
+  },
+  "decision.canonical_location": {
+   "description": "Which copy represents the group -- or, on a visual candidate pair, which of the two is preferred (Prefer Left / Prefer Right). Optional; the canonical is always a keeper. It says nothing about which copy came first.",
+   "properties": {
+    "decision_kind": {
+     "const": "canonical_location"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "exact_duplicate_group_version",
+      "visual_candidate_pair"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.location_ref"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Set canonical",
+   "type": "object",
+   "x-fo-affects-reclaim": true,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "group_canonical",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "explicit_location_decision",
+   "x-fo-supersedable": true
+  },
+  "decision.defer_review": {
+   "description": "An explicit, durable 'not deciding yet'. Distinct from a retention decision and from merely having looked.",
+   "properties": {
+    "decision_kind": {
+     "const": "defer_review"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "exact_duplicate_group_version",
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Defer",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "review_deferral",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.desired_source_metadata_clear": {
+   "description": "You want this field of the file to have no value -- the semantic clear, never a format's empty string. Always a person's intent; an unknown observation never makes one.",
+   "properties": {
+    "decision_kind": {
+     "const": "desired_source_metadata_clear"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "metadata_question"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Desired: clear",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "source_metadata",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.desired_source_metadata_set": {
+   "description": "What you want this field of the file to say, written later by Phase 4 if a certified writer exists. Plans as Update Source Metadata; blocked until then.",
+   "properties": {
+    "decision_kind": {
+     "const": "desired_source_metadata_set"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "metadata_question"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.metadata_value"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Desired: set",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "source_metadata",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.different": {
+   "description": "This candidate pair is a false positive. Pair-specific: it does not label either image as unique.",
+   "properties": {
+    "decision_kind": {
+     "const": "different"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "visual_candidate_pair"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Different",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "pair_relationship",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.equivalent_copy": {
+   "description": "The same underlying image for cleanup purposes (recompressed, resized, a trivial watermark or colour change the person considers redundant). About this pair only: it says nothing about any third image.",
+   "properties": {
+    "decision_kind": {
+     "const": "equivalent_copy"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "visual_candidate_pair"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Equivalent copy",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "pair_relationship",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.keep_all_group": {
+   "description": "Retain every current member of the group. Multiple keepers are a normal resolved state; zero reclaim is a valid answer.",
+   "properties": {
+    "decision_kind": {
+     "const": "keep_all_group"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "exact_duplicate_group_version"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Keep all",
+   "type": "object",
+   "x-fo-affects-reclaim": true,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "group_retention",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "explicit_group_decision",
+   "x-fo-supersedable": true
+  },
+  "decision.keep_both": {
+   "description": "Retain both images of the pair (the pair-scoped Keep all). With a canonical beside it, the canonical names the representative and both stay.",
+   "properties": {
+    "decision_kind": {
+     "const": "keep_both"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "visual_candidate_pair"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.location_pair"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Keep both",
+   "type": "object",
+   "x-fo-affects-reclaim": true,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "pair_retention",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "explicit_group_decision",
+   "x-fo-supersedable": true
+  },
+  "decision.leave_source_metadata_unchanged": {
+   "description": "You looked and want the file's value left as it is (R8 \u00a753). Keeps the question out of review unless the evidence materially changes; never a plan item.",
+   "properties": {
+    "decision_kind": {
+     "const": "leave_source_metadata_unchanged"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "metadata_question"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Leave unchanged",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "source_metadata",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.must_keep_location": {
+   "description": "An explicit, hard 'keep this location'. Outranks every policy and every ranking.",
+   "properties": {
+    "decision_kind": {
+     "const": "must_keep_location"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Keep",
+   "type": "object",
+   "x-fo-affects-reclaim": true,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "location_retention",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "hard_constraint",
+   "x-fo-supersedable": true
+  },
+  "decision.override_protection": {
+   "description": "The only way a protected location can become a redundant candidate: names the policy rule it defeats, for this one location, with the actor and rationale recorded.",
+   "properties": {
+    "decision_kind": {
+     "const": "override_protection"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.override"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Override protection",
+   "type": "object",
+   "x-fo-affects-reclaim": true,
+   "x-fo-confirmation": "explicit_override",
+   "x-fo-conflict-domain": "protection_override",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "hard_constraint",
+   "x-fo-supersedable": true
+  },
+  "decision.project_metadata_set": {
+   "description": "The project's own data about this file (a tag, category, note, priority, owner, why it is kept). Stored in the File Organizer project -- never written to the file; never a plan item.",
+   "properties": {
+    "decision_kind": {
+     "const": "project_metadata_set"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.project_metadata"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Set project metadata",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "project_metadata",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.redundant_location": {
+   "description": "A candidate for future removal. Takes no effect against an active protection policy until that protection is explicitly overridden, and never against the last copy.",
+   "properties": {
+    "decision_kind": {
+     "const": "redundant_location"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Mark redundant candidate",
+   "type": "object",
+   "x-fo-affects-reclaim": true,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "location_retention",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "explicit_location_decision",
+   "x-fo-supersedable": true
+  },
+  "decision.related_variant": {
+   "description": "Meaningfully related but NOT interchangeable (a deliberate crop, a black-and-white edit, a retouch, an annotated export). Its default retention is Keep Both, and it never falls into the ordinary redundant-copy cleanup.",
+   "properties": {
+    "decision_kind": {
+     "const": "related_variant"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "visual_candidate_pair"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.flag"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Related variant",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "pair_relationship",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "effect.none": {
+   "description": "No parameters (an object's other keys are not read).",
+   "type": [
+    "object",
+    "null"
+   ]
+  },
+  "effect.prefer_folder_subtree": {
+   "description": "Optionally 'over' one other folder: over_path_key (non-blank text) and its display text over.",
+   "if": {
+    "properties": {
+     "over_path_key": {
+      "minLength": 1,
+      "type": "string"
+     }
+    },
+    "required": [
+     "over_path_key"
+    ],
+    "type": "object"
+   },
+   "properties": {
+    "over_path_key": {
+     "anyOf": [
+      {
+       "type": "null"
+      },
+      {
+       "const": ""
+      },
+      {
+       "$ref": "#/$defs/nonblank_text"
+      }
+     ]
+    }
+   },
+   "then": {
+    "properties": {
+     "over": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    }
+   },
+   "type": [
+    "object",
+    "null"
+   ]
+  },
+  "field_value.date": {
+   "description": "YYYY-MM-DD, or YYYY-MM-DDTHH:MM[:SS][Z|+HH:MM|-HH:MM]: a real calendar day (0001-9999), times 00:00-23:59:59, offsets up to 23:59.",
+   "pattern": "^[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]*(?!0000)(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)(?:T(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])?)?[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]*$",
+   "type": "string"
+  },
+  "field_value.keyword_list": {
+   "description": "A non-empty list of keywords, each non-blank text.",
+   "items": {
+    "$ref": "#/$defs/field_value.text"
+   },
+   "minItems": 1,
+   "type": "array"
+  },
+  "field_value.text": {
+   "description": "Non-blank text, at most 4,000 characters once surrounding whitespace is removed.",
+   "not": {
+    "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000][\\s\\S]{3999,}[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]"
+   },
+   "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]",
+   "type": "string"
+  },
+  "id": {
+   "anyOf": [
+    {
+     "type": "integer"
+    },
+    {
+     "$ref": "#/$defs/nonblank_text"
+    }
+   ],
+   "description": "A policy or policy-version id: an integer, or non-blank text."
+  },
+  "nonblank_text": {
+   "description": "Text with at least one character that is not whitespace.",
+   "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]",
+   "type": "string"
+  },
+  "policy.avoid_folder_subtree": {
+   "description": "Locations in the folder subtree rank below otherwise equivalent candidates.",
+   "properties": {
+    "effect": {
+     "$ref": "#/$defs/effect.none"
+    },
+    "policy_kind": {
+     "const": "avoid_folder_subtree"
+    },
+    "scope": {
+     "$ref": "#/$defs/scope.folder_subtree"
+    },
+    "status": {
+     "enum": [
+      "active",
+      "retired"
+     ]
+    }
+   },
+   "required": [
+    "policy_kind",
+    "scope"
+   ],
+   "title": "Avoid folder",
+   "type": "object",
+   "x-fo-effect": "avoid",
+   "x-fo-resolution-class": "folder_policy"
+  },
+  "policy.prefer_folder_subtree": {
+   "description": "Locations in the folder subtree outrank other candidates for the canonical recommendation (optionally only over one other folder).",
+   "properties": {
+    "effect": {
+     "$ref": "#/$defs/effect.prefer_folder_subtree"
+    },
+    "policy_kind": {
+     "const": "prefer_folder_subtree"
+    },
+    "scope": {
+     "$ref": "#/$defs/scope.folder_subtree"
+    },
+    "status": {
+     "enum": [
+      "active",
+      "retired"
+     ]
+    }
+   },
+   "required": [
+    "policy_kind",
+    "scope"
+   ],
+   "title": "Prefer folder",
+   "type": "object",
+   "x-fo-effect": "prefer",
+   "x-fo-resolution-class": "folder_policy"
+  },
+  "policy.prefer_source_root": {
+   "description": "Locations in the root outrank locations elsewhere for the canonical recommendation.",
+   "properties": {
+    "effect": {
+     "$ref": "#/$defs/effect.none"
+    },
+    "policy_kind": {
+     "const": "prefer_source_root"
+    },
+    "scope": {
+     "$ref": "#/$defs/scope.source_root"
+    },
+    "status": {
+     "enum": [
+      "active",
+      "retired"
+     ]
+    }
+   },
+   "required": [
+    "policy_kind",
+    "scope"
+   ],
+   "title": "Prefer source root",
+   "type": "object",
+   "x-fo-effect": "prefer",
+   "x-fo-resolution-class": "source_root_policy"
+  },
+  "policy.protect_folder_subtree": {
+   "description": "Every current file location in the folder subtree stays ineligible for removal.",
+   "properties": {
+    "effect": {
+     "$ref": "#/$defs/effect.none"
+    },
+    "policy_kind": {
+     "const": "protect_folder_subtree"
+    },
+    "scope": {
+     "$ref": "#/$defs/scope.folder_subtree"
+    },
+    "status": {
+     "enum": [
+      "active",
+      "retired"
+     ]
+    }
+   },
+   "required": [
+    "policy_kind",
+    "scope"
+   ],
+   "title": "Protect folder",
+   "type": "object",
+   "x-fo-effect": "protect",
+   "x-fo-resolution-class": "hard_constraint"
+  },
+  "policy.protect_source_root": {
+   "description": "Every current file location in the root stays ineligible for removal.",
+   "properties": {
+    "effect": {
+     "$ref": "#/$defs/effect.none"
+    },
+    "policy_kind": {
+     "const": "protect_source_root"
+    },
+    "scope": {
+     "$ref": "#/$defs/scope.source_root"
+    },
+    "status": {
+     "enum": [
+      "active",
+      "retired"
+     ]
+    }
+   },
+   "required": [
+    "policy_kind",
+    "scope"
+   ],
+   "title": "Protect source root",
+   "type": "object",
+   "x-fo-effect": "protect",
+   "x-fo-resolution-class": "hard_constraint"
+  },
+  "policy_version": {
+   "description": "A recorded policy version: p3_policy.kind with the version's scope, effect and status.",
+   "oneOf": [
+    {
+     "$ref": "#/$defs/policy.protect_source_root"
+    },
+    {
+     "$ref": "#/$defs/policy.protect_folder_subtree"
+    },
+    {
+     "$ref": "#/$defs/policy.prefer_source_root"
+    },
+    {
+     "$ref": "#/$defs/policy.prefer_folder_subtree"
+    },
+    {
+     "$ref": "#/$defs/policy.avoid_folder_subtree"
+    }
+   ],
+   "properties": {
+    "policy_kind": {
+     "enum": [
+      "protect_source_root",
+      "protect_folder_subtree",
+      "prefer_source_root",
+      "prefer_folder_subtree",
+      "avoid_folder_subtree"
+     ]
+    }
+   },
+   "required": [
+    "policy_kind",
+    "scope"
+   ],
+   "type": "object"
+  },
+  "scope.folder_subtree": {
+   "properties": {
+    "path": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "path_key": {
+     "$ref": "#/$defs/nonblank_text"
+    }
+   },
+   "required": [
+    "path_key"
+   ],
+   "type": "object"
+  },
+  "scope.source_root": {
+   "properties": {
+    "root_key": {
+     "$ref": "#/$defs/nonblank_text"
+    },
+    "root_path": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "root_key"
+   ],
+   "type": "object"
+  },
+  "semantic_field.content_created": {
+   "$ref": "#/$defs/field_value.date",
+   "description": "When the content says it was created -- not the file system's timestamp.",
+   "title": "Content created"
+  },
+  "semantic_field.copyright": {
+   "$ref": "#/$defs/field_value.text",
+   "description": "A copyright or rights statement.",
+   "title": "Copyright"
+  },
+  "semantic_field.creator": {
+   "$ref": "#/$defs/field_value.text",
+   "description": "Who made it (author, artist).",
+   "title": "Creator"
+  },
+  "semantic_field.description": {
+   "$ref": "#/$defs/field_value.text",
+   "description": "A description or subject line.",
+   "title": "Description"
+  },
+  "semantic_field.keywords": {
+   "$ref": "#/$defs/field_value.keyword_list",
+   "description": "Keywords or tags embedded in the file.",
+   "title": "Keywords"
+  },
+  "semantic_field.title": {
+   "$ref": "#/$defs/field_value.text",
+   "description": "The document's or item's title.",
+   "title": "Title"
+  },
+  "trimmed_id": {
+   "description": "An id as text, with no whitespace around it.",
+   "minLength": 1,
+   "not": {
+    "anyOf": [
+     {
+      "pattern": "^[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]"
+     },
+     {
+      "pattern": "[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]$"
+     }
+    ]
+   },
+   "type": "string"
+  },
+  "value.flag": {
+   "const": true,
+   "description": "The value true, and nothing else."
+  },
+  "value.location_pair": {
+   "description": "The pair's two file locations, each its id as text; different.",
+   "items": {
+    "$ref": "#/$defs/trimmed_id"
+   },
+   "maxItems": 2,
+   "minItems": 2,
+   "type": "array",
+   "uniqueItems": true
+  },
+  "value.location_ref": {
+   "description": "One file location, its id as text.",
+   "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]",
+   "type": "string"
+  },
+  "value.metadata_value": {
+   "description": "A desired value: anything but nothing -- clearing a field is its own decision (desired_source_metadata_clear). Its shape per field: semantic_field.<field>.",
+   "not": {
+    "anyOf": [
+     {
+      "type": "null"
+     },
+     {
+      "not": {
+       "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]"
+      },
+      "type": "string"
+     },
+     {
+      "const": []
+     }
+    ]
+   }
+  },
+  "value.override": {
+   "description": "The protection policy (and the version) this override defeats.",
+   "properties": {
+    "policy_id": {
+     "$ref": "#/$defs/id"
+    },
+    "policy_version_id": {
+     "$ref": "#/$defs/id"
+    }
+   },
+   "required": [
+    "policy_id",
+    "policy_version_id"
+   ],
+   "type": "object"
+  },
+  "value.project_metadata": {
+   "description": "The project's own data about a file: one field and its value (null: no value).",
+   "oneOf": [
+    {
+     "additionalProperties": false,
+     "properties": {
+      "field": {
+       "const": "tags"
+      },
+      "value": {
+       "anyOf": [
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/field_value.keyword_list"
+        }
+       ]
+      }
+     },
+     "required": [
+      "field",
+      "value"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "field": {
+       "const": "category"
+      },
+      "value": {
+       "anyOf": [
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/field_value.text"
+        }
+       ]
+      }
+     },
+     "required": [
+      "field",
+      "value"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "field": {
+       "const": "note"
+      },
+      "value": {
+       "anyOf": [
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/field_value.text"
+        }
+       ]
+      }
+     },
+     "required": [
+      "field",
+      "value"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "field": {
+       "const": "review_priority"
+      },
+      "value": {
+       "anyOf": [
+        {
+         "type": "null"
+        },
+        {
+         "enum": [
+          "low",
+          "normal",
+          "high"
+         ]
+        }
+       ]
+      }
+     },
+     "required": [
+      "field",
+      "value"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "field": {
+       "const": "retention_rationale"
+      },
+      "value": {
+       "anyOf": [
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/field_value.text"
+        }
+       ]
+      }
+     },
+     "required": [
+      "field",
+      "value"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "field": {
+       "const": "owner"
+      },
+      "value": {
+       "anyOf": [
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/field_value.text"
+        }
+       ]
+      }
+     },
+     "required": [
+      "field",
+      "value"
+     ],
+     "type": "object"
+    }
+   ]
+  }
+ },
+ "$id": "urn:fileorganizer:p3:registry:2",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "description": "The decision kinds and policy kinds Phase 3 records, as rule definitions: what each may target and the shape of its value, scope and effect. Generated from Scripts\\Phase3\\registry.py by Scripts\\Phase3\\registry_schema.py -- do not edit. An instance is one recorded decision or policy version; checks that need the evidence (group or pair membership, a question's field, the policy an override names) are the store's, not this schema's.",
+ "oneOf": [
+  {
+   "$ref": "#/$defs/decision"
+  },
+  {
+   "$ref": "#/$defs/policy_version"
+  }
+ ],
+ "title": "The File Organizer -- Phase 3 rule registry",
+ "version": "fileorganizer.p3.registry/2"
+}

@@ -79,6 +79,9 @@ OPTIONAL_PACKAGES = {
     "pypdfium2": ("pypdfium2", "fast PDF text (pdfplumber is the fallback)"),
     "winocr": ("winocr", "OCR of scanned pages and pictures (Windows' own engine)"),
     "pillow_heif": ("pillow-heif", "HEIC/HEIF image decoding only"),
+    # B19: a test dependency, not a runtime one -- the product never imports it.
+    "jsonschema": ("jsonschema", "the test suite's rule-registry schema check only (p3_registry_schema_check); "
+                                 "the product never imports it"),
 }
 
 RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
@@ -89,7 +92,8 @@ RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    "Phase2.core", "Phase2.query", "Phase2.capability", "Phase2.visual",
                    "Phase3.registry", "Phase3.resolve", "Phase3.pairs", "Phase3.routing", "Phase3.bulk", "Phase3.store",
                    "Phase3.review", "Phase3.imagegame", "Phase3.survey", "Phase3.survey_view", "Phase3.refresh",
-                   "Phase3.plans", "Phase3.planview", "Phase3.metadata", "Phase3.metadata_view")
+                   "Phase3.plans", "Phase3.planview", "Phase3.metadata", "Phase3.metadata_view",
+                   "Phase3.registry_schema", "Phase3.scopes")
 
 
 class Report(object):

@@ -27,6 +27,7 @@ from . import evidence as E
 from . import plans as PL
 from . import resolve as R
 from . import routing as RT
+from . import scopes as SC
 from .registry import (ACTION_WORDS, ITEM_READY, ITEM_PRESERVE, STAGE_EVIDENCE, STAGE_LIVE, PREVIEW_DISCLOSURE,
                        ACTION_METADATA, GROUP, VISUAL_PAIR, METADATA_QUESTION)
 from .review import store_for, run_detector
@@ -185,7 +186,12 @@ class PlanPage:
                 f"{len(pairs):,} similar-image pair{'s' if len(pairs) != 1 else ''} whose decisions name a copy to remove")
         if excluded.get("deferred"):
             text += f" · {excluded['deferred']:,} deferred by you (left out)"
-        self.population_var.set(text + ".")
+        # B19: say which policy matches nothing, and how to clear it, before a revision is built.
+        self.dangling = SC.summary(ev)
+        for d in self.dangling:
+            text += (" · BLOCKED -- every removal until this is cleared: " if d["effect"] == "protect"
+                     else " · Warning: ") + d["words"]
+        self.population_var.set(text + ("." if not self.dangling else ""))
         self.plan_box["values"] = [f"{p['name']} (plan #{p['plan_id']})" for p in self.plans]
         if plan_id is None and self.plan_id is not None and any(p["plan_id"] == self.plan_id for p in self.plans):
             plan_id = self.plan_id

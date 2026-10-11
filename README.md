@@ -8,10 +8,32 @@ Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
 keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B18 changes a file either — not even the plan B15 builds, or
+a later phase; nothing in B8–B19 changes a file either — not even the plan B15 builds, or
 the metadata you ask for on the Metadata page.
 
 ---
+
+## B19 — Phase 3: the four open closeout rows
+
+- **A protection now survives a renamed or moved folder.** If you rename or
+  move a root or folder that a policy protects, and scan again, the policy no
+  longer matches anything. The program now says so, by name: on the
+  **Decide** page, in **Policies...** ("In the latest scan: MATCHES NOTHING")
+  and on the **Plan** page. Until you deal with it, every removal in a plan is
+  blocked. In **Policies...**, choose **Re-point...** to point the policy at
+  where the files are now, or **Retire** it. When the program can tell from
+  the files' identities where they went, it *suggests* the new place — it
+  never moves the policy on its own. A drive that is simply unplugged is not
+  treated as renamed: its copies wait (Blocked) until it is back.
+- **Bulk folder actions warn** when the folder you named matched two folders
+  whose names differ only in how an accented letter is encoded.
+- Behind the scenes, the rules the program records decisions under are now
+  also written down as a standard JSON Schema
+  (`Resources\Phase3\registry.schema.json`), and tests show that renumbering
+  every record changes nothing you see.
+
+Still nothing changes a file. `CHANGELOG-B19.md` has the detail;
+`PHASE3_B19_HANDBACK.md` reports against the B19 handoff.
 
 ## B18 — Phase 3: the closeout round
 
@@ -357,7 +379,9 @@ failed and everything else continues.
 | Archives | ZIP uses stdlib; `py7zr` for `.7z` |
 
 `Scripts\Install-Dependencies.ps1` installs the Python packages. **ffprobe**
-comes with FFmpeg and must be installed separately.
+comes with FFmpeg and must be installed separately. `jsonschema` (from B19)
+is used by one test suite only (`p3_registry_schema_check`); the program
+itself never needs it.
 
 ---
 
@@ -533,6 +557,21 @@ statement that **future matching evidence will be evaluated against it** —
 a file that appears there later is covered too, with no decision recorded
 for it. **Export journal…** writes the whole decision record as text into
 the project's `Exports\` folder.
+
+**When a policy matches nothing (from B19).** A policy's folder or root can
+disappear from a scan: you renamed or moved it, or deleted it. The
+**Policies…** column *In the latest scan* then says **MATCHES NOTHING**, the
+Decide page names the policy above the list, and the Plan page says so too.
+While a *protection* policy matches nothing, every removal in a plan is
+blocked (`no_dangling_protection`): the program cannot tell whether a file
+you plan to remove was one the policy meant to protect. Select it and choose
+**Re-point…** (a new version of the same policy, at the place you choose) or
+**Retire**. If the files' identities show where they went, Re-point… shows
+the place as a *suggestion*; **Use the suggestion** fills it in, and nothing
+is recorded until you press **Re-point**. A root on a drive that is merely
+not connected is *not observed*, not "matches nothing": its copies show as
+Blocked until the drive is scanned again. A preference that matches nothing
+is only a warning.
 
 **Bulk (from B10).** Check groups in the list (click the first column, or
 press Space on the focused row; **Check all shown** / **Clear**); the
@@ -830,6 +869,15 @@ folder — never next to your originals.
   look-alike pairs: B12's bulk action answers a folder of them at once, and
   Survey Mode (B13) a crowd of 3–8 across folders; a crowd of more than
   eight across folders still takes one pair at a time.
+- **A source root cannot be removed from a project (B19 finding).** After
+  you rename a root and point the project at the new name, the old root's
+  files keep their last-known state (the program never marks the files of
+  an unreachable root deleted), and the duplicate groups that hold one of
+  them stay *Blocked* on root coverage. Their policies can be re-pointed or
+  retired; the old root itself stays in the project.
+- **Folder names compared in NFC.** Two sibling folders whose names differ
+  only in how an accented letter is encoded are one scope to a policy or a
+  bulk folder action; a bulk preview warns when that happened.
 
 ---
 

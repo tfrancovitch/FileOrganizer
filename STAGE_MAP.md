@@ -350,3 +350,15 @@ value-state does. The queue's **Confirm...** records one batch (a `bulk`
 operation) of the same decisions on fresh evidence; its Undo re-applies what
 it superseded. The Decide page's **Export current state...** reads the
 project database and writes one CSV under the project's `Exports\`.
+**Policies... > Re-point...** (B19) is one `policy` operation: a new version
+of the same policy with a new scope. Judging whether each policy's scope
+matches anything reads only the project database -- the latest Pre-Scan's
+record of which roots it walked and whether each was there
+(`run_source_root.was_available` with its drive type and file system), the
+current state of every file, and the folders and links the scan recorded. A
+suggested new place comes from the same records (volume serial + file index);
+nothing on disk is listed or stat'ed for it, and nothing is recorded until a
+person presses Re-point. **Pre-Scan** (B19) now probes each root's existence,
+drive type and file system at every run -- through B18 the program kept the
+answer from the first run of the session, so a drive unplugged or a folder
+renamed while it stayed open was recorded as still there.

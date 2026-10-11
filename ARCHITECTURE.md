@@ -1,12 +1,13 @@
-# Architecture — The File Organizer, B18 (Phases 1–2 shipped, Phase 3 built; closeout drafted)
+# Architecture — The File Organizer, B19 (Phases 1–2 shipped, Phase 3 built; closeout drafted)
 
 This describes the software as it is. It is not a history of how it got here.
 The body below is Phase 1's architecture as B6.1 left it, still accurate for
 the engines; the **Phase 2** section (the one window, the query core, the
 current-duplicate projection) and the **Phase 3** section (decisions,
 routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
-refresh, the Plan Builder, metadata and its page, the closeout round) at the end say what B7 and B8–B18 added on top;
-the Phase 3 section also holds its written state machines, the path-matching rule and the plan fingerprint.
+refresh, the Plan Builder, metadata and its page, the closeout round, B19's four fixes) at the end say what B7 and
+B8–B19 added on top; the Phase 3 section also holds its written state machines, the path-matching rule (renamed roots,
+links and mounts included), the rule registry as JSON Schema, the identifier rule and the plan fingerprint.
 
 ---
 
@@ -883,10 +884,50 @@ bulk folder scope compares through (S5; `p3_closeout_check` §4):
 5. the folder boundary is a whole segment: `C:\Docs` covers `C:\Docs` and
    `C:\Docs\x`, never `C:\Docs2` (`model.under`).
 
-Symbolic links and reparse points are not followed by policy matching: a
-policy covers the path the evidence stores (Phase 1 records a link as the
-link, never its target), and mount boundaries and renamed roots are
-matched by the stored root key, not re-resolved.
+**Links and mounts (B19).** A scope covers paths *as scanned* under it:
+
+- Phase 1 never descends into a directory reparse point -- a junction, a
+  directory symbolic link, or a volume mount point (the mount-point tag
+  0xA0000003 covers junctions and volume mount points alike; the symlink
+  tag is 0xA000000C; `win_meta.is_true_link`). It records each as a
+  `skipped_reparse_directory` event at the path where it was found.
+- So a folder policy never follows a junction or symbolic link out of its
+  scope: nothing reached through one is under the scope, and the target is
+  covered only where it was scanned at its own path.
+- A mount point inside a scope is inside the scope -- recorded under that
+  path -- and counts as something there; the mounted volume's files are not
+  scanned through it (the handoff's recommended rule assumed they were; this
+  is Phase 1's actual behaviour, stated as it is). A volume's files are
+  covered where they were scanned: under the root that holds them.
+- A file symbolic link is one location at its own path; a hard link is one
+  location per path, as always (aliases are counted by physical identity).
+
+**Renamed roots and folders (B19; `Phase3\scopes.py`).** Nothing is ever
+re-mapped silently. Each policy's scope is judged against the project's
+latest inventory run (`evidence.root_states`, `load_scope_facts`):
+
+| State | Meaning | What follows |
+|---|---|---|
+| present | something the latest scan observed is at or under the scope: a present file of a scanned root, an empty folder or a link it recorded | nothing |
+| unavailable | the scope's root was not observed: its volume was not there at the scan (offline -- drive type and file system unrecorded), it was not walked, the walk did not complete, or part of the scope could not be read | not dangling; the root's copies route BLOCKED (`INCOMPLETE_ROOT_COVERAGE`) because `load_roots` now marks a root the latest run did not walk as unavailable -- last-known is not current |
+| dangling | the place was observed and the scope is absent: the root's folder was missing while its volume answered (drive type and file system recorded), or the root was scanned completely and nothing is at or under the folder | named on the Decide page, in the Policies dialog and in the Plan preview; a PROTECT policy puts the hard precondition `no_dangling_protection` (result *unknown*) on every Remove Location item and obsoletes a locked revision with a ready removal (`protection_dangling`); a prefer / avoid policy is a warning only |
+
+A person clears it: **Re-point...** (a new version of the same policy with
+the new scope, `store.revise_policy`) or **Retire**. When identity evidence
+shows where the scope's files went -- the same volume serial and file index
+present at a path that keeps each file's place under the scope -- the dialog
+*suggests* that place, labelled "suggested — same file identities (volume
+serial + file index) seen under this new path". It fills the field only when
+the person asks, and nothing is recorded until they press Re-point. A copy
+has a new file index and is never a match; name and size are never used.
+
+Offline and renamed are kept apart by the one fact Phase 1 records for
+every root at every run: `run_source_root.was_available` with the root's
+drive type and file system (`fo_env.drive_info`). B19 fixed that fact's
+freshness: `RunCoordinator.get_environment` cached it for the whole
+process, so a root unplugged or renamed while the program stayed open was
+recorded as available at every later run; the per-root facts are now
+probed at every run (the machine-level facts stay cached).
 
 ### State machines (M6)
 
@@ -958,3 +999,57 @@ mark withdrawn, Keep, a canonical), *by an override* (only
 lower rank never resolves one; a blocking conflict withholds plan
 eligibility and routes first. Checked in `p3_closeout_check` §1d,
 `p3_regression` §2 and §6, `p3_visual_check`.
+
+**(e) A policy and its scope (B19)** -- versions are rows (`p3_policy_version`,
+append-only); the scope's state is derived at load, never stored
+(`scopes.status`).
+
+| From | Event | Guard | To | Code |
+|---|---|---|---|---|
+| (none) | create | the registry validates the kind, scope and effect; the Add dialog previews first | active v1 | `store.create_policy` |
+| active | re-point | the same kind; a new scope that validates (a person presses Re-point; a scope that also matches nothing asks first) | active v(n+1), the new scope | `store.revise_policy`, `review.RepointDialog` |
+| active | retire | -- | retired v(n+1) | `store.retire_policy` |
+| retired | reactivate | -- | active v(n+1) | `store.revise_policy` |
+| (any scope state) | a new scan | -- | present / unavailable / dangling, recomputed | `evidence.load_scope_facts`, `scopes.status` |
+
+Invalid, impossible by construction: a scope changed by anything but a
+person's new version -- no code path writes a policy version from the
+evidence (`p3_dangling_check` §2: loading, building, the detector and plan
+reconciliation record none); the suggestion applied without a person
+(`RepointDialog.use_suggestion` fills the field only).
+
+### The rule registry as JSON Schema (B19)
+
+`Phase3\registry.py` stays the source. `Phase3\registry_schema.py` generates
+`Resources\Phase3\registry.schema.json` (draft 2020-12; `$id`
+`urn:fileorganizer:p3:registry:2`, `version` = `REGISTRY_VERSION`
+`fileorganizer.p3.registry/2`): one definition per decision kind (its
+targets and value shape) and per policy kind (its scope and effect shapes),
+the project-metadata and semantic-field value shapes. The bytes are
+deterministic (sorted keys, one-space indent, ASCII, LF); the committed
+file must equal a fresh generation, and `registry_digest()` covers them.
+An instance is a recorded row: `{decision_kind, target_kind, value[,
+origin_kind]}` or `{policy_kind, scope[, effect][, status]}`. The schema says
+exactly what the registry's gates accept -- checked both ways, with the
+independent `jsonschema` package (a test dependency only; the product never
+imports it), by `p3_registry_schema_check`. Writing it narrowed four gates
+that turned any value into text (`str(None)` was an id; a scope key of `5`
+was a root) and replaced Python's lenient date parsing with an explicit
+rule. What needs the evidence -- group or pair membership, a question's
+field, the policy an override names -- stays the store's check.
+
+### Identifiers and order (B19, I15)
+
+An id names a row; it never orders or decides anything. Recording order is
+a decision's or event's `sequence` -- derived by the loader from the
+append-only row id (rows are never deleted or rewritten, so the rowid *is*
+the append order) and read nowhere else as an order. Everything a person
+sees is ordered by what it shows: groups and copies by display order (root
+ordinal, path sort key), pairs by measurement then their images' display
+order, a queue's "oldest decision" by sequence (`RoutingProjection.sequence`),
+which protection a copy names as its rule by the policies' content
+(`resolve.policy_order`), conflicts by where they fall in display order
+(`resolve.conflict_order`). An id-ordered list inside the plan payload is a
+set in canonical form. `p3_relabel_check` replaces every id in 13 spaces
+(3 seeds; a hand-built model and a real project) and requires every result
+and every list order to map back unchanged.

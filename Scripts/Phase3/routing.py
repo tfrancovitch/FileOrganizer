@@ -192,6 +192,11 @@ class RoutingProjection:
     now: str
     pairs: dict = field(default_factory=dict)       # pair_id -> Route (Build 5)
     pair_counts: dict = field(default_factory=dict)
+    #: (B19, I15) decision_id -> its recording sequence: what "the oldest
+    #: decision" means when a queue is ordered. Through B18 `ordered` took the
+    #: smallest decision id as an integer -- id arithmetic, and a non-digit id
+    #: (a fixture's) fell through to the target's own id.
+    sequence: dict = field(default_factory=dict)
 
     def route(self, group_id):
         return self.groups.get(group_id)
@@ -451,9 +456,10 @@ def _deferral_text(e: ReviewEvent):
 
 
 def _by_target(active):
-    """(target_kind, target_ref) -> the target's active decisions, in recording order."""
+    """(target_kind, target_ref) -> the target's active decisions, in recording order
+    (the sequence; B19: no tie-break on the id -- a stable sort keeps the record's order)."""
     out = {}
-    for d in sorted(active, key=lambda d: (d.sequence, d.decision_id)):
+    for d in sorted(active, key=lambda d: d.sequence):
         out.setdefault((d.target_kind, str(d.target_ref)), []).append(d)
     return out
 
@@ -641,7 +647,19 @@ def route_all(ev: Evidence, proj: R.ProjectProjection, now=None) -> RoutingProje
     counts["conditions"] = conditions
     # Build 5: every visual candidate pair, on its own.
     pairs, pair_counts = route_pairs(ev, getattr(proj, "pairs", ()), now, opened, by_target)
-    return RoutingProjection(groups, locations, counts, now, pairs, pair_counts)
+    return RoutingProjection(groups, locations, counts, now, pairs, pair_counts, decision_sequence(ev))
+
+
+def decision_sequence(ev: Evidence) -> dict:
+    """(B19) decision_id -> recording sequence, for every decision the model holds."""
+    return {d.decision_id: d.sequence for d in ev.decisions}
+
+
+def _oldest(route, sequence):
+    """The recording sequence of the earliest decision a route's conditions
+    name -- never an id's value. None named (or none known): last."""
+    seqs = [sequence[d] for c in route.conditions for d in c.decision_ids if d in sequence]
+    return min(seqs) if seqs else float("inf")
 
 
 def route_pairs(ev: Evidence, pair_projections, now=None, opened=None, by_target=None, previous=None, only=None):
@@ -687,29 +705,24 @@ def ordered(proj: R.ProjectProjection, routing: RoutingProjection, route):
     """The groups whose primary route this is, in the route's own order.
 
     Conflicts: the most reclaim at stake first, then the oldest unresolved
-    (the earliest active decision) -- the stand-in the synthesis asks for
-    until a Plan exists. Every other route: display order.
+    (the earliest active decision, by recording sequence) -- the stand-in the
+    synthesis asks for until a Plan exists; a tie keeps display order. Every
+    other route: display order. (B19: no id arithmetic, no tie-break on an id.)
     """
     groups = [g for g in proj.groups if routing.groups[g.group_id].primary == route]
     if route == CONFLICT:
-        def key(g):
-            r = routing.groups[g.group_id]
-            oldest = min((int(d) for c in r.conditions for d in c.decision_ids if str(d).isdigit()), default=10 ** 12)
-            return (-(g.potential_reclaim_bytes or 0), oldest, g.group_id)
-        groups.sort(key=key)
+        groups.sort(key=lambda g: (-(g.potential_reclaim_bytes or 0), _oldest(routing.groups[g.group_id], routing.sequence)))
     return groups
 
 
 def ordered_pairs(proj: R.ProjectProjection, routing: RoutingProjection, route):
     """The pairs whose primary route this is, in the route's own order:
-    conflicts oldest decision first; every other route the pairs' own order
-    (the closest measurement first)."""
+    conflicts oldest decision first (recording sequence; a tie keeps the
+    pairs' own order); every other route the pairs' own order (the closest
+    measurement first)."""
     pairs = [p for p in proj.pairs if routing.pairs[p.pair_id].primary == route]
     if route == CONFLICT:
-        def key(p):
-            r = routing.pairs[p.pair_id]
-            return (min((int(d) for c in r.conditions for d in c.decision_ids if str(d).isdigit()), default=10 ** 12), p.pair_id)
-        pairs.sort(key=key)
+        pairs.sort(key=lambda p: _oldest(routing.pairs[p.pair_id], routing.sequence))
     return pairs
 
 

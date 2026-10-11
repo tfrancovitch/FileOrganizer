@@ -96,25 +96,47 @@ def _id_order(value):
 
 
 def _location_pair(value):
-    """keep_both names the pair's two locations (the fixture lab's shape: ["A","B"])."""
+    """keep_both names the pair's two locations (the fixture lab's shape: ["A","B"]).
+
+    B19 (the JSON Schema, registry.schema.json): each is a location id as
+    text with no surrounding whitespace -- through B18 any value was turned
+    into text (None became "None") and stripped, so ["1", " 1"] was refused
+    only after stripping, a rule a schema cannot state."""
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise ValueError("keep_both names the two file locations of the pair")
-    ids = [str(v).strip() for v in value]
-    if not all(ids) or ids[0] == ids[1]:
+    ids = list(value)
+    if not all(isinstance(v, str) and v and v == v.strip() for v in ids):
+        raise ValueError("keep_both names two file locations, each its id as text")
+    if ids[0] == ids[1]:
         raise ValueError("keep_both names two different file locations")
     return sorted(ids, key=_id_order)
+
+
+def _id_value(value):
+    """(B19) A policy or policy-version id in an override: an integer (a
+    whole-number float is the same JSON number) or non-blank text. Through
+    B18 anything was turned into text -- None became the id "None"."""
+    if isinstance(value, bool):
+        raise ValueError("an id is an integer or text")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise ValueError("an id is an integer or non-blank text")
 
 
 def _override(value):
     if not isinstance(value, dict):
         raise ValueError("override_protection names the policy it overrides")
+    if "policy_id" not in value or "policy_version_id" not in value:
+        raise ValueError("override_protection needs policy_id and policy_version_id")
     try:
-        policy_id = str(value["policy_id"]).strip()
-        version_id = str(value["policy_version_id"]).strip()
-    except (KeyError, TypeError):
-        raise ValueError("override_protection needs policy_id and policy_version_id")
-    if not policy_id or not version_id:
-        raise ValueError("override_protection needs policy_id and policy_version_id")
+        policy_id = _id_value(value["policy_id"])
+        version_id = _id_value(value["policy_version_id"])
+    except ValueError:
+        raise ValueError("override_protection needs policy_id and policy_version_id (integers or text)")
     return {"policy_id": policy_id, "policy_version_id": version_id}
 
 
@@ -438,26 +460,40 @@ class PolicyKind:
     description: str
 
     def validate_scope(self, scope):
+        """(B19) The key is non-blank text and the display path, when given,
+        is text -- through B18 any value was turned into text (5 became the
+        root "5"), which registry.schema.json could not state."""
         if not isinstance(scope, dict):
             raise ValueError("a policy scope is an object")
-        if self.scope_kind == SOURCE_ROOT:
-            key = str(scope.get("root_key") or "").strip()
-            if not key:
-                raise ValueError("a source-root policy names the root (root_key)")
-            return {"root_key": key, "root_path": str(scope.get("root_path") or key)}
-        key = str(scope.get("path_key") or "").strip()
-        if not key:
-            raise ValueError("a folder policy names the folder (path_key)")
-        return {"path_key": key, "path": str(scope.get("path") or key)}
+        key_name, path_name = ("root_key", "root_path") if self.scope_kind == SOURCE_ROOT else ("path_key", "path")
+        key = scope.get(key_name)
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("a source-root policy names the root (root_key)" if self.scope_kind == SOURCE_ROOT
+                             else "a folder policy names the folder (path_key)")
+        shown = scope.get(path_name)
+        if shown is not None and not isinstance(shown, str):
+            raise ValueError(f"a policy scope's {path_name} is text")
+        key = key.strip()
+        return {key_name: key, path_name: shown or key}
 
     def validate_effect(self, effect):
-        effect = effect or {}
+        """None or an object. Only Prefer folder reads anything from it: an
+        optional `over_path_key` (non-blank text) with its display text `over`.
+        (B19: None, not any empty value, means no effect; `over` is text.)"""
+        if effect is None:
+            effect = {}
         if not isinstance(effect, dict):
             raise ValueError("a policy effect is an object")
         out = {}
-        if self.key == "prefer_folder_subtree" and effect.get("over_path_key"):
-            out["over_path_key"] = str(effect["over_path_key"]).strip()
-            out["over"] = str(effect.get("over") or out["over_path_key"])
+        if self.key == "prefer_folder_subtree":
+            over_key, over = effect.get("over_path_key"), effect.get("over")
+            if over_key is not None and over_key != "":
+                if not isinstance(over_key, str) or not over_key.strip():
+                    raise ValueError("Prefer folder ... over names the other folder as text (over_path_key)")
+                if over is not None and not isinstance(over, str):
+                    raise ValueError("Prefer folder ... over: its display text (over) is text")
+                out["over_path_key"] = over_key.strip()
+                out["over"] = over or out["over_path_key"]
         return out
 
 
@@ -532,6 +568,7 @@ PRECONDITIONS = {
     "minimum_physical_copy_count_satisfied": "retention",
     "target_not_protected": "retention",
     "no_retaining_decision": "retention",
+    "no_dangling_protection": "retention",            # B19: a protection whose scope matches nothing scanned
     "decision_current": "evidence",
     "policy_version_current": "evidence",
     "no_current_conflict": "evidence",
@@ -596,6 +633,18 @@ ACTION_PRECONDITIONS = {
         ("source_local_if_required", "warning", STAGE_EVIDENCE),
     ) + _LIVE_COMMON,
     ACTION_PRESERVE: (),
+}
+#: (B19) Preconditions attached only where they apply, so a revision in which
+#: none applies is exactly the earlier builds' (and fingerprints as they did):
+#: no_dangling_protection on every removal while an active protection policy
+#: is dangling (its scope matches nothing in the current scan -- `scopes.py`;
+#: unknown, never pass: nobody can say whether the removed file was meant to be
+#: protected), and B17's removal / metadata overlap warning on the two items
+#: it names.
+CONDITIONAL_PRECONDITIONS = {
+    ACTION_REMOVE: (("no_dangling_protection", "hard", STAGE_EVIDENCE),),
+    ACTION_METADATA: (("no_removal_metadata_overlap", "warning", STAGE_EVIDENCE),),
+    ACTION_MOVE: (), ACTION_RENAME: (), ACTION_PRESERVE: (),
 }
 ACTION_POSTCONDITIONS = {
     ACTION_REMOVE: ("source_removed", "keeper_still_exists", "minimum_retention_satisfied", "rollback_record_exists",
@@ -764,26 +813,41 @@ METADATA_READ_MAP = {
 }
 
 
+TEXT_MAX = 4000        # characters, after surrounding whitespace is stripped
+
+
 def _text_value(value, what="a value"):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{what} is non-empty text")
     value = value.strip()
-    if len(value) > 4000:
-        raise ValueError(f"{what} is at most 4,000 characters")
+    if len(value) > TEXT_MAX:
+        raise ValueError(f"{what} is at most {TEXT_MAX:,} characters")
     return value
+
+
+#: (B19) A date, stated without Python's own parser: ASCII digits, a real
+#: calendar day in years 0001-9999, an optional time HH:MM[:SS] (00-23, 00-59,
+#: 00-59) and an optional offset Z or +HH:MM / -HH:MM (00-23, 00-59). Through
+#: B18 `datetime.fromisoformat` decided, and Python 3.14's accepts T24:00 and a
+#: +05:60 offset -- rules registry.schema.json should not have to copy.
+_DATE_SHAPE = r"([0-9]{4})-([0-9]{2})-([0-9]{2})(?:T([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?(?:Z|[+-]([0-9]{2}):([0-9]{2}))?)?"
 
 
 def _date_value(value):
     import re
-    from datetime import date, datetime
     s = _text_value(value, "a date")
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
-        date.fromisoformat(s)
-        return s
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?", s):
-        datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return s
-    raise ValueError("a date is YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS][Z|+HH:MM]")
+    m = re.fullmatch(_DATE_SHAPE, s)
+    if m is None:
+        raise ValueError("a date is YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS][Z|+HH:MM]")
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    days = (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    if not (1 <= year and 1 <= month <= 12 and 1 <= day <= days[month - 1]):
+        raise ValueError("a date names a real calendar day (years 0001-9999)")
+    hour, minute, second, off_h, off_m = (int(g) if g is not None else 0 for g in m.group(4, 5, 6, 7, 8))
+    if hour > 23 or minute > 59 or second > 59 or off_h > 23 or off_m > 59:
+        raise ValueError("a time is 00:00 to 23:59:59, an offset -23:59 to +23:59")
+    return s
 
 
 def _keyword_list(value):
@@ -833,10 +897,9 @@ def _project_metadata(value):
     v None means the project holds no value for that field."""
     if not isinstance(value, dict) or set(value) != {"field", "value"}:
         raise ValueError('project metadata is {"field": ..., "value": ...}')
-    try:
-        spec = PROJECT_METADATA_FIELDS[value["field"]]
-    except KeyError:
+    if not isinstance(value["field"], str) or value["field"] not in PROJECT_METADATA_FIELDS:
         raise ValueError(f"unknown project metadata field: {value.get('field')!r}")
+    spec = PROJECT_METADATA_FIELDS[value["field"]]
     v = value["value"]
     return {"field": spec.key, "value": None if v is None else validate_field_value(spec, v)}
 
@@ -904,12 +967,27 @@ BULK_ACTIONS[METADATA_CONFIRM] = BulkAction(
 #: beside it: a SHA-256 over every decision kind, policy kind, action kind and
 #: precondition (sorted, JSON) -- so a vocabulary that changed without a bump
 #: still shows.
-REGISTRY_VERSION = "fileorganizer.p3.registry/1"
+#:
+#: /2 (B19): the rule definitions are also a JSON Schema,
+#: Resources\Phase3\registry.schema.json (draft 2020-12), generated from this
+#: module by `registry_schema.py`; the value gates were narrowed to what the
+#: schema states (ids and keys are text, not anything str() can print; dates
+#: without Python's parser); no_dangling_protection was added. The digest
+#: covers the schema's bytes.
+REGISTRY_VERSION = "fileorganizer.p3.registry/2"
+
+#: (B19) What a policy's scope matches in the current scan (`scopes.py`):
+#: something is there (present); the scope's root was not observed in the
+#: latest scan, so nobody can say (unavailable -- offline, not renamed); or
+#: the place was observed and the scope is absent from it (dangling).
+SCOPE_PRESENT, SCOPE_UNAVAILABLE, SCOPE_DANGLING = "present", "unavailable", "dangling"
+SCOPE_STATES = (SCOPE_PRESENT, SCOPE_UNAVAILABLE, SCOPE_DANGLING)
 
 
 def registry_digest() -> str:
     import hashlib
     import json
+    from .registry_schema import schema_bytes
     body = {
         "decision_kinds": sorted([k.key, sorted(k.target_kinds), k.value_kind, k.resolution_class, k.conflict_domain,
                                   k.requires_evidence, k.supersedable, k.affects_reclaim, k.confirmation]
@@ -918,6 +996,10 @@ def registry_digest() -> str:
         "action_kinds": list(ACTION_KINDS),
         "preconditions": sorted([k, v] for k, v in PRECONDITIONS.items()),
         "action_preconditions": sorted([a, [list(x) for x in v]] for a, v in ACTION_PRECONDITIONS.items()),
+        "conditional_preconditions": sorted([a, [list(x) for x in v]] for a, v in CONDITIONAL_PRECONDITIONS.items()),
         "plan_states": list(PLAN_STATES), "plan_event_kinds": list(PLAN_EVENT_KINDS),
+        # B19: the bytes Resources\Phase3\registry.schema.json holds (the
+        # schema suite fails if the committed file differs from them).
+        "schema_sha256": hashlib.sha256(schema_bytes()).hexdigest(),
     }
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

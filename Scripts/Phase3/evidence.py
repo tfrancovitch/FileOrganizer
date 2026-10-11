@@ -221,7 +221,16 @@ def withdrawals_after(conn, after, metadata=False) -> list:
 
 
 def load_roots(conn) -> dict:
-    """What the latest scan says about each active root, keyed by root key."""
+    """What the latest scan says about each active root, keyed by root key.
+
+    B19: a root the project's latest inventory run did not walk is NOT
+    available, whatever its own last scan said. Phase 1 skips a configured
+    root it cannot reach (and never marks its files missing), so through B18
+    an offline or renamed root kept reading 'complete' from its previous scan
+    and routing's unavailable-root blocker never fired on a real project --
+    only on hand-built coverage. Its copies now route BLOCKED
+    (INCOMPLETE_ROOT_COVERAGE) until it is scanned again: last-known is not
+    current."""
     keys = {int(r["source_root_id"]): (r["root_path_key"] or path_key(r["root_path"]))
             for r in conn.execute("SELECT source_root_id, root_path, root_path_key FROM source_root WHERE project_id=1")}
     roots = {}
@@ -229,6 +238,7 @@ def load_roots(conn) -> dict:
         summary = coverage_summary(conn)
     except Exception:                                               # noqa: BLE001
         return roots
+    states = root_states(conn)
     for rc in summary.get("root_coverage", []):
         key = keys.get(int(rc["source_root_id"]))
         if key is None:
@@ -248,7 +258,147 @@ def load_roots(conn) -> dict:
         if rc.get("inaccessible_truncated"):
             bits.append("inaccessible list truncated")
         roots[key] = RootCoverage(key, complete=complete, available=available, detail=", ".join(bits))
+    for rid, key in keys.items():
+        st = states.get(rid)
+        if st is not None and st.state != "scanned" and key in roots and roots[key].available:
+            roots[key] = RootCoverage(key, complete=False, available=False, detail=st.detail)
     return roots
+
+
+#: Drive types on which a missing folder means the folder is gone, not the
+#: volume: the volume answered (its file system was read) at the scan.
+_VOLUME_TYPES = ("Fixed", "Removable", "RamDisk", "CDROM")
+
+
+def root_states(conn) -> dict:
+    """(B19) source_root_id -> scopes.RootState, from the project's latest
+    inventory run (the newest run with an inventory_scan row):
+
+      scanned      that run walked it, available, to completed / completed_with_warnings
+      absent       it was not there, although its volume answered (drive type and file
+                   system recorded) -- renamed, moved or deleted: observed absent
+      unavailable  anything else: its volume was not there (offline), it was not
+                   walked, the walk did not complete, or it was never scanned
+
+    Offline and renamed are kept apart by that one fact the environment
+    snapshot records for every root at every run (fo_env.drive_info)."""
+    from .scopes import RootState, ROOT_SCANNED, ROOT_UNAVAILABLE, ROOT_ABSENT
+    try:
+        latest = conn.execute("SELECT MAX(run_id) FROM inventory_scan WHERE project_id = 1").fetchone()[0]
+        scans, seen = {}, {}
+        if latest is not None:
+            for r in conn.execute("SELECT source_root_id, status, root_availability FROM inventory_scan "
+                                  "WHERE project_id = 1 AND run_id = ?", (latest,)):
+                scans[int(r[0])] = (r[1], r[2])
+            for r in conn.execute("SELECT source_root_id, was_available, drive_type, filesystem FROM run_source_root "
+                                  "WHERE run_id = ?", (latest,)):
+                seen[int(r[0])] = (r[1], r[2], r[3])
+        rows = conn.execute("SELECT source_root_id, root_path, root_path_key FROM source_root "
+                            "WHERE project_id = 1 AND is_active = 1").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out = {}
+    for r in rows:
+        rid, path = int(r[0]), str(r[1])
+        key = path_key(r[2] or r[1])
+        scan, run_root = scans.get(rid), seen.get(rid)
+        if latest is None:
+            st = RootState(key, path, ROOT_UNAVAILABLE, "never scanned")
+        elif scan is not None and scan[1] == "available" and scan[0] in ("completed", "completed_with_warnings"):
+            st = RootState(key, path, ROOT_SCANNED, "scanned in the latest scan")
+        elif run_root is not None and run_root[0] == 0 and run_root[1] in _VOLUME_TYPES and run_root[2]:
+            st = RootState(key, path, ROOT_ABSENT, f"{path} was not found at the latest scan although its volume "
+                                                   f"({run_root[1]}, {run_root[2]}) was there -- renamed, moved or deleted")
+        elif run_root is not None and run_root[0] == 0:
+            st = RootState(key, path, ROOT_UNAVAILABLE, f"{path} was not reachable at the latest scan -- its volume was "
+                                                        "not there (offline or disconnected); its files keep their last-known state")
+        elif scan is not None:
+            st = RootState(key, path, ROOT_UNAVAILABLE, f"the latest scan of {path} ended {scan[0]} "
+                                                        f"(root {scan[1] or 'unavailable'})")
+        else:
+            st = RootState(key, path, ROOT_UNAVAILABLE, f"{path} was not scanned in the latest scan")
+        out[rid] = st
+    return out
+
+
+#: (B19) The scope facts change only with a scan: kept per database and
+#: evidence mark (41,056 files read in 0.6 s on the real collection -- once
+#: per scan, not once per Decide-page reload). Never authoritative: the key
+#: is recomputed on every call.
+_SCOPE_FACTS_CACHE = {}
+
+
+def _scope_facts_key(conn):
+    try:
+        db = next((r[2] for r in conn.execute("PRAGMA database_list") if r[1] == "main"), "")
+        extra = conn.execute("SELECT (SELECT COALESCE(MAX(run_id), 0) FROM inventory_scan), "
+                             "(SELECT COUNT(*) FROM source_root WHERE is_active = 1), "
+                             "(SELECT COALESCE(MAX(source_root_id), 0) FROM source_root), "
+                             "(SELECT COALESCE(MAX(scan_path_event_id), 0) FROM scan_path_event), "
+                             "(SELECT COALESCE(MAX(run_source_root_id), 0) FROM run_source_root)").fetchone()
+        return (db, evidence_mark(conn)) + tuple(extra)
+    except sqlite3.OperationalError:
+        return None
+
+
+def load_scope_facts(conn):
+    """(B19) scopes.ScopeFacts: what the latest scan observed, keyed by path --
+    the scanned roots' present files (and the ones they could not verify), the
+    folders and links the scans recorded, and the physical identity of every
+    present file and of every file known before but not present now (the
+    Re-point suggestion's evidence). Reads only the project database."""
+    key = _scope_facts_key(conn)
+    if key is not None and key[0] and key in _SCOPE_FACTS_CACHE:
+        return _SCOPE_FACTS_CACHE[key]
+    facts = _load_scope_facts(conn)
+    if key is not None and key[0]:
+        if len(_SCOPE_FACTS_CACHE) >= 4:
+            _SCOPE_FACTS_CACHE.clear()
+        _SCOPE_FACTS_CACHE[key] = facts
+    return facts
+
+
+def _load_scope_facts(conn):
+    from .scopes import ScopeFacts, ROOT_SCANNED
+    states = root_states(conn)
+    facts = ScopeFacts(roots={st.root_key: st for st in states.values()})
+    try:
+        facts.run_id = conn.execute("SELECT MAX(run_id) FROM inventory_scan WHERE project_id = 1").fetchone()[0]
+        paths = {int(r[0]): str(r[1]) for r in conn.execute(
+            "SELECT source_root_id, root_path FROM source_root WHERE project_id = 1 AND is_active = 1")}
+        rows = conn.execute(
+            "SELECT fs.source_root_id, fs.state, fs.volume_serial, fs.file_index, fp.relative_path FROM file_state fs "
+            "  JOIN file_path fp ON fp.file_path_id = fs.file_path_id").fetchall()
+        events = []
+        if facts.run_id is not None:
+            events = conn.execute(
+                "SELECT e.source_root_id, e.relative_path FROM scan_path_event e JOIN inventory_scan s "
+                "  ON s.inventory_scan_id = e.inventory_scan_id WHERE s.run_id = ?", (facts.run_id,)).fetchall()
+    except sqlite3.OperationalError:
+        return facts
+    scanned = {rid for rid, st in states.items() if st.state == ROOT_SCANNED}
+    for rid, state, vs, fi, rel in rows:
+        rid = int(rid)
+        if rid not in paths:
+            continue
+        full = full_path(paths[rid], rel)
+        key = path_key(full)
+        phys = f"{vs}:{fi}" if vs is not None and fi is not None else None
+        if rid in scanned and state == "present":
+            facts.present.append(key)
+            if phys:
+                facts.identities.setdefault(phys, []).append((key, full))
+        elif rid in scanned and state in ("unverified", "inaccessible"):
+            facts.unknown.append(key)
+        elif phys:
+            facts.lost.append((key, phys))
+    for rid, rel in events:
+        if int(rid) in scanned and int(rid) in paths:
+            facts.folders.append(path_key(full_path(paths[int(rid)], rel)))
+    facts.present.sort()
+    facts.unknown.sort()
+    facts.folders.sort()
+    return facts
 
 
 def load_policies(conn) -> list:
@@ -385,9 +535,13 @@ def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
             for r in conn.execute(_STATE_SQL + f" WHERE fs.file_path_id IN ({marks})", tuple(chunk)):
                 loc = _location(r)
                 locations[loc.location_id] = loc
-    ev = Evidence(locations, groups, decisions, load_policies(conn), events, load_roots(conn), utc_now())
+    policies = load_policies(conn)
+    ev = Evidence(locations, groups, decisions, policies, events, load_roots(conn), utc_now())
     ev.pairs = pairs
     ev.metadata = metadata
+    # B19: with any active policy, what the latest scan observed -- its scope
+    # is judged against it (present / unavailable / dangling, scopes.py).
+    ev.scopes = load_scope_facts(conn) if any(p.active for p in policies) else None
     return ev
 
 

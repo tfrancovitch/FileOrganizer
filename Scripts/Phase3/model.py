@@ -276,6 +276,11 @@ class Evidence:
     batches: list = field(default_factory=list)     # Batch records, when a caller loads them (the fixture check does)
     pairs: dict = field(default_factory=dict)       # pair_id -> VisualPair (Build 5): current pairs, plus any a decision or event names
     metadata: MetadataEvidence = field(default_factory=MetadataEvidence)   # Build 9
+    #: (B19) scopes.ScopeFacts: what the latest scan observed, by path -- the
+    #: policies' scopes are judged against it (present / unavailable /
+    #: dangling). None when nothing was loaded (no active policy, or a
+    #: hand-built model): then no scope is judged.
+    scopes: Any = None
 
     def group_of(self, location_id):
         for g in self.groups.values():

@@ -93,7 +93,12 @@ class PairProjection:
 
 
 def _latest(decisions):
-    return max(decisions, key=lambda d: (d.sequence, d.decision_id)) if decisions else None
+    return R._latest(decisions)                     # B19: by sequence, never the id
+
+
+def _display(ev: Evidence, lid):
+    loc = ev.locations.get(str(lid))
+    return loc.sort_key if loc is not None else ()
 
 
 def _name(ev, lid):
@@ -199,7 +204,10 @@ def resolve_pairs(ev: Evidence, _index=None, _active=None, previous=None) -> lis
             keeper = f["canonical"]
             others = [q for q in given_up.get(keeper, []) if q != pid]
             if others:
-                q = sorted(others, key=lambda x: (0, int(x), x) if str(x).isdigit() else (1, 0, x))[0]
+                # B19 (I15): the pair the message names is the one whose
+                # preference was recorded first -- through B18, the lowest
+                # pair id. (Which one it names never changes the conflict.)
+                q = min(others, key=lambda x: (first[x]["canon"].sequence, _display(ev, first[x]["canonical"])))
                 qf = first[q]
                 conflicts.append(R.Conflict(
                     KEEPER_REDUNDANT_ELSEWHERE, (keeper,),
@@ -208,7 +216,8 @@ def resolve_pairs(ev: Evidence, _index=None, _active=None, previous=None) -> lis
                     f"{_name(ev, keeper)} in favour of {_name(ev, qf['canonical'])}. Equivalence is decided pair by pair and is "
                     f"never inferred along a chain: decide {_name(ev, f['redundant'])} against {_name(ev, qf['canonical'])} "
                     "directly, or keep one of them."))
-        conflicts = tuple(sorted(conflicts, key=lambda c: (c.severity != R.BLOCKING, c.kind, c.location_ids)))
+        shown = sorted(pair.members, key=lambda x: _display(ev, x))
+        conflicts = R.conflict_order(conflicts, {lid: i for i, lid in enumerate(shown)})
         blocking = [c for c in conflicts if c.severity == R.BLOCKING]
         if blocking:
             state = R.CONFLICT
@@ -233,9 +242,11 @@ def resolve_pairs(ev: Evidence, _index=None, _active=None, previous=None) -> lis
         return out
 
     def order(pp):
-        a, b = ev.locations.get(pp.a_id), ev.locations.get(pp.b_id)
-        return (pp.distance if pp.distance is not None else 10 ** 6,
-                a.sort_key if a else (), b.sort_key if b else (), pp.pair_id)
+        # B19 (I15): the two images in display order -- through B18, image a
+        # (the lower location id) first, so the order moved with the ids. The
+        # pair id is reached only when a location is missing from the model.
+        a, b = sorted((_display(ev, pp.a_id), _display(ev, pp.b_id)))
+        return (pp.distance if pp.distance is not None else 10 ** 6, a, b, pp.pair_id)
     out.sort(key=order)
     return out
 

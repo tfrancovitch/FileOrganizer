@@ -60,6 +60,7 @@ from dataclasses import dataclass, field, asdict
 from . import resolve as R
 from . import routing as RT
 from . import metadata as MD
+from . import scopes as SC
 from .model import Evidence, active_decisions, active_policies
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, ACTION_REMOVE, ACTION_MOVE, ACTION_RENAME, ACTION_METADATA,
                        ACTION_PRESERVE, ACTION_KINDS, ACTION_IMPACT, ACTION_PRECONDITIONS, ACTION_POSTCONDITIONS,
@@ -70,8 +71,9 @@ from . import EVIDENCE_BINDING_SCHEMA
 
 PLAN_PAYLOAD_SCHEMA = "fileorganizer.p3.plan-payload/1"
 #: (B18, S4) The Evidence Preview's contract version (what _preview_* and
-#: _settle evaluate), recorded in every revision's basis.
-EVALUATOR_VERSION = "fileorganizer.p3.plan-evaluator/1"
+#: _settle evaluate), recorded in every revision's basis. /2 (B19): removals
+#: carry no_dangling_protection while a protection policy is dangling.
+EVALUATOR_VERSION = "fileorganizer.p3.plan-evaluator/2"
 
 
 @dataclass
@@ -213,7 +215,21 @@ def retaining_decisions(ev: Evidence, proj, index, pairs_by_image, lid) -> list:
         if did not in seen:
             seen.add(did)
             unique.append((did, why))
-    return sorted(unique, key=lambda x: _id_order(x[0]))
+    # B19 (I15): in recording order (the decisions' sequence) -- through B18
+    # in id order, so which four the preview's words name moved with the ids.
+    # (The item's retaining_ids stay a set, kept in id order in the payload.)
+    seq = _sequences(index)
+    return sorted(unique, key=lambda x: (seq.get(x[0], float("inf")), _id_order(x[0])))
+
+
+def _sequences(index) -> dict:
+    """decision_id -> sequence for the active decisions an index holds (cached on it)."""
+    cache = getattr(_sequences, "_cache", None)
+    if cache is not None and cache[0] is index:
+        return cache[1]
+    seq = {d.decision_id: d.sequence for kinds in index.values() for ds in kinds.values() for d in ds}
+    _sequences._cache = (index, seq)
+    return seq
 
 
 def _location_binding(ev: Evidence, lid, keepers=(), source=None):
@@ -286,6 +302,7 @@ def build(ev: Evidence, proj, routing) -> PlanDraft:
         pairs_by_image.setdefault(pp.a_id, []).append(pp)
         pairs_by_image.setdefault(pp.b_id, []).append(pp)
     groups, pairs, excluded = population(proj, routing)
+    dangling = SC.dangling_protection(ev)            # B19: protection whose scope matches nothing scanned
 
     removes, preserves = {}, {}          # location id -> dict of what we know
 
@@ -358,6 +375,7 @@ def build(ev: Evidence, proj, routing) -> PlanDraft:
                                      if (ACTION_PRESERVE, k) in by_target))
         _declare(it)
         _preview_remove(it, ev, proj, index, policies, pairs_by_image, r, keepers, by_target)
+        _dangling_protection(it, dangling)
         _settle(it)
         loc = ev.locations.get(it.target_ref)
         it.estimated_effect = {"logical_bytes": loc.size_bytes if loc else None,
@@ -546,7 +564,8 @@ def _preview_remove(it, ev, proj, index, policies, pairs_by_image, r, keepers, b
     elif not present:
         _set(it, "keeper_exists", "fail", "no decided keeper is present at the last scan", keepers=keepers)
     else:
-        _set(it, "keeper_exists", "pass", "kept: " + ", ".join(_name(ev, k) for k in present[:3]), keepers=present)
+        shown = sorted(present, key=lambda k: ev.locations[k].sort_key)          # B19: the words in display order
+        _set(it, "keeper_exists", "pass", "kept: " + ", ".join(_name(ev, k) for k in shown[:3]), keepers=present)
     group_sources = [s for s in r["sources"] if s[0] == GROUP]
     if group_sources:
         gp = _group(proj, group_sources[0][1])
@@ -580,6 +599,29 @@ def _preview_remove(it, ev, proj, index, policies, pairs_by_image, r, keepers, b
                                                       "verify its bytes before acting")
     else:
         _set(it, "source_local_if_required", "pass", "local at the last scan")
+
+
+DANGLING_KEY = "no_dangling_protection"
+
+
+def _dangling_protection(it: PlanItem, dangling):
+    """(B19) While any active protection policy is dangling -- its scope
+    matches nothing in the latest scan (renamed, moved, deleted: scopes.py) --
+    every removal carries this hard precondition, evaluated UNKNOWN: whether
+    this copy was meant to be protected nobody can say, and unknown never
+    passes (P3-A91). Attached only then (registry.CONDITIONAL_PRECONDITIONS),
+    so a plan with no dangling protection is exactly the earlier builds'. The
+    detail names every such policy and how to clear it."""
+    if not dangling:
+        return
+    c = Precondition(DANGLING_KEY, PRECONDITIONS[DANGLING_KEY], "hard", STAGE_EVIDENCE,
+                     {"policies": sorted({s.policy_id for s in dangling}, key=_id_order)})
+    c.result = "unknown"
+    c.detail = (" ".join(s.words() for s in dangling)
+                + " Until then no removal can be shown safe: the renamed files would no longer be protected.")
+    it.preconditions.append(c)
+    # The item depends on those versions: re-pointing or retiring one is a policy change for it.
+    it.policy_version_ids = _ids(list(it.policy_version_ids) + [s.policy_version_id for s in dangling])
 
 
 def _settle(it: PlanItem):
@@ -686,7 +728,15 @@ def summarize(items, ev: Evidence, proj, excluded) -> dict:
         "excluded": dict(excluded),
         "undecided_left": sum(len(g.undecided) for g in proj.groups if g.ready_for_plan),
         **_note_counts(items),
+        **_dangling_summary(ev),
     }
+
+
+def _dangling_summary(ev):
+    """(B19) The dangling policies -- present only when there are any, so a
+    summary without them reads exactly as before."""
+    found = SC.summary(ev)
+    return {"dangling_policies": found} if found else {}
 
 
 def _note_counts(items):
@@ -751,6 +801,11 @@ def summary_lines(s) -> list:
     if s.get("metadata_on_removed_location"):
         lines.append(f"Warning: {s['metadata_on_removed_location']:,} metadata update(s) on a location this plan also "
                      "removes (P3.R8 §48); both items are kept and flagged.")
+    for d in s.get("dangling_policies") or ():
+        if d.get("effect") == "protect":
+            lines.append("BLOCKED -- every removal (no_dangling_protection): " + d["words"])
+        else:
+            lines.append("Warning (the recommendation only): " + d["words"])
     lines.append(PREVIEW_DISCLOSURE)
     return lines
 
@@ -872,6 +927,7 @@ REASON_WORDS = {
     "new_conflict": "new conflict",
     "capability_changed": "metadata capability changed",
     "integrity_changed": "integrity evidence changed",
+    "protection_dangling": "a protection policy matches nothing in the latest scan",
 }
 
 
@@ -895,6 +951,13 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
     def add(code, detail):
         if not any(r[0] == code and r[2] == detail for r in reasons):
             reasons.append((code, REASON_WORDS[code], detail))
+    # B19: every removal's target_not_protected read every protection policy;
+    # one that now matches nothing (renamed / moved) leaves a ready removal
+    # unprovable -- the same rule as the preview's no_dangling_protection.
+    dangling = SC.dangling_protection(ev)
+    ready_removals = [it for it in items if it.action_kind == ACTION_REMOVE and it.state == ITEM_READY]
+    if dangling and ready_removals:
+        add("protection_dangling", f"{len(ready_removals):,} ready removal(s); " + " ".join(s.words() for s in dangling))
     for it in items:
         linked = [str(d) for d in list(it.decision_ids) + list(it.retaining_ids)]
         gone = [d for d in linked if d not in active_ids]

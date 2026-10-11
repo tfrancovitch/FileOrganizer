@@ -184,8 +184,34 @@ class ProjectProjection:
 
 def _latest(decisions):
     """Of several active decisions in one domain (only possible in imported
-    or hand-built data -- the store supersedes), the latest recorded speaks."""
-    return max(decisions, key=lambda d: (d.sequence, d.decision_id)) if decisions else None
+    or hand-built data -- the store supersedes), the latest recorded speaks:
+    the highest sequence (B19: never the id; an equal sequence -- hand-built
+    data only -- goes to the later in the record's own order)."""
+    best = None
+    for d in decisions:
+        if best is None or d.sequence >= best.sequence:
+            best = d
+    return best
+
+
+def policy_order(policy):
+    """(B19, I15) A policy's place among others, from what it says -- its kind
+    (registry order), its scope, its effect -- never its id: which protection
+    a copy shows as its rule, when two cover it, is the first in this order."""
+    import json
+    kinds = list(POLICY_KINDS)
+    scope = policy.scope or {}
+    return (kinds.index(policy.kind) if policy.kind in kinds else len(kinds),
+            path_key(scope.get("root_key") or scope.get("path_key") or scope.get("path") or ""),
+            json.dumps(policy.effect or {}, sort_keys=True))
+
+
+def conflict_order(conflicts, positions):
+    """(B19, I15) Blocking before advisory, then kind, then where the conflict
+    falls in display order -- never the location ids' own order."""
+    far = len(positions)
+    return tuple(sorted(conflicts, key=lambda c: (c.severity != BLOCKING, c.kind,
+                                                  tuple(sorted(positions.get(l, far) for l in c.location_ids)))))
 
 
 def _policy_covers(policy, loc: Location) -> bool:
@@ -222,7 +248,7 @@ def location_protection(policies, index, loc: Location):
     decision) overrides that lifted the rest. Answers for any location,
     group member or not: a policy's population is every location it covers."""
     protect_policies = [p for p in policies if POLICY_KINDS.get(p.kind) and POLICY_KINDS[p.kind].effect == "protect"]
-    covering = [p for p in protect_policies if _policy_covers(p, loc)]
+    covering = sorted((p for p in protect_policies if _policy_covers(p, loc)), key=policy_order)
     ldec = index.get((LOCATION, loc.location_id), {})
     overrides = {}
     for od in ldec.get("override_protection", []):
@@ -420,7 +446,7 @@ def resolve_group(ev: Evidence, group: Group, _index=None, _active=None) -> Grou
             conflicts.append(Conflict(
                 MINIMUM_PHYSICAL_COPIES_KIND, tuple(redundant_ids), (),
                 "Every physical copy would be removed."))
-    conflicts = tuple(sorted(conflicts, key=lambda c: (c.severity != BLOCKING, c.kind, c.location_ids)))
+    conflicts = conflict_order(conflicts, {lid: i for i, lid in enumerate(member_ids)})
     blocking = [c for c in conflicts if c.severity == BLOCKING]
     if blocking:
         eligible, reclaim = (), 0

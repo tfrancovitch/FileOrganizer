@@ -333,20 +333,36 @@ def test_export_dialects_unchanged():
 # E.F001 / E.F002 -- history and the duplicate query
 # ---------------------------------------------------------------------------
 
-def test_history_and_duplicate_query(runs=8):
+def test_history_and_duplicate_query(runs=8, samples=21):
     corpus = build_corpus(tempfile.mkdtemp())
     conn, _project = new_project(corpus)
 
+    # B19 (W1): each run's latency is the MEDIAN of `samples` timed queries,
+    # after two untimed warm-ups, with the garbage collector held off while
+    # timing. Through B18 it was the mean of three -- one busy moment on the
+    # machine in either the first or the last run's window moved the ratio
+    # past the limit (B18 saw 2.02x once). The limit below is unchanged.
+    import gc
+    import statistics as stats
     timings, observation_counts = [], []
     for index in range(runs):
         do_run(conn, corpus, "r%d" % index)
         observation_counts.append(conn.execute(
             "SELECT COUNT(*) FROM file_observation").fetchone()[0])
-        fo_state.current_duplicate_sets(conn)          # warm
-        start = time.perf_counter()
-        for _ in range(3):
-            groups = fo_state.current_duplicate_sets(conn)
-        timings.append((time.perf_counter() - start) / 3 * 1000)
+        for _ in range(2):
+            fo_state.current_duplicate_sets(conn)      # warm
+        sample = []
+        gc_was = gc.isenabled()
+        gc.disable()
+        try:
+            for _ in range(samples):
+                start = time.perf_counter()
+                groups = fo_state.current_duplicate_sets(conn)
+                sample.append((time.perf_counter() - start) * 1000)
+        finally:
+            if gc_was:
+                gc.enable()
+        timings.append(stats.median(sample))
 
     files = conn.execute("SELECT COUNT(*) FROM file_path").fetchone()[0]
     check("E.F001", "history does not grow on an unchanged corpus",
@@ -357,8 +373,8 @@ def test_history_and_duplicate_query(runs=8):
     drift = timings[-1] / max(timings[0], 0.001)
     check("E.F002", "duplicate query latency is flat over runs",
           drift < 2.0,
-          "run 1 %.2f ms -> run %d %.2f ms (%.2fx)"
-          % (timings[0], runs, timings[-1], drift))
+          "run 1 %.2f ms -> run %d %.2f ms (%.2fx; medians of %d)"
+          % (timings[0], runs, timings[-1], drift, samples))
     check("E.F002", "duplicate query still finds the groups",
           len(groups) > 0, "%d groups" % len(groups))
     conn.close()

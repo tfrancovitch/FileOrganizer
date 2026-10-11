@@ -2681,12 +2681,24 @@ def get_environment(app_version, source_roots=None):
     Collection costs a PowerShell subprocess. Paying that on every run
     in a session would be a visible delay in exchange for an answer that
     cannot have changed.
+
+    B19: except the per-root facts -- does the root exist, its drive type
+    and file system (fo_env.drive_info). Those CAN change while the program
+    stays open (a drive unplugged, a folder renamed), they are cheap (no
+    subprocess), and run_source_root.was_available is recorded from them:
+    through B18 a root that vanished mid-session was recorded as available
+    at every later run. They are probed afresh on every call; an unchanged
+    root probes to the same facts, so the snapshot's hash (which leaves out
+    free and total space) and its row stay the same.
     """
     key = (app_version, tuple(sorted(source_roots or [])))
     with _ENVIRONMENT_LOCK:
         cached = _ENVIRONMENT_CACHE.get(key)
-        if cached is not None:
-            return cached
+    if cached is not None:
+        fresh = dict(cached)
+        fresh["source_roots"] = [fo_env._safe(fo_env.drive_info, root) or {"path": root}
+                                 for root in (source_roots or [])]
+        return fresh
     snapshot = fo_env.collect_environment(
         app_version, fo_db_module_version=fo_db.MODULE_VERSION,
         source_roots=source_roots)
