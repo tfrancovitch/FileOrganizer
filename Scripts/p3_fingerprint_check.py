@@ -127,6 +127,25 @@ def vector_items():
                           {"effect": "retain", "path": "C:\\Q\\say \"hi\"\t\u007f\u2028 \U0001F600.txt",
                            "why": ["z", "a"], "zeta": 1, "Alpha": 2, "\u00e9": 3, "E": 4, "\U0001F600": 5, "\uff41": 6},
                           state=REG.ITEM_PRESERVE, impact_class="none")
+    # B20: move / rename items (R12 section 3.10) -- byte-exact destinations, never normalized
+    def organize_item(n, action, frm, to, lid, reason=None):
+        pre = [_pre("target_exists", params={"observation_id": "60"}), _pre("destination_name_valid"),
+               _pre("same_volume", result="pass") if action == REG.ACTION_MOVE else _pre("no_dependency_cycle"),
+               _pre("organize_executor_supported", result="unsupported"),
+               _pre("source_identity_matches", stage=REG.STAGE_LIVE, result=None)]
+        return PL.PlanItem(
+            n, action, REG.LOCATION, lid, ((REG.LOCATION, lid),),
+            {"from_path": {"root_key": "c:\\r", "path": frm}, "to_path": {"root_key": "c:\\r", "path": to},
+             "collision_policy": "FAIL_ON_CONFLICT", "companions": [], "creates_folders": []},
+            decision_ids=("70",), evidence_binding={"file_path_id": int(lid), "observation_id": 60, "content_id": None, "members": [],
+                                                    "organize": {"from_path": frm, "physical_id": "V1:" + lid, "destination_root_key": "c:\\r",
+                                                                 "walk_run": 4}},
+            preconditions=pre, postconditions=("destination_exists", "source_path_absent"), impact_class="medium",
+            state=REG.ITEM_UNSUPPORTED, blocked_reason="organize_executor_supported")
+    move_nfd = organize_item(1, REG.ACTION_MOVE, "Inbox\\Résumé.pdf",
+                            "Docs\\" + unicodedata.normalize("NFD", "Résumé.pdf"), "31")
+    rename_case = organize_item(1, REG.ACTION_RENAME, "H\\note.txt", "H\\Note.txt", "32")
+    move_astral = organize_item(1, REG.ACTION_MOVE, "Inbox\\a.pdf", "Pics\\😀\\a.pdf", "33")
     return {
         "empty_plan": ("A revision with no items.", []),
         "remove_with_preconditions": ("One Remove Location item: its sources, decisions, policy version, evidence binding, "
@@ -139,6 +158,12 @@ def vector_items():
                                "three-byte generalized UTF-8 form.", [surrogate]),
         "escaping_and_key_order": ("A quote, a tab, DEL, U+2028, an astral character; object keys in code-point order "
                                    "(uppercase before lowercase, U+FF41 before U+1F600).", [escapes]),
+        "move_nfd_destination": ("A Move Location item whose destination folder and name are decomposed (NFD) while its source is "
+                                 "composed: both byte-exact, never normalized (R12 P3-A138).", [move_nfd]),
+        "rename_case_only": ("A Rename Location item that only changes case (note.txt -> Note.txt): real on NTFS, allowed, "
+                             "bytes differ.", [rename_case]),
+        "move_non_bmp_destination": ("A Move Location item whose destination folder is a non-BMP character (U+1F600): written raw "
+                                     "in UTF-8 (two UTF-16 units to Windows).", [move_astral]),
         "two_items": ("A removal and a metadata item together, numbered 1 and 3 (numbers as recorded, never renumbered).",
                       [remove, metadata]),
     }

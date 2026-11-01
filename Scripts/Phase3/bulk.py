@@ -58,12 +58,12 @@ from . import evidence as ev_mod
 from . import pairs as PR
 from . import resolve as R
 from . import routing as RT
-from .model import Evidence, Decision, PolicyVersion, active_decisions, under, path_key
+from .model import Evidence, Decision, PolicyVersion, active_decisions, active_policies, under, path_key
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, decision_kind, policy_kind, bulk_action, scope_kind as _scope_kind,
                        SOURCE_ROOT, SCOPE_EXPLICIT_SELECTION, DEFER_DISPOSITIONS, DEFER_CHOICES,
                        DISP_DECIDED, DISP_SATISFIED, DISP_PRESERVED, DISP_CONFLICT, DISP_BLOCKED, DISP_NOT_APPLICABLE,
                        DISPOSITIONS, MODE_PRESERVE, METADATA_QUESTION, METADATA_CONFIRM, METADATA_FIELDS,
-                       OBS_UNAVAILABLE, OBS_STALE, OBS_CONFLICTING)
+                       OBS_UNAVAILABLE, OBS_STALE, OBS_CONFLICTING, ORGANIZE_MOVE)
 
 # -- the Show filter: routes, then lenses -- filters over the same groups ----------
 
@@ -1180,3 +1180,269 @@ def preview_metadata_confirm(conn, question_ids, scope_kind=SCOPE_EXPLICIT_SELEC
                        len(ids), candidates, evaluated_utc=now or utc_now(), record_mark=record_mark(conn),
                        evidence_mark=ev_mod.metadata_mark(conn))
 
+
+# -- B20: a frozen batch over file locations -- "Move these to a folder" (P3.R12 8) -----------------------
+#
+# The same B10 pipeline (a previewed, frozen membership; origin bulk_explicit_human + the batch id; the
+# commit refused when the record or the evidence moved; undo_batch), now over a `file_location` target.
+# Never a policy: a file that appears tomorrow is not a member (F19). One destination per batch; no
+# "preserve relative structure" (cut from B20). Companions found by name are added visibly, as their
+# own members, in the "companion added" bucket.
+
+ORGANIZE_BUCKETS = ("decided", "already satisfied", "preserved", "conflict: removal intent", "conflict: protected",
+                    "conflict: destination collision", "blocked", "not applicable", "companion added")
+
+
+def organize_query(location_ids, destination=None, listed=False, filters=None) -> dict:
+    """The frozen scope of a Move batch: the checked file locations, or (listed) what the Files page's
+    query listed at preview, run ONCE and frozen as the id list -- a file that matches later is not a member."""
+    q = {"schema": BULK_QUERY_SCHEMA, "targets": LOCATION, "listed": bool(listed), "location_ids": [str(i) for i in location_ids]}
+    if filters:
+        q["files_query"] = filters
+    if destination:
+        q["destination"] = destination
+    return q
+
+
+def _bucket(cand) -> str:
+    if cand.detail.startswith("companion added"):
+        return "companion added"
+    for b in ("conflict: removal intent", "conflict: protected", "conflict: destination collision"):
+        if cand.detail.startswith(b):
+            return b
+    return {DISP_DECIDED: "decided", DISP_SATISFIED: "already satisfied", DISP_PRESERVED: "preserved",
+            DISP_BLOCKED: "blocked", DISP_NOT_APPLICABLE: "not applicable", DISP_CONFLICT: "conflict: protected"}[cand.disposition]
+
+
+@dataclass
+class OrganizePreview(BulkPreview):
+    """A BulkPreview whose words are the organizing buckets of R12 8.3 and 8.4."""
+    folders_created: list = field(default_factory=list)
+    cross_volume: int = 0
+    destination_text: str = ""
+    spelling_notes: list = field(default_factory=list)
+
+    @property
+    def member_word(self) -> str:
+        return "files"
+
+    @property
+    def member_singular(self) -> str:
+        return "file"
+
+    @property
+    def buckets(self) -> dict:
+        out = {b: 0 for b in ORGANIZE_BUCKETS}
+        for c in self.candidates:
+            out[_bucket(c)] += 1
+        return out
+
+    def lines(self) -> list:
+        b = self.buckets
+        n = len(self.candidates) - b["companion added"]
+        out = [f"Record a destination for exactly the {n:,} {'checked' if self.scope_kind == SCOPE_EXPLICIT_SELECTION else 'listed'} "
+               f"file(s): {self.destination_text}",
+               f"  -> {b['decided']:,} would receive a desired location",
+               f"  -> {b['companion added']:,} companion(s) added, listed by name, each its own explicit decision",
+               f"  -> {b['already satisfied']:,} already have exactly this destination",
+               f"  -> {b['preserved']:,} have a different destination of their own, preserved (never overwritten)",
+               f"  -> {b['conflict: removal intent']:,} conflict: removal intent (a redundant candidate) -- not recorded",
+               f"  -> {b['conflict: protected']:,} conflict: protected -- not recorded",
+               f"  -> {b['conflict: destination collision']:,} conflict: destination collision -- not recorded",
+               f"  -> {b['blocked']:,} blocked by evidence -- not recorded",
+               f"  -> {b['not applicable']:,} not applicable (already in that folder)"]
+        for label in ORGANIZE_BUCKETS[1:]:
+            shown = [(c.label, c.detail) for c in self.candidates if _bucket(c) == label][:3]
+            out.extend(f"       {label}: {name} -- {why}" for name, why in shown if label not in ("decided",))
+        if self.folders_created:
+            out.append("Folders that would be created: " + "; ".join(self.folders_created))
+        if self.cross_volume:
+            out.append(f"{self.cross_volume:,} would cross to another volume: not supported yet (the plan keeps them blocked)")
+        out.extend(f"Note: {x}" for x in self.spelling_notes)
+        out.extend(f"Warning: {w}" for w in self.warnings)
+        out.append("Stored in the project; never moves the file.")
+        out.append("No source files will change.")
+        return out
+
+    def as_dict(self) -> dict:
+        d = BulkPreview.as_dict(self)
+        d["buckets"] = self.buckets
+        d["destination"] = self.destination_text
+        d["folders_created"] = list(self.folders_created)
+        d["cross_volume"] = self.cross_volume
+        return d
+
+
+def classify_organize(ev: Evidence, location_ids, root_id, folder, extra_locations=(), sidecars=True):
+    """One Candidate per file (pure, over the model): what a Move to (root_id, folder) would record for it, and
+    the companions found by name beside it. Returns (candidates, folders_created, cross_volume, notes, canonical)."""
+    from . import organize as OG
+    facts = getattr(ev, "scopes", None)
+    notes, out, seen = [], [], set()
+    if facts is None:
+        from .scopes import ScopeFacts
+        facts = ScopeFacts()
+    root_key = facts.root_ids.get(int(root_id))
+    root_path = facts.roots[root_key].root_path if root_key in facts.roots else (root_key or "")
+    canonical = folder
+    if root_key is not None:
+        canonical, changed = OG.canonical_folder(facts, root_key, root_path, folder)
+        notes += [f"'{t}' will be saved as '{o}' (the folder's observed spelling)" for t, o in changed]
+    value = {"destination_root_id": int(root_id), "destination_folder": canonical, "on_collision": OG.ON_COLLISION_FAIL}
+    creates = OG.new_folders(facts, root_key, canonical) if root_key else []
+    locs = dict(ev.locations)
+    locs.update({l.location_id: l for l in extra_locations})
+    active = active_decisions(ev.decisions)
+    index = R._index_decisions(active)
+    policies = active_policies(ev.policies)
+    redundant = {d.target_ref for d in active if d.kind == "redundant_location"}
+    mine = {d.target_ref: d for d in active_decisions(ev.organize.decisions) if d.kind == OG.KIND_LOCATION}
+    wanted = {}                                       # destination key -> first candidate that wants it (intra-batch collisions)
+    cross = 0
+    entries = [(str(i), False, "") for i in location_ids]
+    cands = {}
+
+    def make(lid, companion, why):
+        loc = locs.get(lid)
+        label = file_name(loc.path) if loc is not None else f"location {lid}"
+        c = Candidate(LOCATION, lid, (), label=label)
+        c.outcomes = ()
+        return c, loc
+
+    def put(c, disp, detail, decisions=()):
+        c.disposition, c.detail, c.decisions = disp, detail, tuple(decisions)
+        c.outcomes = tuple((disp, detail) for _d in (decisions or (None,)))
+        out.append(c)
+        cands[c.target_ref] = c
+
+    for lid, companion, why in entries:
+        if lid in seen:
+            continue
+        seen.add(lid)
+        c, loc = make(lid, companion, why)
+        if loc is None or not loc.present:
+            put(c, DISP_BLOCKED, "not in the current evidence, or not present at the last scan")
+            continue
+        folder_now = OG.split_rel(loc.rel_path)[0]
+        if root_key is None or root_key not in facts.roots or facts.roots[root_key].state != "scanned":
+            put(c, DISP_BLOCKED, "the destination root has no usable latest walk, so nobody can say what is there")
+            continue
+        if not loc.physical_id:
+            put(c, DISP_BLOCKED, "its physical identity (volume serial + file index) is unknown")
+            continue
+        if loc.cloud_only or not loc.cloud_known:
+            put(c, DISP_BLOCKED, "cloud-only, or its cloud state is unknown: the product never hydrates")
+            continue
+        if root_key == loc.root_key and OG.path_key(canonical) == OG.path_key(folder_now):
+            put(c, DISP_NOT_APPLICABLE, "already in that folder")
+            continue
+        cur = mine.get(lid)
+        if cur is not None:
+            same = cur.value.get("destination_root_id") == value["destination_root_id"] and \
+                OG.path_key(cur.value.get("destination_folder", "")) == OG.path_key(canonical)
+            if same:
+                put(c, DISP_SATISFIED, "an active decision already says this")
+            else:
+                put(c, DISP_PRESERVED, f"a different destination stands (#{cur.decision_id}): {cur.value.get('destination_folder') or 'the root'}")
+            continue
+        if lid in redundant:
+            put(c, DISP_CONFLICT, "conflict: removal intent -- it is a redundant candidate; a location is not moved and removed")
+            continue
+        _cov, in_force, _ov = R.location_protection(policies, index, loc, scope="organize")
+        if in_force:
+            put(c, DISP_CONFLICT, f"conflict: protected -- {in_force[0].kind.replace('_', ' ')} (policy version {in_force[0].policy_version_id}); "
+                                  "only an organize override lifts it")
+            continue
+        dest_rel = OG.join_rel(canonical, OG.split_rel(loc.rel_path)[1])
+        dest_key = OG.full_key(root_key, dest_rel)
+        occ = OG.occupancy(facts, dest_key, own_key=loc.path_key, root_key=root_key, folder=canonical)
+        if occ.state == "occupied" or dest_key in wanted:
+            what = occ.detail if occ.state == "occupied" else f"{wanted[dest_key].label} is going to the same name in this batch"
+            put(c, DISP_CONFLICT, f"conflict: destination collision -- {what}")
+            if dest_key in wanted and wanted[dest_key].disposition == DISP_DECIDED:
+                prev = wanted[dest_key]
+                prev.disposition, prev.detail, prev.decisions, prev.outcomes = DISP_CONFLICT, \
+                    f"conflict: destination collision -- {c.label} is going to the same name in this batch", (), ((DISP_CONFLICT, ""),)
+            continue
+        wanted[dest_key] = c
+        vol_a, vol_b = facts.volumes.get(loc.root_key), facts.volumes.get(root_key)
+        if vol_a and vol_b and vol_a != vol_b:
+            cross += 1
+        put(c, DISP_DECIDED, f"will be saved with the destination {canonical or 'the root'}",
+            [(OG.KIND_LOCATION, LOCATION, lid, dict(value))])
+    # companions: found by name beside each decided file; added visibly, as their own decisions
+    if sidecars:
+        names_by_folder = {}
+        for c in list(out):
+            if c.disposition != DISP_DECIDED:
+                continue
+            loc = locs[c.target_ref]
+            folder_now, me = OG.split_rel(loc.rel_path)
+            key = (loc.root_key, folder_now)
+            names = names_by_folder.setdefault(key, [n for spelled in OG.folder_index(facts).files(OG.full_key(*key)).values() for n in spelled])
+            for l in OG.detect(names):
+                if l.ambiguous:
+                    if OG.path_key(me) in {OG.path_key(x) for x in l.candidates}:
+                        notes.append(f"{l.sidecar} is shared by {', '.join(l.candidates)}: it is ambiguous, so it is NOT added -- "
+                                     "give it a destination yourself, and every file that shares it the same one")
+                    continue
+                if OG.path_key(l.primary) != OG.path_key(me):
+                    continue
+                s = next((x for x in locs.values() if x.path_key == OG.full_key(loc.root_key, OG.join_rel(folder_now, l.sidecar))), None)
+                if s is None or s.location_id in cands:
+                    continue
+                sc = Candidate(LOCATION, s.location_id, (), label=file_name(s.path))
+                sc_value = dict(value)
+                put(sc, DISP_DECIDED, f"companion added: travels with {c.label}", [(OG.KIND_LOCATION, LOCATION, s.location_id, sc_value)])
+    return out, creates, cross, notes, canonical
+
+
+def preview_organize(conn, location_ids, root_id, folder, scope_kind=SCOPE_EXPLICIT_SELECTION, query=None, ev=None, now=None):
+    """The categorized preview of a Move batch, frozen at commit: the candidates, the record mark and the
+    evidence mark -- the commit refuses if either moved (B12/B13). Reads only the project database."""
+    from . import organize as OG
+    _scope_kind(scope_kind)
+    ids = [str(i) for i in location_ids]
+    if not ids:
+        raise ValueError("nothing is checked or listed")
+    ev = ev if ev is not None else ev_mod.load_evidence(conn, pairs=False)
+    if ev.scopes is None:                       # no policy and no organize decision yet: the walk is still the evidence
+        ev.scopes = ev_mod.load_scope_facts(conn)
+    # sidecars are not duplicates, so the model may not hold them: read the ones that sit beside a file in scope
+    extra = []
+    missing = [i for i in ids if i not in ev.locations and i.isdigit()]       # files in no duplicate group are read from file_state
+    for start in range(0, len(missing), 500):
+        chunk = missing[start:start + 500]
+        for row in conn.execute(ev_mod._STATE_SQL + f" WHERE fs.file_path_id IN ({','.join('?' for _ in chunk)})", tuple(int(i) for i in chunk)):
+            extra.append(ev_mod._location(row))
+    ev.locations.update({l.location_id: l for l in extra})
+    facts = ev.scopes
+    if facts is not None and facts.roots:
+        want = set()
+        for lid in ids:
+            loc = ev.locations.get(lid)
+            if loc is None:
+                continue
+            folder_now, _me = OG.split_rel(loc.rel_path)
+            names = [n for spelled in OG.folder_index(facts).files(OG.full_key(loc.root_key, folder_now)).values() for n in spelled]
+            for l in OG.detect(names):
+                want.add((loc.root_key, OG.join_rel(folder_now, l.sidecar)))
+        root_ids = {k: i for i, k in facts.root_ids.items()}
+        for root_key, rel in sorted(want):
+            if root_key in root_ids:
+                row = conn.execute(ev_mod._STATE_SQL + " WHERE fs.source_root_id = ? AND fp.relative_path = ?", (root_ids[root_key], rel)).fetchone()
+                if row is not None:
+                    extra.append(ev_mod._location(row))
+    candidates, creates, cross, notes, canonical = classify_organize(ev, ids, root_id, folder, extra)
+    root_key = facts.root_ids.get(int(root_id)) if facts is not None else None
+    shown = f"{canonical or 'the root'} in {facts.roots[root_key].root_path}" if root_key in (facts.roots if facts else {}) else f"root {root_id}"
+    for cand in candidates:
+        if cand.disposition == DISP_DECIDED:
+            for kind, tk, ref, value in cand.decisions:
+                cand.bindings[(kind, tk, ref)] = ev_mod.organize_binding(conn, ref, value["destination_root_id"])
+    q = dict(query) if query is not None else organize_query(ids)
+    q["destination"] = {"destination_root_id": int(root_id), "destination_folder": canonical}
+    return OrganizePreview(ORGANIZE_MOVE, {"destination_root_id": int(root_id), "destination_folder": canonical, "selection": ids},
+                           scope_kind, q if scope_kind != SCOPE_EXPLICIT_SELECTION else None, len(ids), candidates,
+                           evaluated_utc=now or utc_now(), record_mark=record_mark(conn), evidence_mark=ev_mod.evidence_mark(conn),
+                           folders_created=creates, cross_volume=cross, destination_text=shown, spelling_notes=notes)

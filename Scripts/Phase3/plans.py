@@ -60,20 +60,25 @@ from dataclasses import dataclass, field, asdict
 from . import resolve as R
 from . import routing as RT
 from . import metadata as MD
+from . import organize as OG
 from . import scopes as SC
-from .model import Evidence, active_decisions, active_policies
+from .model import Evidence, Location, active_decisions, active_policies
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, ACTION_REMOVE, ACTION_MOVE, ACTION_RENAME, ACTION_METADATA,
                        ACTION_PRESERVE, ACTION_KINDS, ACTION_IMPACT, ACTION_PRECONDITIONS, ACTION_POSTCONDITIONS,
                        PRECONDITIONS, STAGE_EVIDENCE, STAGE_LIVE, ITEM_READY, ITEM_BLOCKED,
                        ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED, ITEM_PRESERVE, PREVIEW_DISCLOSURE, ACTION_WORDS,
-                       METADATA_QUESTION, METADATA_FIELDS, blocked_reason)
+                       METADATA_QUESTION, METADATA_FIELDS, POLICY_KINDS, blocked_reason)
 from . import EVIDENCE_BINDING_SCHEMA
 
 PLAN_PAYLOAD_SCHEMA = "fileorganizer.p3.plan-payload/1"
 #: (B18, S4) The Evidence Preview's contract version (what _preview_* and
 #: _settle evaluate), recorded in every revision's basis. /2 (B19): removals
 #: carry no_dangling_protection while a protection policy is dangling.
-EVALUATOR_VERSION = "fileorganizer.p3.plan-evaluator/2"
+EVALUATOR_VERSION = "fileorganizer.p3.plan-evaluator/3"
+#: /3 (B20): move_location / rename_location items are built from desired_location / desired_name
+#: decisions (the preview of a move: occupancy against the walk and its coverage, the chain exception,
+#: companions, cross-volume), and the cross-kind checks are attached to removal and metadata items
+#: only where an organize item exists for the location.
 
 
 @dataclass
@@ -387,6 +392,9 @@ def build(ev: Evidence, proj, routing) -> PlanDraft:
     # unchanged propose no source action and are never items (counted only).
     items.extend(metadata_items(ev, len(items) + 1))
     _metadata_notes(items, ev)
+    # B20: Move / Rename Location items, after the metadata items -- and none at all (nothing attached to
+    # any other item either) unless a person recorded a desired location or name.
+    items.extend(organize_items(ev, len(items) + 1, items, removes))
     left = sum(1 for d in MD.current_decisions(MD.active_metadata(ev)).values() if d.kind == "leave_source_metadata_unchanged")
     project = sum(1 for d in MD.active_metadata(ev) if d.kind == "project_metadata_set")
     if left:
@@ -645,38 +653,525 @@ def _settle(it: PlanItem):
         it.state, it.blocked_reason = ITEM_READY, None
 
 
-# -- items the current decision vocabulary does not produce yet ------------------------------
+# -- move / rename items: organizing intent (B20, P3.R12) ------------------------------------------
+#
+# One item per location that carries an active desired_location and / or desired_name: a rename_location
+# when only a name is wanted, otherwise a move_location (the name from desired_name if that is also active).
+# The builder previews each against PROJECT EVIDENCE alone (the latest walk and what the scans recorded:
+# no source file is read) and ends every item blocked, blocked_evidence or unsupported_action -- never
+# ready: organize_executor_supported is `unsupported` until Phase 4 certifies an executor (P3-A136).
+# Every other precondition is still evaluated, so a person sees the real collision, the stranded
+# companion, the protected folder now, not on the day an executor arrives.
 
-def logical_item(ev: Evidence, action, lid, desired_effect, decision_ids=(), item_no=1) -> PlanItem:
-    """A move or rename item, previewed from project evidence. No decision
-    kind asks for one yet, so the builder does not generate them; the
-    vocabulary, the preconditions and the preview exist so the schema carries
-    all five kinds (R10 §15). (Metadata items are Build 9's, made from
-    desired-metadata decisions by build() -- not here.)"""
+@dataclass
+class OrgCtx:
+    """What the move / rename previews share, computed once per build."""
+    facts: object
+    policies: list
+    index: dict
+    dangling: list
+    by_id: dict                    # organize decision id -> Decision
+    intents: dict                  # location id -> organize.Intent
+    geoms: dict                    # location id -> organize.Geometry
+    loc_by_key: dict               # path key -> Location (the locations the model holds)
+
+
+def org_context(ev: Evidence) -> OrgCtx:
+    from .scopes import ScopeFacts
+    facts = getattr(ev, "scopes", None) or ScopeFacts()
+    active = active_decisions(ev.decisions)
+    intents = OG.intents(ev)
+    geoms = {}
+    for lid, intent in intents.items():
+        g = OG.geometry(ev, intent, facts.root_ids)
+        if g is not None:
+            geoms[lid] = g
+    return OrgCtx(facts, active_policies(ev.policies), R._index_decisions(active), SC.dangling_protection(ev),
+                  {d.decision_id: d for d in getattr(ev.organize, "decisions", [])}, intents, geoms,
+                  {l.path_key: l for l in ev.locations.values()})
+
+
+def _effect_of(g, creates=()) -> dict:
+    """The item's desired logical effect (synthesis 3.1): byte-exact strings, never an execution method."""
+    return {"from_path": {"root_key": g.from_root_key, "path": g.from_rel},
+            "to_path": {"root_key": g.to_root_key, "path": g.to_rel},
+            "collision_policy": OG.COLLISION_POLICY, "companions": [], "creates_folders": list(creates)}
+
+
+def _org_binding(ev: Evidence, lid, ctx: OrgCtx, g):
+    b = _location_binding(ev, lid)
+    loc = ev.locations.get(str(lid))
+    b["organize"] = {"from_path": g.from_rel if g else None, "physical_id": loc.physical_id if loc is not None else None,
+                     "destination_root_key": g.to_root_key if g else None,
+                     "walk_run": ctx.facts.run_id}          # recorded, never compared: a new walk run alone obsoletes nothing
+    return b
+
+
+def _org_results(ev: Evidence, ctx: OrgCtx, action, lid, effect, decision_ids) -> dict:
+    """key -> (result, detail, params) for the per-item evidence-stage preconditions -- everything that
+    needs no other item. Shared by logical_item and the obsolescence check, so what a locked
+    revision judged is judged again by the very same code."""
+    lid = str(lid)
+    loc = ev.locations.get(lid)
+    facts = ctx.facts
+    frm, to = effect["from_path"], effect["to_path"]
+    from_name = OG.split_rel(frm["path"])[1]
+    to_folder, to_name = OG.split_rel(to["path"])
+    out = {}
+    # identity
+    if loc is None:
+        out["target_exists"] = ("unknown", "not in the current evidence", {})
+    elif facts.roots and frm["root_key"] not in facts.roots:
+        out["target_exists"] = ("unknown", "its source root is not one of the project's roots", {})
+    else:
+        out["target_exists"] = ("pass" if loc.present else "fail",
+                                "present at the last scan" if loc.present else "not present at the last scan",
+                                {"observation_id": loc.observation_id} if loc.observation_id is not None else {})
+    decs = [ctx.by_id[str(d)] for d in decision_ids if str(d) in ctx.by_id]
+    if not decision_ids:
+        out["decision_current"] = ("fail", "no decision asks for it -- the Plan Builder never invents intent", {})
+    else:
+        drift = [x for d in decs for x in OG.binding_drift(ev, d, facts.root_ids)]
+        out["decision_current"] = (("fail", "needs revalidation: " + drift[0], {}) if drift
+                                   else ("pass", "the decisions rest on the evidence as it is now", {}))
+    out["no_current_conflict"] = ("pass", "no conflict stands on the location", {})
+    if loc is None:
+        for key in ("source_identity_known", "source_local_if_required", "target_not_protected", "source_not_hardlinked"):
+            out[key] = ("unknown", "not in the current evidence", {})
+    else:
+        out["source_identity_known"] = (("pass", "volume serial and file index are recorded", {}) if loc.physical_id
+                                        else ("unknown", "its volume serial and file index were not recorded, so the file cannot be "
+                                              "told from another one later (succession and verification need them)", {}))
+        out["source_local_if_required"] = (
+            ("fail", "cloud-only at the last scan: a move or rename would have to leave it a placeholder or hydrate it, "
+                     "and the product never hydrates", {}) if loc.cloud_only else
+            ("pass", "local at the last scan", {}) if loc.cloud_known else
+            ("unknown", "whether it is a cloud placeholder was not recorded", {}))
+        _cov, in_force, overridden = R.location_protection(ctx.policies, ctx.index, loc, scope="organize")
+        if in_force:
+            out["target_not_protected"] = ("fail", f"protected by {in_force[0].kind.replace('_', ' ')} (policy version "
+                                                   f"{in_force[0].policy_version_id}); only an override for MOVING it lifts that",
+                                           {"policy_versions": [p.policy_version_id for p in in_force]})
+        else:
+            out["target_not_protected"] = ("pass", (f"protection overridden for moves by decision #{overridden[0][1]}" if overridden
+                                                    else "no protection covers it"), {})
+        out["source_not_hardlinked"] = (("unknown", "its link count was not recorded", {}) if loc.hard_links is None else
+                                        ("fail", f"{loc.hard_links} names share this file: one name moves, the others stay", {})
+                                        if loc.hard_links > 1 else ("pass", "one name", {}))
+    if ctx.dangling:
+        out["no_dangling_protection"] = (
+            "unknown", " ".join(s.words() for s in ctx.dangling)
+            + " A protection that matches nothing cannot be ruled out for this file, so no move can be shown safe.",
+            {"policies": sorted({s.policy_id for s in ctx.dangling}, key=_id_order)})
+    else:
+        out["no_dangling_protection"] = ("pass", "no protection policy is dangling", {})
+    # destination
+    if action == ACTION_MOVE:
+        root = facts.roots.get(to["root_key"]) if to["root_key"] is not None else None
+        if to["root_key"] is None:
+            out["destination_within_project_root"] = ("unknown", "the destination root is not a source root of this project "
+                                                                  "(removed?)", {})
+        elif root is None or root.state != "scanned":
+            out["destination_within_project_root"] = ("unknown", (root.detail if root is not None else "that root is unknown")
+                                                      or "the destination root was not scanned in the latest scan", {})
+        else:
+            out["destination_within_project_root"] = ("pass", "inside a scanned source root of this project", {})
+    why = OG.name_problem(to_name) or OG.folder_problem(to_folder)
+    if not why and facts.roots and to["root_key"] is not None:
+        try:
+            OG.canonical_folder(facts, to["root_key"], "", to_folder)
+        except ValueError as exc:
+            why = str(exc)
+    out["destination_name_valid"] = (("fail", why, {}) if why else ("pass", "a legal Windows name and folder", {}))
+    if OG.extension_of(from_name) != OG.extension_of(to_name):
+        confirmed = any(d.kind == OG.KIND_NAME and d.value.get("extension_change_confirmed") is True for d in decs)
+        out["extension_change_confirmed"] = (("pass", "the extension change was confirmed", {}) if confirmed else
+                                             ("fail", "the extension changes and was not confirmed", {}))
+    else:
+        out["extension_change_confirmed"] = ("pass", "the extension is unchanged", {})
+    # occupancy (the walk alone)
+    from_key = OG.full_key(frm["root_key"], frm["path"])
+    to_key = OG.full_key(to["root_key"], to["path"]) if to["root_key"] is not None else None
+    if to_key is None:
+        out["destination_collision_absent"] = ("unknown", "the destination root cannot be resolved", {"judged": "unknown"})
+    else:
+        occ = OG.occupancy(facts, to_key, own_key=from_key, root_key=to["root_key"], folder=to_folder)
+        res = {"occupied": "fail", "unknown": "unknown", "free": "pass"}[occ.state]
+        out["destination_collision_absent"] = (res, occ.detail, {"destination": to_key, "judged": occ.state})
+    # volume, and moving INTO protection
+    if action == ACTION_MOVE:
+        a = facts.volumes.get(frm["root_key"])
+        b = facts.volumes.get(to["root_key"]) if to["root_key"] else None
+        if to["root_key"] is None or not a or not b or len(a) > 1 or len(b) > 1:
+            out["same_volume"] = ("unknown", "the volume of a root is not known from the evidence (no files recorded there)", {})
+        elif OG.through_link(facts, to["root_key"], to_folder):
+            out["same_volume"] = ("unknown", "the path to the destination passes through a link the scan did not follow, which "
+                                             "may land on another volume; same_volume compares root volumes and cannot see "
+                                             "through it", {})
+        elif a != b:
+            out["same_volume"] = ("unsupported", "the destination is on another volume: a cross-volume move is not supported "
+                                                 "initially (it would copy, then delete)", {})
+        else:
+            out["same_volume"] = ("pass", "the same volume", {})
+        if to["root_key"] is not None and loc is not None:
+            root_path = facts.roots[to["root_key"]].root_path if to["root_key"] in facts.roots else to["root_key"]
+            probe = Location("destination", OG.join_rel(root_path, to_folder) if to_folder else root_path, to["root_key"], None,
+                             None, True, None, None)
+            protect = [p for p in ctx.policies if POLICY_KINDS.get(p.kind) and POLICY_KINDS[p.kind].effect == "protect"]
+            already = {p.policy_version_id for p in protect if R._policy_covers(p, loc)}
+            newly = [p for p in protect if R._policy_covers(p, probe) and p.policy_version_id not in already]
+            out["destination_not_protected"] = (
+                ("fail", f"the destination is under {newly[0].kind.replace('_', ' ')} (policy version {newly[0].policy_version_id}): "
+                         "after it moves, the file is protected there", {"policy_versions": [p.policy_version_id for p in newly]})
+                if newly else ("pass", "the destination is not under a protection that does not already cover the file", {}))
+    out["organize_executor_supported"] = ("unsupported", "no executor is certified: Phase 4 builds and certifies one", {})
+    return out
+
+
+def logical_item(ev: Evidence, action, lid, desired_effect, decision_ids=(), item_no=1, ctx=None) -> PlanItem:
+    """A move or rename item, previewed from project evidence (B20: made by build() from
+    desired_location / desired_name decisions). `desired_effect` is {"from_path": {"root_key", "path"},
+    "to_path": {"root_key", "path"}, "collision_policy", "companions", "creates_folders"} -- byte-exact
+    strings; collisions are judged through `model.path_key`, never `.lower()` (P3-A138). The checks that
+    need other items (conflicting intent, the chain exception, cycles, companions) are the builder's
+    second pass (`_organize_cross`). Extends the B16 helper; does not replace it."""
     if action not in (ACTION_MOVE, ACTION_RENAME):
         raise ValueError(f"{action} is built from decisions by build(), not here")
-    loc = ev.locations.get(str(lid))
-    it = PlanItem(item_no, action, LOCATION, str(lid), (), dict(desired_effect), decision_ids=_ids(decision_ids),
-                  evidence_binding=_location_binding(ev, str(lid)))
+    ctx = ctx or org_context(ev)
+    lid = str(lid)
+    g = ctx.geoms.get(lid)
+    it = PlanItem(item_no, action, LOCATION, lid, ((LOCATION, lid),), dict(desired_effect), decision_ids=_ids(decision_ids),
+                  evidence_binding=_org_binding(ev, lid, ctx, g))
     _declare(it)
-    if loc is None:
-        _set(it, "target_exists", "unknown", "not in the current evidence")
-    else:
-        _set(it, "target_exists", "pass" if loc.present else "fail",
-             "present at the last scan" if loc.present else "not present at the last scan")
-    _set(it, "decision_current", "pass" if decision_ids else "fail",
-         "rests on current decisions" if decision_ids else "no decision asks for it -- the Plan Builder never invents intent")
-    _set(it, "no_current_conflict", "pass", "no conflict stands on the location")
-    dest = str(desired_effect.get("destination") or "")
-    if not dest:
-        _set(it, "destination_collision_absent", "fail", "no destination recorded")
-    else:
-        taken = [l for l in ev.locations.values() if l.present and l.path.lower() == dest.lower() and l.location_id != str(lid)]
-        _set(it, "destination_collision_absent", "fail" if taken else "pass",
-             f"the evidence already holds a file there ({taken[0].path})" if taken
-             else "no file known to the evidence is at the destination", destination=dest)
+    loc_ = ev.locations.get(lid)
+    if loc_ is not None:
+        it.policy_version_ids = _ids(p.policy_version_id for p in R.location_protection(ctx.policies, ctx.index, loc_, scope="organize")[0])
+    for key, (result, detail, params) in _org_results(ev, ctx, action, lid, it.desired_effect, it.decision_ids).items():
+        if it.condition(key) is not None:
+            _set(it, key, result, detail, **params)
+    # the cross-item checks start as pass: _organize_cross evaluates them over the whole revision
+    for key, detail in (("no_conflicting_intent_same_location", "no removal is wanted for this location"),
+                        ("no_dependency_cycle", "no cycle of moves"),
+                        ("companions_travel_together", "no companion")):
+        if it.condition(key) is not None and it.condition(key).result is None:
+            _set(it, key, "pass", detail)
+    for c in it.preconditions:
+        if c.stage == STAGE_EVIDENCE and c.severity == "hard" and c.result is None:
+            c.result, c.detail = "unknown", "not evaluated for this item"
     _settle(it)
     return it
+
+
+def _display_order(ev, lid):
+    loc = ev.locations.get(str(lid))
+    return (loc.sort_key if loc is not None else (), _id_order(lid))
+
+
+def organize_items(ev: Evidence, first_no, existing, removes) -> list:
+    """The move / rename items for every active organize intent, in location display order, after the
+    retention and metadata items (so a revision with no organize decision numbers and fingerprints
+    exactly as B19's did). Conditional attachments on the removal and metadata items already in
+    `existing` are made here, only when an organize item exists for the location (RC 8)."""
+    if not OG.intents(ev):
+        return []
+    ctx = org_context(ev)
+    out = []
+    for n, lid in enumerate(sorted(ctx.intents, key=lambda l: _display_order(ev, l)), first_no):
+        intent, g = ctx.intents[lid], ctx.geoms.get(lid)
+        loc = ev.locations.get(lid)
+        if g is None:                                       # the location is not in the evidence at all
+            g = OG.Geometry(lid, intent.kind, loc.root_key if loc else "", "", "", None, "", "", "", None)
+            ctx.geoms[lid] = g
+        creates = OG.new_folders(ctx.facts, g.to_root_key, g.to_folder) if (g.to_root_key and ctx.facts.roots) else []
+        effect = _effect_of(g, creates=creates)
+        action = ACTION_MOVE if intent.move is not None else ACTION_RENAME
+        out.append(logical_item(ev, action, lid, effect, [d.decision_id for d in intent.decisions], n, ctx))
+    _companion_entries(ev, ctx, out)
+    _organize_cross(out, existing, ev, ctx, removes)
+    return out
+
+
+def _clean(it, skip=("organize_executor_supported", "destination_collision_absent")) -> tuple:
+    """(clean, why): every evidence-stage hard precondition passes except those in `skip` -- the
+    executor first of all, because every item is unsupported today and a chain test that asked for
+    `ready` would never pass (the evidence-clean vacator, synthesis 3.4)."""
+    for c in it.preconditions:
+        if c.stage == STAGE_EVIDENCE and c.severity == "hard" and c.key not in skip and c.result != "pass":
+            return False, f"{c.key} is {c.result}"
+    return True, ""
+
+
+def _set_cond(it, key, result, detail, **params):
+    c = it.condition(key)
+    changed = (c.result, c.detail) != (result, detail)
+    c.result, c.detail = result, detail
+    if params:
+        c.params = {k: v for k, v in params.items() if v is not None}
+    return changed
+
+
+def _organize_cross(items, existing, ev: Evidence, ctx: OrgCtx, removes):
+    """The checks that need the whole revision: removal intent on the same location, the chain
+    exception (a destination another item vacates, passing only when that item is evidence-clean),
+    cycles, intra-plan collisions, companions travelling together; then the attachments to removal
+    and metadata items. Iterated to a fixed point, because a family member's block or a vacator's
+    block moves the others (it only ever adds failures, so it terminates)."""
+    facts = ctx.facts
+    by_lid = {it.target_ref: it for it in items}
+    geoms = [ctx.geoms[l] for l in by_lid if l in ctx.geoms]
+    edges = OG.chain_graph(geoms, facts)
+    cyc = OG.cycle_members(edges)
+    clash = OG.intra_plan_collisions(geoms)
+    removal_items = {it.target_ref: it for it in existing if it.action_kind == ACTION_REMOVE}
+    redundant = {d.target_ref for d in active_decisions(ev.decisions) if d.kind == "redundant_location"}
+    meta_items = {}
+    for it in existing:
+        if it.action_kind == ACTION_METADATA:
+            meta_items.setdefault(it.target_ref, []).append(it)
+    base = {lid: {k: v for k, v in it.condition("destination_collision_absent").params.items() if k in ("destination", "judged")}
+            for lid, it in by_lid.items()}
+    for lid, it in by_lid.items():
+        if lid in removal_items or lid in redundant:
+            who = (f"item {removal_items[lid].item_no} of this revision removes it" if lid in removal_items
+                   else "a redundant mark on it asks for its removal")
+            _set_cond(it, "no_conflicting_intent_same_location", "fail",
+                      f"{who}, and this item moves or renames it: removing and moving one location are contradictory "
+                      "actions (P3-A131). Neither is preferred; withdraw one of them.")
+        if lid in cyc:
+            _set_cond(it, "no_dependency_cycle", "fail",
+                      "it is part of a swap or rotation of names (each destination is another item's source): that needs a "
+                      "temporary name, which is an execution method and belongs to Phase 4")
+    for _round in range(len(items) + 2):
+        changed = False
+        memo = {}
+
+        def chain_ok(lid, seen=()):
+            """(ok, why): can the file standing at this item's destination be vacated?"""
+            if lid in memo:
+                return memo[lid]
+            if lid in seen:
+                return False, "the chain is circular"
+            if lid in clash:
+                r = (False, "it shares its destination with another item")
+            elif base[lid].get("judged") == "free":
+                r = (True, "")
+            elif base[lid].get("judged") == "occupied" and lid in edges and lid not in cyc:
+                v = by_lid.get(edges[lid])
+                if v is None:
+                    r = (False, "the item that vacates it is not in this revision")
+                else:
+                    ok, why = _clean(v)
+                    if not ok:
+                        r = (False, f"item {v.item_no} cannot proceed ({why})")
+                    else:
+                        ok2, why2 = chain_ok(v.target_ref, seen + (lid,))
+                        r = (ok2, "" if ok2 else f"item {v.item_no}: {why2}")
+            else:
+                r = (False, "occupied")
+            memo[lid] = r
+            return r
+        for lid, it in by_lid.items():
+            if lid in clash:
+                others = ", ".join(f"item {by_lid[x].item_no}" for x in clash[lid] if x in by_lid)
+                changed |= _set_cond(it, "destination_collision_absent", "fail",
+                                     f"{others} has the same destination (compared through the path rule): neither can go",
+                                     **base[lid])
+            elif lid in edges and lid not in cyc and base[lid].get("judged") == "occupied":
+                v = by_lid.get(edges[lid])
+                ok, why = chain_ok(lid)
+                if ok:
+                    holder = ctx.loc_by_key.get(base[lid].get("destination"))
+                    changed |= _set_cond(it, "destination_collision_absent", "pass",
+                                         f"occupied by {holder.path if holder is not None else 'a file'}, which item {v.item_no} "
+                                         "of this revision vacates first (an evidence-clean vacator)", **base[lid])
+                else:
+                    changed |= _set_cond(it, "destination_collision_absent", "fail",
+                                         f"occupied by a file that item {v.item_no if v is not None else '?'} would vacate, but a "
+                                         f"dependent never passes on a vacator that cannot proceed ({why})", **base[lid])
+                it.depends_on = (v.item_no,) if v is not None else ()
+        for lid, it in by_lid.items():
+            changed |= _companions(it, by_lid, ctx, ev, removal_items, redundant)
+        if not changed:
+            break
+    for it in items:
+        _settle(it)
+        it.estimated_effect = _org_effects(it, ev, ctx, by_lid, ev.locations.get(it.target_ref))
+    # attachments on the items already built -- only because an organize item exists for the location
+    for lid, rm in removal_items.items():
+        mine = by_lid.get(lid)
+        keepers = sorted({str(k) for k in (removes.get(lid, {}).get("keepers") or ()) if k is not None and str(k) in by_lid
+                          and str(k) != lid}, key=_id_order)
+        if mine is not None:
+            c = Precondition("no_conflicting_intent_same_location", PRECONDITIONS["no_conflicting_intent_same_location"], "hard",
+                             STAGE_EVIDENCE, {"other_item": mine.item_no})
+            what = "moves" if mine.action_kind == ACTION_MOVE else "renames"
+            c.result, c.detail = "fail", (f"item {mine.item_no} of this revision {what} this location -- removing and moving one "
+                                          "location are contradictory actions (P3-A131); neither is preferred")
+            rm.preconditions.append(c)
+        if keepers:
+            k = keepers[0]
+            c = Precondition("keeper_not_moving", PRECONDITIONS["keeper_not_moving"], "hard", STAGE_EVIDENCE,
+                             {"keepers": keepers, "organize_items": [by_lid[x].item_no for x in keepers]})
+            c.result, c.detail = "fail", (f"its keeper {_name(ev, k)} is moved or renamed by item {by_lid[k].item_no} of this revision "
+                                          "while this duplicate is removed: which order is safe is Phase 4's to decide, so the "
+                                          "removal is blocked")
+            rm.preconditions.append(c)
+        if mine is not None or keepers:
+            _settle(rm)
+    for lid, mds in meta_items.items():
+        mine = by_lid.get(lid)
+        if mine is None:
+            continue
+        for md in mds:
+            for a, b in ((md, mine), (mine, md)):
+                c = Precondition("no_organize_metadata_overlap", PRECONDITIONS["no_organize_metadata_overlap"], "warning",
+                                 STAGE_EVIDENCE, {"other_item": b.item_no})
+                other = "updates this location's metadata" if b.action_kind == ACTION_METADATA else "moves or renames this location"
+                c.result, c.detail = "fail", (f"item {b.item_no} of this revision {other} -- a metadata write changes the bytes a "
+                                              "move would carry; neither item is reordered or dropped")
+                a.preconditions.append(c)
+
+
+def family_names(links, mk) -> list:
+    """The file names (other than this one) the sidecar patterns tie to the file whose path key is `mk`."""
+    out = set()
+    for l in links:
+        involved = {l.sidecar} | ({l.primary} if l.primary else set()) | set(l.candidates)
+        if mk in {OG.path_key(n) for n in involved}:
+            out |= {n for n in involved if OG.path_key(n) != mk}
+    return sorted(out, key=lambda n: (OG.path_key(n), n))
+
+
+def _companion_entries(ev, ctx, items) -> None:
+    """The sidecars that travel with each primary, with the names they will have, in the item's
+    desired effect (a companion is its own item too; nothing propagates)."""
+    for it in items:
+        loc = ev.locations.get(it.target_ref)
+        g = ctx.geoms.get(it.target_ref)
+        if loc is None or g is None or not ctx.facts.roots:
+            continue
+        folder, me = OG.split_rel(loc.rel_path)
+        idx = OG.folder_index(ctx.facts)
+        names = [n for spelled in idx.files(OG.full_key(loc.root_key, folder)).values() for n in spelled]
+        out = []
+        for l in OG.detect(names):
+            if not l.ambiguous and l.primary and OG.path_key(l.primary) == OG.path_key(me):
+                s = ctx.loc_by_key.get(OG.full_key(loc.root_key, OG.join_rel(folder, l.sidecar)))
+                if s is not None and s.location_id in ctx.geoms:
+                    sg = ctx.geoms[s.location_id]
+                    out.append({"location_id": s.location_id, "from_path": sg.from_rel, "to_path": sg.to_rel})
+        it.desired_effect["companions"] = out
+
+
+def _companions(it, by_lid, ctx: OrgCtx, ev: Evidence, removal_items, redundant) -> bool:
+    """companions_travel_together (P3-A133): every sidecar found by name beside this file moves or
+    renames with it, to the same folder and the mapped name -- as its own explicit decision; and the
+    other way round for a sidecar. Ambiguous (RAW + JPEG sharing `<stem>.xmp`) is unknown, never a
+    guess. A block on any family member blocks the whole action unit, and the detail names it."""
+    facts = ctx.facts
+    loc = ev.locations.get(it.target_ref)
+    g = ctx.geoms.get(it.target_ref)
+    if loc is None or g is None:
+        return _set_cond(it, "companions_travel_together", "unknown", "the file is not in the evidence")
+    folder = OG.split_rel(loc.rel_path)[0]
+    gap = OG.coverage_gap(facts, loc.root_key, folder)
+    if gap:
+        return _set_cond(it, "companions_travel_together", "unknown", f"companions cannot be looked for: {gap}")
+    idx = OG.folder_index(facts)
+    names = [n for spelled in idx.files(OG.full_key(loc.root_key, folder)).values() for n in spelled]
+    links = OG.detect(names)
+    me = OG.split_rel(loc.rel_path)[1]
+    mk = OG.path_key(me)
+    family = family_names(links, mk)
+
+    def other(name):
+        return ctx.loc_by_key.get(OG.full_key(loc.root_key, OG.join_rel(folder, name)))
+
+    def agrees(member_geom, expected_name, anchor_geom):
+        if member_geom.to_root_key != anchor_geom.to_root_key or OG.path_key(member_geom.to_folder) != OG.path_key(anchor_geom.to_folder):
+            return False, f"goes to {member_geom.to_rel} instead of {anchor_geom.to_folder or 'the root'}"
+        if member_geom.to_name != expected_name:
+            return False, f"is named {member_geom.to_name}, not {expected_name}"
+        return True, ""
+
+    problems, unknowns, members = [], [], []
+    for l in links:
+        if not l.ambiguous and OG.path_key(l.primary) == mk:                    # I am the primary
+            s = other(l.sidecar)
+            if s is None or s.location_id not in ctx.geoms:
+                problems.append(f"{l.sidecar} would be stranded: it has no move or rename of its own")
+                continue
+            ok, why = agrees(ctx.geoms[s.location_id], OG.mapped_sidecar_name(l, me, g.to_name), g)
+            if not ok:
+                problems.append(f"{l.sidecar} {why}")
+            members.append(s.location_id)
+        elif not l.ambiguous and OG.path_key(l.sidecar) == mk:                  # I am the sidecar
+            p = other(l.primary)
+            if p is None or p.location_id not in ctx.geoms:
+                problems.append(f"its primary {l.primary} is not being moved or renamed with it")
+                continue
+            pg = ctx.geoms[p.location_id]
+            ok, why = agrees(g, OG.mapped_sidecar_name(l, l.primary, pg.to_name), pg)
+            if not ok:
+                problems.append(f"it {why.replace('is named', 'would be named')} where its primary {l.primary} is going")
+            members.append(p.location_id)
+        elif l.ambiguous and (OG.path_key(l.sidecar) == mk or mk in {OG.path_key(c) for c in l.candidates}):
+            s = other(l.sidecar)
+            if s is None or s.location_id not in ctx.geoms:
+                unknowns.append(f"{l.sidecar} could belong to any of {', '.join(l.candidates)} and has no decision of its own, "
+                                "so which file it travels with cannot be said")
+                continue
+            sg = ctx.geoms[s.location_id]
+            for cand in l.candidates:
+                c = other(cand)
+                cg = ctx.geoms.get(c.location_id) if c is not None else None
+                if cg is None:
+                    problems.append(f"{cand} shares {l.sidecar} but is not moving with it")
+                    continue
+                want = OG.mapped_sidecar_name(OG.Link(l.sidecar, "adobe_xmp", cand), cand, cg.to_name)
+                ok, why = agrees(sg, want, cg)
+                if not ok:
+                    problems.append(f"{l.sidecar} and {cand} do not agree: the sidecar {why}")
+                members.append(c.location_id)
+            members.append(s.location_id)
+    # a family member that is removed, or is itself blocked, blocks the whole unit
+    for lid in dict.fromkeys(members):
+        m = by_lid.get(lid)
+        if lid in removal_items or lid in redundant:
+            problems.append(f"{_name(ev, lid)} carries removal intent")
+        elif m is not None and m is not it:
+            ok, why = _clean(m, skip=("organize_executor_supported", "companions_travel_together"))
+            if not ok:
+                key = why.split(" ")[0]
+                (problems if m.condition(key).result == "fail" else unknowns).append(
+                    f"{_name(ev, lid)} is blocked ({why}), so the whole family is")
+    if problems:
+        return _set_cond(it, "companions_travel_together", "fail", "; ".join(problems), family=family)
+    if unknowns:
+        return _set_cond(it, "companions_travel_together", "unknown", "; ".join(unknowns), family=family)
+    return _set_cond(it, "companions_travel_together", "pass",
+                     "no companion found beside it" if not members else f"{len(set(members))} companion(s) travel with it",
+                     family=family)
+
+
+def _org_effects(it, ev, ctx, by_lid, loc) -> dict:
+    """Estimated effects (R12 9.5), informational: nothing here blocks."""
+    leaves_empty = None
+    if loc is not None and ctx.facts.roots:
+        folder = OG.split_rel(loc.rel_path)[0]
+        idx = OG.folder_index(ctx.facts)
+        here = idx.files(OG.full_key(loc.root_key, folder))
+        moving = {ctx.geoms[l].from_key for l in by_lid if l in ctx.geoms}
+        leaves_empty = bool(here) and all(OG.full_key(loc.root_key, OG.join_rel(folder, n)) in moving
+                                          for names in here.values() for n in names) \
+            and not idx.children(OG.full_key(loc.root_key, folder))
+    protect = it.condition("destination_not_protected")
+    return {"from_path": it.desired_effect["from_path"], "to_path": it.desired_effect["to_path"],
+            "creates_folders": list(it.desired_effect["creates_folders"]), "companions": list(it.desired_effect["companions"]),
+            "duplicate_group_effect": "none",          # content unchanged, so group membership is unchanged
+            "destination_protection": (protect.params.get("policy_versions") if protect is not None else None) or [],
+            "leaves_folder_empty": leaves_empty, "logical_bytes": loc.size_bytes if loc is not None else None,
+            "case_only": bool(ctx.geoms.get(it.target_ref) and ctx.geoms[it.target_ref].case_only)}
 
 
 # -- effects and the preview ------------------------------------------------------------------
@@ -729,7 +1224,19 @@ def summarize(items, ev: Evidence, proj, excluded) -> dict:
         "undecided_left": sum(len(g.undecided) for g in proj.groups if g.ready_for_plan),
         **_note_counts(items),
         **_dangling_summary(ev),
+        **_organize_summary(items),
     }
+
+
+def _organize_summary(items):
+    """(B20) Present only when there are move / rename items, so a summary without them reads as before."""
+    mv = [i for i in items if i.action_kind in (ACTION_MOVE, ACTION_RENAME)]
+    if not mv:
+        return {}
+    return {"organize": {"items": len(mv), "moves": sum(1 for i in mv if i.action_kind == ACTION_MOVE),
+                         "renames": sum(1 for i in mv if i.action_kind == ACTION_RENAME),
+                         "creates_folders": sum(len(i.desired_effect.get("creates_folders") or []) for i in mv),
+                         "cross_volume": sum(1 for i in mv if i.blocked_reason == "cross_volume_move_not_supported_initially")}}
 
 
 def _dangling_summary(ev):
@@ -795,6 +1302,12 @@ def summary_lines(s) -> list:
     if a.get(ACTION_METADATA):
         lines.append("Coverage: Update Source Metadata -- planned only: no certified source-metadata writer exists "
                      "(R10 §16), so every such item stays blocked; nothing is written in Phase 3.")
+    if s.get("organize"):
+        o = s["organize"]
+        lines.append(f"Coverage: Move / Rename Location -- planned only: {o['moves']:,} move(s) and {o['renames']:,} rename(s); no executor "
+                     "is certified, so every such item stays blocked or unsupported and nothing is moved or renamed in Phase 3 "
+                     f"({o['creates_folders']:,} folder(s) would be created; {o['cross_volume']:,} cross-volume, not supported yet). "
+                     "Stored in the project; never moves the file.")
     if s.get("metadata_leaves_group"):
         lines.append(f"Note: {s['metadata_leaves_group']:,} metadata update(s) on files in exact-duplicate groups -- if "
                      "written, each file leaves its group (P3.R8 §47).")
@@ -928,6 +1441,9 @@ REASON_WORDS = {
     "capability_changed": "metadata capability changed",
     "integrity_changed": "integrity evidence changed",
     "protection_dangling": "a protection policy matches nothing in the latest scan",
+    "organize_occupancy_changed": "what is at a planned destination changed",
+    "organize_vacator_changed": "the item that vacates a planned destination changed",
+    "organize_companions_changed": "the sidecars beside a planned move changed",
 }
 
 
@@ -938,7 +1454,9 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
     sources); a change anywhere else in the project cannot obsolete it. An
     empty list: it still stands."""
     active = active_decisions(ev.decisions)
-    active_ids = {d.decision_id for d in active} | {d.decision_id for d in MD.active_metadata(ev)}
+    active_ids = ({d.decision_id for d in active} | {d.decision_id for d in MD.active_metadata(ev)}
+                  | {d.decision_id for d in active_decisions(ev.organize.decisions)})
+    org_ctx = None
     index = R._index_decisions(active)
     policies = active_policies(ev.policies)
     current_policy_versions = {str(p.policy_version_id) for p in policies}
@@ -969,6 +1487,10 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
             add("policy_changed", f"item {it.item_no}: policy version(s) {', '.join(stale_pol)} no longer current")
         if it.action_kind == ACTION_METADATA:
             _metadata_obsolescence(it, ev, add)
+            continue
+        if it.action_kind in (ACTION_MOVE, ACTION_RENAME):
+            org_ctx = org_ctx or org_context(ev)
+            _organize_obsolescence(it, items, ev, org_ctx, add)
             continue
         if it.action_kind != ACTION_REMOVE:
             continue
@@ -1005,6 +1527,44 @@ def obsolescence(items, ev: Evidence, proj, routing) -> list:
             if route is not None and any(c.severity == R.BLOCKING for c in route.of(RT.CONFLICT)) and it.state == ITEM_READY:
                 add("new_conflict", f"item {it.item_no}: {'group' if kind == GROUP else 'pair #'}{ref} is now in conflict")
     return reasons
+
+
+#: (B20) The moves' obsolescence reasons, beside the removal's. Judged from the FACTS the item judged
+#: (the occupant of the name, the coverage of the folder chain, the protection it checked, the
+#: vacator, the companions) -- never from a newer walk run (F29).
+def _organize_obsolescence(it: PlanItem, items, ev: Evidence, ctx: OrgCtx, add):
+    fresh = _org_results(ev, ctx, it.action_kind, it.target_ref, it.desired_effect, it.decision_ids)
+    where = f"item {it.item_no}"
+    for key, (result, detail, params) in fresh.items():
+        c = it.condition(key)
+        if c is None or key == "organize_executor_supported":
+            continue
+        if key == "destination_collision_absent":
+            if c.params.get("judged") != params.get("judged"):
+                add("organize_occupancy_changed", f"{where}: the destination was judged {c.params.get('judged')}, now {params.get('judged')} "
+                                                  f"({detail})")
+        elif key == "target_not_protected":
+            if c.result != result:
+                add("protection_added" if result == "fail" else "policy_changed",
+                    f"{where}: protection of {_name(ev, it.target_ref)} was '{c.result}', now '{result}'")
+        elif key == "no_dangling_protection":
+            if c.result != result:
+                add("protection_dangling", f"{where}: " + detail)
+        elif c.result != result:
+            add("evidence_changed", f"{where}: {key.replace('_', ' ')} was {c.result}, now {result}")
+    for dep in it.depends_on:
+        v = next((x for x in items if x.item_no == dep), None)
+        gone = [] if v is None else [d for d in v.decision_ids if str(d) not in {x.decision_id for x in active_decisions(ev.organize.decisions)}]
+        if v is None or gone:
+            add("organize_vacator_changed", f"{where}: the item that vacates its destination (item {dep}) changed")
+    loc = ev.locations.get(it.target_ref)
+    cc = it.condition("companions_travel_together")
+    if loc is not None and cc is not None and "family" in cc.params and ctx.facts.roots:
+        folder = OG.split_rel(loc.rel_path)[0]
+        names = [n for spelled in OG.folder_index(ctx.facts).files(OG.full_key(loc.root_key, folder)).values() for n in spelled]
+        now = family_names(OG.detect(names), OG.path_key(OG.split_rel(loc.rel_path)[1]))
+        if now != list(cc.params["family"]):
+            add("organize_companions_changed", f"{where}: the companions beside {_name(ev, it.target_ref)} changed")
 
 
 def _metadata_obsolescence(it, ev: Evidence, add):

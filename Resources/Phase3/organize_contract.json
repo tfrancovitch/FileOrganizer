@@ -1,0 +1,962 @@
+{
+ "axioms": [
+  {
+   "fixtures": [
+    "F17"
+   ],
+   "id": "P3-A125",
+   "status": "tested",
+   "text": "A desired location or name is recorded in Phase 3. Only Phase 4 changes the namespace.",
+   "title": "Organizing intent is a Decision; moving or renaming is an action"
+  },
+  {
+   "fixtures": [
+    "F18",
+    "F19",
+    "F28"
+   ],
+   "id": "P3-A126",
+   "status": "tested",
+   "text": "A decision stores a resolved destination or name, never a template, rule or scheme reference.",
+   "title": "Phase 3 organizing values are literal"
+  },
+  {
+   "fixtures": [
+    "F18",
+    "F19"
+   ],
+   "id": "P3-A127",
+   "status": "corollary of A126 (templates are deferred): one closeout row pointing at A126's test",
+   "text": "A template is evaluated once, against stored evidence, and its per-target output becomes literal decisions. The template string is batch provenance only.",
+   "title": "Templates are entry aids frozen at preview"
+  },
+  {
+   "fixtures": [],
+   "id": "P3-A128",
+   "status": "deferred with F30 (the template expander is not built): no Phase 3 check",
+   "text": "Only a `known` value fills a token. Any other value-state leaves the target undecided and visible. A fallback exists only as a literal the person typed for a counted bucket.",
+   "title": "An unknown template field excludes the target"
+  },
+  {
+   "fixtures": [
+    "F18",
+    "F19"
+   ],
+   "id": "P3-A129",
+   "status": "corollary of A126: one closeout row pointing at A126's test",
+   "text": "\"Files matching X go to Y\" acts on future matches. It is a Phase 7 organizational model, not a Phase 3 decision.",
+   "title": "Phase 3 has no dynamic organizing policy"
+  },
+  {
+   "fixtures": [],
+   "id": "P3-A130",
+   "status": "principle (restates principle 6): one row, no new test",
+   "text": "A desired location neither makes a Keeper nor protects nor removes. A Keeper or a canonical is never moved because of its retention status.",
+   "title": "Organizing is not retention"
+  },
+  {
+   "fixtures": [
+    "F22"
+   ],
+   "id": "P3-A131",
+   "status": "tested",
+   "text": "Both items are blocked as conflicting intent until a person withdraws one. Neither wins automatically.",
+   "title": "Removal and organizing intent on one location never both plan"
+  },
+  {
+   "fixtures": [
+    "F23"
+   ],
+   "id": "P3-A132",
+   "status": "tested",
+   "text": "A covered location is not moved or renamed without the existing `override_protection` naming the policy version. Moving into protection is a warning.",
+   "title": "Protection gates organizing as it gates removal"
+  },
+  {
+   "fixtures": [
+    "F24",
+    "F37"
+   ],
+   "id": "P3-A133",
+   "status": "tested",
+   "text": "Detected companions are recorded as their own human decisions in the same operation. A plan that would strand a known companion is blocked.",
+   "title": "Families travel together, explicitly"
+  },
+  {
+   "fixtures": [
+    "F20",
+    "F28"
+   ],
+   "id": "P3-A134",
+   "status": "tested",
+   "text": "Fail is the default and the only initial policy. Renaming, replacing, skipping or discarding on collision requires an explicit decision value.",
+   "title": "A collision policy that changes the outcome is intent"
+  },
+  {
+   "fixtures": [
+    "F21",
+    "F34"
+   ],
+   "id": "P3-A135",
+   "status": "tested",
+   "text": "Outside a usable walk it is unknown, and unknown blocks. Phase 4 re-checks it live.",
+   "title": "Destination occupancy is judged against project evidence"
+  },
+  {
+   "fixtures": [
+    "F25",
+    "F27"
+   ],
+   "id": "P3-A136",
+   "status": "tested",
+   "text": "Cross-volume, cycle and executor-unsupported items are built, previewed and blocked with a named reason, never dropped.",
+   "title": "Unsupported moves stay visible"
+  },
+  {
+   "fixtures": [
+    "F21"
+   ],
+   "id": "P3-A137",
+   "status": "tested",
+   "text": "Cloud-only sources, or sources whose cloud state is unknown, block organize items in Phase 3.",
+   "title": "Organizing never hydrates"
+  },
+  {
+   "fixtures": [
+    "F20",
+    "F41"
+   ],
+   "id": "P3-A138",
+   "status": "tested",
+   "text": "Plans and fingerprints store destination strings as entered. Collision detection compares through the path-matching rule and errs toward a collision.",
+   "title": "Destinations are byte-exact, collisions conservative"
+  },
+  {
+   "fixtures": [
+    "F26"
+   ],
+   "id": "P3-A139",
+   "status": "tested (asserts a file renamed outside the product is never matched by name)",
+   "text": "After an executed move, decisions follow the file only through a Phase 4 succession record confirmed by identity. Phase 3 never matches by name.",
+   "title": "Location succession is evidence, not inference"
+  },
+  {
+   "fixtures": [],
+   "id": "P3-A140",
+   "status": "principle; no fixture can test it: Met -- principle; no check",
+   "text": "Taxonomies, file plans and many-valued classification belong to project metadata now and organizational models in Phase 7. A file has one folder but may have many categories.",
+   "title": "Classification is not location"
+  },
+  {
+   "fixtures": [
+    "A141"
+   ],
+   "id": "P3-A141",
+   "status": "tested (the store refuses any other origin)",
+   "text": "Only human acceptance records organizing intent (axiom 17).",
+   "title": "Machine destination suggestions remain suggestions"
+  },
+  {
+   "fixtures": [
+    "F28"
+   ],
+   "id": "P3-A142",
+   "status": "tested",
+   "text": "A name Windows cannot hold is a value error at record time, not blocked intent.",
+   "title": "Invalid names are refused, not recorded"
+  },
+  {
+   "fixtures": [],
+   "id": "P3-A143",
+   "status": "principle; no fixture can test it: Met -- principle; no check",
+   "text": "Control or production numbers are project metadata or properties of derived copies. Source names are provenance.",
+   "title": "Renaming originals to identifiers is not organizing"
+  },
+  {
+   "fixtures": [
+    "F23",
+    "F31"
+   ],
+   "id": "P3-A144",
+   "status": "tested (new, both directions)",
+   "text": "override_protection names the policy it defeats AND the action it lifts it for (removal or organize). A removal-scope override never lets a move or rename through; an organize-scope one never lets a removal take effect. A removal scope is stored with no member, so every earlier row reads as removal.",
+   "title": "An override lifts protection for one action only"
+  },
+  {
+   "fixtures": [
+    "F34"
+   ],
+   "id": "P3-A145",
+   "status": "tested (new)",
+   "text": "A destination is free only where the latest walk saw the destination folder and every ancestor up to the root: no inaccessible entry, no skipped link (reparse directory), no truncated list. An empty or unusable walk is not free; it is unknown, and unknown blocks.",
+   "title": "'Known free' requires complete coverage of the destination folder chain"
+  }
+ ],
+ "b19_lab_fingerprints": {
+  "F01_Keeper_Protected_Hardlink": "8886641b2e7ef2fa7788a63b9fd4a197c402c81892b099e34d5580d0e6898dbb",
+  "F02_Multiple_Intentional_Keepers": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F03_Folder_Priority_Exception": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F04_Frozen_Bulk_Query": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F05_Dynamic_Policy_Future_Match": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F06_Visual_Nontransitivity": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F07_Related_Variant": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F08_Deferred_vs_Blocked": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F09_Supersession_Undo_Reapply": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F10_Revalidation": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F11_Plan_Drift": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89",
+  "F12_Hard_Precondition_Unknown": "6ba6b36d50e22935c93ca3e0b437980ed297737ef79f6a32ffed142fab64368d",
+  "F13_Metadata_Desired_Unsupported": "23eeee9ab35442ff0939a771469febb67434d98376491f92e407eaf86dd6969b",
+  "F14_Metadata_Integrity_Blockers": "b11562a9c2ebd9f83fb0825636b592557635c57a6b83e4c593093881c47930da",
+  "F15_Projection_Rebuild": "8dbdefea0f091aaacc4def8dd06fd8937c939f2be315b5ca4cb3944ced985e66",
+  "F16_Visual_NonEdge": "1ed49038e42e8855934e61e57492c8df05bac5ef5a65d3b98ec631a7457a5d89"
+ },
+ "b19_lab_fingerprints_note": "the plan fingerprint of each lab fixture F01-F16 as the phase3-b19 code builds it (now fixed to 2026-10-12T00:00:00Z); with no organize decision B20 must build exactly these (F39)",
+ "classes": [
+  "identity",
+  "retention",
+  "evidence",
+  "environment",
+  "collision",
+  "concurrency",
+  "reversibility",
+  "integrity"
+ ],
+ "companions": "Resources/Phase3/companion_patterns.json (versioned; each pattern with a cited basis; Takeout .json, .aae, .thm excluded)",
+ "decision_kinds": {
+  "desired_location": {
+   "conflict_domain": "organize_location",
+   "label": "Desired location",
+   "origins": [
+    "explicit_human",
+    "bulk_explicit_human"
+   ],
+   "targets": [
+    "file_location"
+   ],
+   "value_kind": "desired_location"
+  },
+  "desired_name": {
+   "conflict_domain": "organize_name",
+   "label": "Desired name",
+   "origins": [
+    "explicit_human",
+    "bulk_explicit_human"
+   ],
+   "targets": [
+    "file_location"
+   ],
+   "value_kind": "desired_name"
+  }
+ },
+ "deferred": [
+  "templates (F30, A127/A128)",
+  "batch rename",
+  "collision policies other than fail",
+  "cross-volume, cloud-root and outside-root destinations",
+  "folder-as-unit moves",
+  "location succession and decision fulfilment (Phase 4)",
+  "a keeper-move ordering rule (Phase 4)",
+  "Takeout / AAE / THM companions",
+  "document companions",
+  "OneDrive naming restrictions (joins O-1)",
+  "dynamic rules, taxonomies, group-level location, keep_in_place (Phase 7)"
+ ],
+ "fixtures": {
+  "F17-F29": "the report's, with the evaluation's corrections (F23, F25, F26, F27, F28)",
+  "F30": "deferred with the template expander",
+  "F31-F41": "new in B20: F31 scoped override both ways; F32 keeper moved; F33 blocked vacator; F34 coverage; F35 metadata + organize; F36 dangling / unresolvable root; F37 shared-stem sidecar; F38 file segment and 255 units; F39 regression vs B19; F40 undo of a move batch; F41 casing"
+ },
+ "note": "The contract B20 adopts for organizing intent (P3.R12, accepted with required changes). The Model JSON is research and is not edited; where it differs from this file, this file wins. Checked against the registry by p3_organize_check.",
+ "override_scope": {
+  "default": "removal",
+  "domain_key": {
+   "organize": "protection_override:<policy_id>:organize",
+   "removal": "protection_override:<policy_id>"
+  },
+  "removal_stored_as": "no action_scope member",
+  "values": [
+   "removal",
+   "organize"
+  ]
+ },
+ "preconditions": [
+  {
+   "class": "concurrency",
+   "key": "action_lock_available",
+   "on": {
+    "move_location": [
+     {
+      "key": "action_lock_available",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "action_lock_available",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "collision",
+   "key": "companions_present_unchanged",
+   "on": {
+    "move_location": [
+     {
+      "key": "companions_present_unchanged",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "companions_present_unchanged",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "collision",
+   "key": "companions_travel_together",
+   "on": {
+    "move_location": [
+     {
+      "key": "companions_travel_together",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "companions_travel_together",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "evidence",
+   "key": "decision_current",
+   "on": {
+    "move_location": [
+     {
+      "key": "decision_current",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "decision_current",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "collision",
+   "key": "destination_available",
+   "on": {
+    "move_location": [
+     {
+      "key": "destination_available",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "destination_available",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "collision",
+   "key": "destination_collision_absent",
+   "on": {
+    "move_location": [
+     {
+      "key": "destination_collision_absent",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "destination_collision_absent",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "evidence",
+   "key": "destination_name_valid",
+   "on": {
+    "move_location": [
+     {
+      "key": "destination_name_valid",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "destination_name_valid",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "retention",
+   "key": "destination_not_protected",
+   "on": {
+    "move_location": [
+     {
+      "key": "destination_not_protected",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "environment",
+   "key": "destination_within_project_root",
+   "on": {
+    "move_location": [
+     {
+      "key": "destination_within_project_root",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "evidence",
+   "key": "extension_change_confirmed",
+   "on": {
+    "move_location": [
+     {
+      "key": "extension_change_confirmed",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "extension_change_confirmed",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "environment",
+   "key": "filesystem_capability_supported",
+   "on": {
+    "move_location": [
+     {
+      "key": "filesystem_capability_supported",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "filesystem_capability_supported",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "environment",
+   "key": "free_space_sufficient",
+   "on": {
+    "move_location": [
+     {
+      "key": "free_space_sufficient",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "retention",
+   "key": "keeper_not_moving",
+   "on": {
+    "remove_location (conditional)": [
+     {
+      "key": "keeper_not_moving",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "evidence",
+   "key": "no_conflicting_intent_same_location",
+   "on": {
+    "move_location": [
+     {
+      "key": "no_conflicting_intent_same_location",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "remove_location (conditional)": [
+     {
+      "key": "no_conflicting_intent_same_location",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "no_conflicting_intent_same_location",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "concurrency",
+   "key": "no_conflicting_run",
+   "on": {
+    "move_location": [
+     {
+      "key": "no_conflicting_run",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "no_conflicting_run",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "evidence",
+   "key": "no_current_conflict",
+   "on": {
+    "move_location": [
+     {
+      "key": "no_current_conflict",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "no_current_conflict",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "retention",
+   "key": "no_dangling_protection",
+   "on": {
+    "move_location": [
+     {
+      "key": "no_dangling_protection",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "remove_location (conditional)": [
+     {
+      "key": "no_dangling_protection",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "no_dangling_protection",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "collision",
+   "key": "no_dependency_cycle",
+   "on": {
+    "move_location": [
+     {
+      "key": "no_dependency_cycle",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "no_dependency_cycle",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "evidence",
+   "key": "no_organize_metadata_overlap",
+   "on": {
+    "move_location (conditional)": [
+     {
+      "key": "no_organize_metadata_overlap",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location (conditional)": [
+     {
+      "key": "no_organize_metadata_overlap",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ],
+    "update_source_metadata (conditional)": [
+     {
+      "key": "no_organize_metadata_overlap",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "collision",
+   "key": "no_removal_metadata_overlap",
+   "on": {
+    "update_source_metadata (conditional)": [
+     {
+      "key": "no_removal_metadata_overlap",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "environment",
+   "key": "organize_executor_supported",
+   "on": {
+    "move_location": [
+     {
+      "key": "organize_executor_supported",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "organize_executor_supported",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "environment",
+   "key": "permissions_sufficient",
+   "on": {
+    "move_location": [
+     {
+      "key": "permissions_sufficient",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "permissions_sufficient",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "reversibility",
+   "key": "rollback_ready",
+   "on": {
+    "move_location": [
+     {
+      "key": "rollback_ready",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "rollback_ready",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "environment",
+   "key": "same_volume",
+   "on": {
+    "move_location": [
+     {
+      "key": "same_volume",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     },
+     {
+      "key": "same_volume",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "identity",
+   "key": "source_identity_known",
+   "on": {
+    "move_location": [
+     {
+      "key": "source_identity_known",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "source_identity_known",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "identity",
+   "key": "source_identity_matches",
+   "on": {
+    "move_location": [
+     {
+      "key": "source_identity_matches",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "source_identity_matches",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "new"
+  },
+  {
+   "class": "environment",
+   "key": "source_local_if_required",
+   "on": {
+    "move_location": [
+     {
+      "key": "source_local_if_required",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     },
+     {
+      "key": "source_local_if_required",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "source_local_if_required",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     },
+     {
+      "key": "source_local_if_required",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "integrity",
+   "key": "source_not_hardlinked",
+   "on": {
+    "move_location": [
+     {
+      "key": "source_not_hardlinked",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "source_not_hardlinked",
+      "severity": "warning",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "environment",
+   "key": "source_root_available",
+   "on": {
+    "move_location": [
+     {
+      "key": "source_root_available",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "source_root_available",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "identity",
+   "key": "target_content_matches",
+   "on": {
+    "move_location": [
+     {
+      "key": "target_content_matches",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "target_content_matches",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "identity",
+   "key": "target_exists",
+   "on": {
+    "move_location": [
+     {
+      "key": "target_exists",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     },
+     {
+      "key": "target_exists",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "target_exists",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     },
+     {
+      "key": "target_exists",
+      "severity": "hard",
+      "stage": "live_preflight"
+     }
+    ]
+   },
+   "status": "reused"
+  },
+  {
+   "class": "retention",
+   "key": "target_not_protected",
+   "on": {
+    "move_location": [
+     {
+      "key": "target_not_protected",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ],
+    "rename_location": [
+     {
+      "key": "target_not_protected",
+      "severity": "hard",
+      "stage": "evidence_preview"
+     }
+    ]
+   },
+   "status": "reused"
+  }
+ ],
+ "registry_version": "fileorganizer.p3.registry/3",
+ "schema": "fileorganizer.p3.organize-contract/1"
+}

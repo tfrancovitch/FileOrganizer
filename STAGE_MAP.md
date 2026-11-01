@@ -350,6 +350,16 @@ value-state does. The queue's **Confirm...** records one batch (a `bulk`
 operation) of the same decisions on fresh evidence; its Undo re-applies what
 it superseded. The Decide page's **Export current state...** reads the
 project database and writes one CSV under the project's `Exports\`.
+**Move to... / Rename... / Move checked... / Move listed... (B20)** on the Files
+page are `Phase3\organize_view.py`'s dialogs. Each action is one `decision`
+operation (a single file, with its confirmed sidecars) or one `bulk` operation
+(a frozen batch): `desired_location` and `desired_name` rows through the same
+store, origins `explicit_human` / `bulk_explicit_human` only. Nothing opens,
+stats or lists a source file; the evidence is the walk the project holds.
+**Override protection...** (Decide page) now asks which action it lifts and
+defaults to none. The Plan page shows the move / rename items — every one
+`unsupported_action` (no executor exists).
+
 **Policies... > Re-point...** (B19) is one `policy` operation: a new version
 of the same policy with a new scope. Judging whether each policy's scope
 matches anything reads only the project database -- the latest Pre-Scan's

@@ -68,19 +68,36 @@ def section(title):
     print(f"\n{title}\n{'-' * len(title)}")
 
 
-def _validator(root_ref=None):
+def _validator_class():
+    """Draft 2020-12 plus the one annotation keyword the schema defines (B20):
+    x-fo-max-utf16-units -- {"max": n[, "split": sep]}, a string's length in UTF-16 code
+    units (each part between separators on its own). Written here from the schema's own
+    sentence (registry_schema.UTF16_KEYWORD), independently of registry.py / organize.py."""
     import jsonschema
+    from jsonschema import exceptions
+
+    def utf16(_validator, spec, instance, _schema):
+        if not isinstance(instance, str):
+            return
+        parts = instance.split(spec["split"]) if spec.get("split") else [instance]
+        for part in parts:
+            if len(part.encode("utf-16-le", "surrogatepass")) // 2 > spec["max"]:
+                yield exceptions.ValidationError(f"more than {spec['max']} UTF-16 code units")
+                return
+    return jsonschema.validators.extend(jsonschema.Draft202012Validator, {RS.UTF16_KEYWORD: utf16})
+
+
+def _validator(root_ref=None):
     doc = RS.schema()
     if root_ref is not None:
         doc = {"$schema": doc["$schema"], "$id": doc["$id"] + ":" + root_ref, "$defs": doc["$defs"],
                "$ref": f"#/$defs/{root_ref}"}
-    return jsonschema.Draft202012Validator(doc)
+    return _validator_class()(doc)
 
 
 def _committed():
-    import jsonschema
     raw = RS.SCHEMA_PATH.read_bytes()
-    return raw, jsonschema.Draft202012Validator(json.loads(raw.decode("ascii")))
+    return raw, _validator_class()(json.loads(raw.decode("ascii")))
 
 
 # -- 1. the committed schema ----------------------------------------------------------------
@@ -111,8 +128,8 @@ def test_committed():
     except jsonschema.SchemaError as exc:                            # pragma: no cover - a failure path
         meta_ok, why = False, str(exc)[:200]
     check("valid against the draft 2020-12 metaschema", meta_ok and doc.get("$schema") == RS.DIALECT, why)
-    check("it carries its $id and version: the registry's contract version (fileorganizer.p3.registry/2)",
-          doc.get("$id") == RS.SCHEMA_ID and doc.get("version") == REG.REGISTRY_VERSION == "fileorganizer.p3.registry/2")
+    check("it carries its $id and version: the registry's contract version (fileorganizer.p3.registry/3, B20)",
+          doc.get("$id") == RS.SCHEMA_ID and doc.get("version") == REG.REGISTRY_VERSION == "fileorganizer.p3.registry/3")
     defs = doc.get("$defs", {})
     check(f"one definition per decision kind ({len(REG.DECISION_KINDS)}), naming its targets and its value schema",
           all(f"decision.{k}" in defs and defs[f"decision.{k}"]["properties"]["target_kind"]["enum"] == sorted(s.target_kinds)
@@ -217,6 +234,39 @@ def _texts():
             "a" + base + "aa", "\u3000" * 5000 + "y", "y" + "\u3000" * 5000]
 
 
+def _organize_values():
+    """(B20) Values for desired_location and desired_name: legal and illegal names, folders,
+    lengths in UTF-16 units (a non-BMP character is two), device names with and without an
+    extension, rooted paths, '..', ids of every type, every on_collision."""
+    names = ["a.txt", "A", "a b", "a.b.c", "x" * 255, "x" * 256, "\U0001f600" * 127, "\U0001f600" * 128, "\U0001f600" * 127 + "x",
+             "\U0001f600" * 127 + "xx", "", " ", ".", "..", "a.", "a ", " a", "a b.", "CON", "con", "Con.txt", "NUL.tar.gz", "nul .txt",
+             "aux", "AUX.", "COM1", "com9.txt", "COM0", "COM\u00b9", "LPT\u00b2.log", "LPT\u00b3", "COM10", "CONX", "XCON", "CON x.txt",
+             "a|b", "a:b", "a*b", "a?b", 'a"b', "a<b", "a>b", "a/b", "a\\b", "a\x01b", "a\x1fb", "a\x7fb", "a\nb", "\u00e9", "e\u0301",
+             "\u4e2d\u6587.pdf", "report.", "report", "a\ud800b", "\u3000a", "a\u3000"]
+    folders = ["", "Docs", "Docs\\2024", "Docs\\aux", "Docs\\AUX.old", "aux", "a\\b\\c\\d", "x" * 255, "x" * 256, "ok\\" + "x" * 256,
+               "x" * 255 + "\\" + "y" * 255, "\U0001f600" * 128, "\\", "\\Docs", "Docs\\", "Docs\\\\x", "C:", "C:\\Docs", "c:Docs",
+               "\\\\srv\\share", "..", "..\\..", "Docs\\..", ".\\Docs", "Docs\\.", "a/b", "Docs\\a|b", "Docs\\NUL", "Docs\\x.", "Docs\\x ",
+               " Docs", "\u00e9\\e\u0301", 5, None, True, [], ["Docs"], {}]
+    out = []
+    for rid in [1, 2, 12, 1.0, 1.5, 0, -1, True, False, None, "1", "", [], {}, 10 ** 12]:
+        out.append({"destination_root_id": rid, "destination_folder": "Docs", "on_collision": "fail"})
+    for folder in folders:
+        out.append({"destination_root_id": 1, "destination_folder": folder, "on_collision": "fail"})
+    for oc in ["fail", "FAIL", "skip", "replace", "", None, True, [], "rename", "create_unique_name"]:
+        out.append({"destination_root_id": 1, "destination_folder": "Docs", "on_collision": oc})
+        out.append({"name": "a.txt", "on_collision": oc, "extension_change_confirmed": False})
+    for name in names:
+        for conf in (True, False):
+            out.append({"name": name, "on_collision": "fail", "extension_change_confirmed": conf})
+    for conf in [0, 1, "true", "", None, [], {}, "false"]:
+        out.append({"name": "a.txt", "on_collision": "fail", "extension_change_confirmed": conf})
+    out += [{"destination_root_id": 1, "destination_folder": "Docs"}, {"destination_root_id": 1, "on_collision": "fail"},
+            {"destination_folder": "Docs", "on_collision": "fail"}, {"name": "a.txt"}, {"name": "a.txt", "on_collision": "fail"},
+            {"destination_root_id": 1, "destination_folder": "Docs", "on_collision": "fail", "name": "a.txt"},
+            {"name": "a.txt", "on_collision": "fail", "extension_change_confirmed": False, "extra": 1}, "Docs", "a.txt"]
+    return out
+
+
 def _value_corpus(seed):
     rng = random.Random(seed)
     values = list(_ATOMS) + list(_WS_SAMPLES) + _dates() + _texts()
@@ -226,6 +276,9 @@ def _value_corpus(seed):
         values.append({"policy_id": pid, "policy_version_id": 2})
         values.append({"policy_id": 1, "policy_version_id": pid})
     values += [{"policy_id": 1}, {"policy_version_id": 1}, {"policy_id": 1, "policy_version_id": 2, "extra": None}]
+    for scope in ["removal", "organize", "", "Organize", " organize", None, True, 1, [], {}, "delete"]:
+        values.append({"policy_id": 1, "policy_version_id": 2, "action_scope": scope})
+    values += _organize_values()
     for field in list(REG.PROJECT_METADATA_FIELDS) + ["creator", "", "x", 1, None, ["note"]]:
         for v in [None, "x", " x ", "", " ", "\x1c", ["a"], [], ["a", " "], ["a", "a"], "low", "high", "urgent", 1, True,
                   "x" * (REG.TEXT_MAX + 1), " " + "x" * REG.TEXT_MAX + " "]:
@@ -431,7 +484,17 @@ def test_fixtures():
 SUITES = ("p3_regression.py", "p3_fixture_check.py", "p3_visual_check.py", "p3_visual_bulk_check.py", "p3_survey_check.py",
           "p3_refresh_check.py", "p3_plan_check.py", "p3_metadata_check.py", "p3_metadata_view_check.py",
           "p3_encryption_check.py", "p3_revalidation_check.py", "p3_closeout_check.py", "p3_fingerprint_check.py",
-          "p3_relabel_check.py", "p3_dangling_check.py")
+          "p3_relabel_check.py", "p3_dangling_check.py", "p3_organize_check.py")
+
+
+_CAPTURED = []
+
+
+def flush_capture(out_path):
+    """Write the buffered rows (called after the suite, when no guard is active)."""
+    with open(out_path, "a", encoding="utf-8") as fh:
+        fh.writelines(_CAPTURED)
+    del _CAPTURED[:]
 
 
 def _install_capture(out_path):
@@ -440,9 +503,11 @@ def _install_capture(out_path):
     from Phase3 import store as S
     cls = S.DecisionStore
 
+    # (B20 task 0b, the owner's decision) The rows are BUFFERED and written by
+    # flush_capture() once the suite has finished, outside every guard: a write
+    # during a guarded section was recorded by p3_regression.WriteGuard in eight suites.
     def emit(obj):
-        with open(out_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(obj, sort_keys=True, default=str) + "\n")
+        _CAPTURED.append(json.dumps(obj, sort_keys=True, default=str) + "\n")
 
     def decision(conn, decision_id):
         r = conn.execute("SELECT decision_kind, target_kind, value_json, origin_kind, evidence_binding_json FROM p3_decision "
@@ -488,11 +553,14 @@ def capture_run(suite, out_path):
     """Child mode: run one suite as __main__ with the capture hook installed."""
     _install_capture(out_path)
     sys.argv = [str(SCRIPTS / suite)]
+    code = 0
     try:
         runpy.run_path(str(SCRIPTS / suite), run_name="__main__")
     except SystemExit as exc:
-        return int(exc.code or 0)
-    return 0
+        code = int(exc.code or 0)
+    finally:
+        flush_capture(out_path)
+    return code
 
 
 def test_suites():
@@ -543,6 +611,26 @@ def test_suites():
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_capture_guarded(tmp=None):
+    """(B20 task 0b) The capture hook must not write while a suite's WriteGuard is
+    active: p3_plan_check (guarded sections) run under it exits 0 with its own
+    write-guard checks green, and the rows reach the file."""
+    section("5b. The capture hook buffers: a guarded suite stays green under it")
+    import time
+    d = Path(tmp) if tmp is not None else Path(tempfile.mkdtemp(prefix="p3schema_cap_"))
+    out = d / "plan.jsonl"
+    t0 = time.perf_counter()
+    p = subprocess.run([sys.executable, str(Path(__file__)), "--capture-run", "p3_plan_check.py", str(out)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(SCRIPTS.parent))
+    rows = len(out.read_text(encoding="utf-8").splitlines()) if out.is_file() else 0
+    check("p3_plan_check under the capture hook exits 0 (its 'no Python-level write outside the project' guard check is green)",
+          p.returncode == 0, f"exit {p.returncode}: {p.stdout[-300:]}")
+    check("...and the buffered rows were written after the suite", rows > 0, f"{rows} rows in {time.perf_counter() - t0:.0f} s")
+    if tmp is None:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main(argv):
     if argv[:1] == ["--capture-run"]:
         return capture_run(argv[1], argv[2])
@@ -554,6 +642,7 @@ def main(argv):
     test_cross_check()
     test_normalization()
     test_fixtures()
+    test_capture_guarded()
     if "--quick" not in argv:
         test_suites()
     passed = sum(1 for _, ok, _ in RESULTS if ok)

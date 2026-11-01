@@ -214,9 +214,12 @@ def test_pure():
     check("a revision built with no dangling protection goes obsolete once one dangles (protection_dangling), and not before",
           [r[0] for r in reasons] == ["protection_dangling"] and not PL.obsolescence(before.items, ev2, proj2, rt2))
     check("the registry states it: no_dangling_protection is a retention precondition, attached conditionally to "
-          "remove_location only", REG.PRECONDITIONS[KEY] == "retention"
-          and REG.CONDITIONAL_PRECONDITIONS[REG.ACTION_REMOVE] == ((KEY, "hard", REG.STAGE_EVIDENCE),)
-          and all(k != KEY for a in REG.ACTION_PRECONDITIONS.values() for k, _s, _st in a))
+          "remove_location (B20: and, being a new item kind with no earlier fingerprint to keep, declared outright on "
+          "move_location / rename_location -- on no other action)", REG.PRECONDITIONS[KEY] == "retention"
+          and REG.CONDITIONAL_PRECONDITIONS[REG.ACTION_REMOVE][0] == (KEY, "hard", REG.STAGE_EVIDENCE)
+          and all(k != KEY for a, rows in REG.ACTION_PRECONDITIONS.items()
+                  if a not in (REG.ACTION_MOVE, REG.ACTION_RENAME) for k, _s, _st in rows)
+          and all(any(k == KEY for k, _s, _st in REG.ACTION_PRECONDITIONS[a]) for a in (REG.ACTION_MOVE, REG.ACTION_RENAME)))
 
 
 # -- the real-project scaffolding ----------------------------------------------------------------

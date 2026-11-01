@@ -1018,6 +1018,73 @@ evidence (`p3_dangling_check` §2: loading, building, the detector and plan
 reconciliation record none); the suggestion applied without a person
 (`RepointDialog.use_suggestion` fills the field only).
 
+### Organizing intent: move and rename (B20, schema 16, no migration)
+
+P3.R12, accepted with required changes. Two literal, human-authored decision kinds
+in the ONE engine -- `desired_location` (`{destination_root_id, destination_folder,
+on_collision: "fail"}`) and `desired_name` (`{name, on_collision, extension_change_confirmed}`)
+-- on `file_location`, in their own conflict domains (`organize_location`,
+`organize_name`), origins `explicit_human` / `bulk_explicit_human` only. Scaled only by
+frozen batches (`bulk.ORGANIZE_MOVE`, member kind `file_location`; `p3_bulk_member` has no CHECK,
+so no migration). Never retention (a keeper is not moved because it is a keeper), never a policy,
+never a destination assigned by a rule or template.
+
+```
+   Phase 1/2 evidence: file_state, file_path, scan_path_event, inventory_scan  (no source read, ever)
+        |   ScopeFacts (scopes.py): present paths, inaccessible, reparse, truncated, volumes, root ids
+   Move to... / Rename... dialogs (organize_view.py)      "Stored in the project; never moves the file"
+        |   store.record_organize -> validate (organize.py names; store._validate_organize: root, canonical casing,
+        |   existing-file segment, extension) -> ONE operation; a refused value writes nothing
+   p3_decision rows, loaded APART from ev.decisions (evidence.load_decisions(organize=True) -> Evidence.organize)
+        |   the router, resolver and bulk's duplicate model never see them
+   plans.build -> organize_items (after retention and metadata items): one item per location
+        |   logical_item (per-item checks against the walk) + _organize_cross (removal intent, chain exception,
+        |   cycles, companions, keeper_not_moving, the metadata warning), to a fixed point
+        |   every item ends blocked / blocked_evidence / unsupported_action -- never ready
+   locked revision -> Phase 4 (an executor, succession, fulfilment): not here
+```
+
+**The precondition table** (move = M, rename = R; E evidence stage, L live; hard unless noted; classes are the built
+lowercase ones; `reused` keys keep their B16-B19 meaning):
+
+| Key | Class | On | Notes |
+|---|---|---|---|
+| `target_exists`, `decision_current`, `no_current_conflict` | identity / evidence | M R, E | reused; `decision_current` fails on a material change (path or name differs, content or physical identity changed, location missing, destination root removed) |
+| `source_identity_known` | identity | M R, E | volume serial + file index recorded, else unknown |
+| `source_local_if_required` | environment | M R, E (hard) and L | reused at HARD severity here (a warning for the others): cloud-only fails, cloud state unknown is unknown |
+| `target_not_protected` | retention | M R, E | reused; lifted only by an organize-scoped override (P3-A144) |
+| `no_dangling_protection` | retention | M R, E | B19's key; `unknown` while any protect policy dangles |
+| `destination_within_project_root` | environment | M, E | unknown if the root is offline, absent (renamed away) or unresolvable |
+| `destination_name_valid` | evidence | M R, E | re-checked under the current rules (a file may appear at a folder segment later) |
+| `extension_change_confirmed` | evidence | M R, E | |
+| `no_conflicting_intent_same_location` | evidence | M R, E; on a REMOVAL only when an organize item exists | fails on both items; neither preferred |
+| `no_dependency_cycle` | collision | M R, E | swaps and rotations; evaluated before the collision check |
+| `destination_collision_absent` | collision | M R, E | reused, widened: a known occupant fails; intra-plan duplicates fail; the chain exception passes a destination whose only occupant is another item's source only if that vacator is evidence-clean (every other evidence-stage hard precondition passes -- the executor excluded); "free" needs complete coverage of the destination folder chain |
+| `companions_travel_together` | collision | M R, E | a sidecar found by name travels with its primary as its own decision; a shared-stem sidecar is ambiguous (unknown); a blocked member blocks the unit |
+| `source_not_hardlinked` | integrity | M R, E (warning) | reused as a warning |
+| `destination_not_protected` | retention | M, E (warning) | moving INTO protection |
+| `same_volume` | environment | M, E and L | `unsupported` across volumes (never fail); unknown through a recorded link |
+| `organize_executor_supported` | environment | M R, E | always `unsupported` today |
+| `keeper_not_moving` | retention | REMOVE, E; only when its keeper's location has an organize item | |
+| `no_organize_metadata_overlap` | evidence | M R and METADATA, E (warning); only when both exist | the S2 pattern; a new key |
+| live: `source_identity_matches`, `companions_present_unchanged`, `destination_available`, `free_space_sufficient` (M), `filesystem_capability_supported`, `_LIVE_COMMON` | | M R, L | declared for Phase 4, never evaluated |
+
+**The override is scoped by action** (`registry.override_scope`): `action_scope` is `removal` (stored with no member --
+every row before B20, byte for byte; the removal domain key unchanged) or `organize` (stored with it; domain key
+suffixed `:organize`). `resolve.location_protection(..., scope=)` lifts only the matching scope.
+
+**Occupancy and coverage** (`organize.py`, over `scopes.ScopeFacts`, the same sources `required_coverage_complete` reads):
+a destination is free only where the latest walk saw the destination folder and every ancestor to the root -- no
+inaccessible entry, no skipped link, no truncated list, no unverified entry inside; a case-only or normalization-only
+self-rename is not a collision with itself, a different file at that `path_key` is. Destinations are stored byte-exact;
+only folder spelling is canonicalised to an existing folder, two existing spellings are refused.
+
+**Material change** is `organize.binding_drift`; the destination root's walk run is recorded in the plan item and compared
+by nothing (a new walk run alone obsoletes no locked plan: obsolescence compares the facts the item judged).
+
+**Versions.** `REGISTRY_VERSION` `/3` (the digest changes; the payload schema `/1` does not); `EVALUATOR_VERSION` `/3`.
+A revision locked under B19 still verifies and is not obsoleted.
+
 ### The rule registry as JSON Schema (B19)
 
 `Phase3\registry.py` stays the source. `Phase3\registry_schema.py` generates

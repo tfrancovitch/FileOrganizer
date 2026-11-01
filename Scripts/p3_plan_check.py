@@ -119,10 +119,15 @@ def test_vocabulary():
           not any("hardlink" in k or "link" in k for k in REG.ACTION_KINDS))
     check("R7 §37's twenty-two precondition keys, each with a class from R7 §15; one Build 8 addition (no_retaining_decision), "
           "three Build 9 additions (writer_supported and the two integrity blockers), two B17 additions (the encryption "
-          "blocker and the removal / metadata overlap warning), one B19 addition (no_dangling_protection)",
+          "blocker and the removal / metadata overlap warning), one B19 addition (no_dangling_protection), and B20's "
+          "fourteen for move / rename items (synthesis 3.1)",
           set(R7_PRECONDITIONS) <= set(REG.PRECONDITIONS) and set(REG.PRECONDITIONS) - set(R7_PRECONDITIONS) == {
               "no_retaining_decision", "writer_supported", "source_not_signed_or_certified", "source_not_hardlinked",
-              "source_not_encrypted", "no_removal_metadata_overlap", "no_dangling_protection"}
+              "source_not_encrypted", "no_removal_metadata_overlap", "no_dangling_protection",
+              "source_identity_known", "no_conflicting_intent_same_location", "destination_within_project_root",
+              "destination_name_valid", "extension_change_confirmed", "same_volume", "no_dependency_cycle",
+              "companions_travel_together", "destination_not_protected", "organize_executor_supported",
+              "source_identity_matches", "companions_present_unchanged", "keeper_not_moving", "no_organize_metadata_overlap"}
           and set(REG.PRECONDITIONS.values()) <= set(REG.PRECONDITION_CLASSES))
     check("severities and results are R7 §16's", REG.SEVERITIES == ("hard", "warning", "informational")
           and REG.RESULTS == ("pass", "fail", "unknown", "not_applicable", "unsupported"))
@@ -335,11 +340,25 @@ def test_other_items_and_effects():
     check("an update_source_metadata item cannot be built by hand (Build 9: only from a desired-metadata decision; "
           "p3_metadata_check proves those plan, and stay unsupported)",
           refused(lambda: PL.logical_item(ev, REG.ACTION_METADATA, "3", {"field": "creator", "value": "X"}, ["D9"])))
-    mv = PL.logical_item(ev, REG.ACTION_MOVE, "3", {"destination": r"C:\D\a.pdf"}, ["D9"])
-    mv2 = PL.logical_item(ev, REG.ACTION_MOVE, "3", {"destination": r"C:\New\b.pdf"}, ["D9"])
-    check("a move onto a path the evidence already holds fails destination_collision_absent; a free destination passes",
-          mv.state == BLOCKED and res(mv, "destination_collision_absent") == "fail" and mv2.state == READY)
-    rn = PL.logical_item(ev, REG.ACTION_RENAME, "3", {"destination": r"C:\E\c.pdf"}, [])
+    # B20: a move / rename item is previewed against the walk (ScopeFacts); its effect has the B20 shape
+    # and NO item is ever ready -- the executor is unsupported until Phase 4 (P3-A136).
+    from Phase3.scopes import ScopeFacts, RootState
+    from Phase3.model import path_key as _pk
+
+    def fx(frm, to):
+        return {"from_path": {"root_key": "Primary", "path": frm}, "to_path": {"root_key": "Primary", "path": to},
+                "collision_policy": "FAIL_ON_CONFLICT", "companions": [], "creates_folders": []}
+    held = sorted(("Primary\\" + _pk(l.path[3:]), l.path) for l in L)
+    ev.scopes = ScopeFacts(roots={"Primary": RootState("Primary", "C:", "scanned")}, present=[k for k, _p in held],
+                           present_paths=[p for _k, p in held], volumes={"Primary": ["V1"]}, root_ids={1: "Primary"})
+    mv = PL.logical_item(ev, REG.ACTION_MOVE, "3", fx(r"E\b.pdf", r"D\a.pdf"), ["D9"])
+    mv2 = PL.logical_item(ev, REG.ACTION_MOVE, "3", fx(r"E\b.pdf", r"New\b.pdf"), ["D9"])
+    check("a move onto a path the evidence already holds fails destination_collision_absent; a free destination passes it -- "
+          "and is still not ready: the executor is unsupported (B20)",
+          mv.state == BLOCKED and res(mv, "destination_collision_absent") == "fail"
+          and res(mv2, "destination_collision_absent") == "pass" and mv2.state == UNSUPPORTED
+          and mv2.blocked_reason == "organize_executor_supported")
+    rn = PL.logical_item(ev, REG.ACTION_RENAME, "3", fx(r"E\b.pdf", r"E\c.pdf"), [])
     check("an item no decision asks for: decision_current fails -- the Plan Builder never invents intent",
           rn.state == BLOCKED and res(rn, "decision_current") == "fail")
     check("no_op_preserve cannot be built by hand (only from decisions)", refused(lambda: PL.logical_item(ev, PRESERVE, "1", {})))

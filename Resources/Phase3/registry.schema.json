@@ -44,6 +44,12 @@
     },
     {
      "$ref": "#/$defs/decision.leave_source_metadata_unchanged"
+    },
+    {
+     "$ref": "#/$defs/decision.desired_location"
+    },
+    {
+     "$ref": "#/$defs/decision.desired_name"
     }
    ],
    "properties": {
@@ -62,7 +68,9 @@
       "project_metadata_set",
       "desired_source_metadata_set",
       "desired_source_metadata_clear",
-      "leave_source_metadata_unchanged"
+      "leave_source_metadata_unchanged",
+      "desired_location",
+      "desired_name"
      ]
     }
    },
@@ -141,6 +149,76 @@
    "x-fo-affects-reclaim": false,
    "x-fo-confirmation": "none",
    "x-fo-conflict-domain": "review_deferral",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.desired_location": {
+   "description": "Where you want this file to be: a literal folder, relative to a project source root. Stored in the project; never moves the file. Plans as Move location; every such item stays blocked until Phase 4 certifies an executor.",
+   "properties": {
+    "decision_kind": {
+     "const": "desired_location"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.desired_location"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Desired location",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "organize_location",
+   "x-fo-requires-evidence": true,
+   "x-fo-resolution-class": "none",
+   "x-fo-supersedable": true
+  },
+  "decision.desired_name": {
+   "description": "What you want this file to be called: a literal Windows file name. Stored in the project; never moves the file. Plans as Rename location (or as the name of a Move), blocked until Phase 4.",
+   "properties": {
+    "decision_kind": {
+     "const": "desired_name"
+    },
+    "origin_kind": {
+     "enum": [
+      "explicit_human",
+      "bulk_explicit_human"
+     ]
+    },
+    "target_kind": {
+     "enum": [
+      "file_location"
+     ]
+    },
+    "value": {
+     "$ref": "#/$defs/value.desired_name"
+    }
+   },
+   "required": [
+    "decision_kind",
+    "target_kind",
+    "value"
+   ],
+   "title": "Desired name",
+   "type": "object",
+   "x-fo-affects-reclaim": false,
+   "x-fo-confirmation": "none",
+   "x-fo-conflict-domain": "organize_name",
    "x-fo-requires-evidence": true,
    "x-fo-resolution-class": "none",
    "x-fo-supersedable": true
@@ -653,6 +731,23 @@
    "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]",
    "type": "string"
   },
+  "path.folder": {
+   "description": "A folder relative to a project source root: legal Windows names joined by a backslash, each at most 255 UTF-16 code units; '' is the root itself. No drive letter, no leading separator, no '.' or '..'.",
+   "pattern": "^(?:(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9\\u00b9\\u00b2\\u00b3]|[Ll][Pp][Tt][1-9\\u00b9\\u00b2\\u00b3]) *(?:[.]|$))[^<>:\"/\\\\|?*\\u0000-\\u001f]*[^<>:\"/\\\\|?*\\u0000-\\u001f .](?:[\\\\](?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9\\u00b9\\u00b2\\u00b3]|[Ll][Pp][Tt][1-9\\u00b9\\u00b2\\u00b3]) *(?:[.]|$))[^<>:\"/\\\\|?*\\u0000-\\u001f]*[^<>:\"/\\\\|?*\\u0000-\\u001f .])*)?$",
+   "type": "string",
+   "x-fo-max-utf16-units": {
+    "max": 255,
+    "split": "\\"
+   }
+  },
+  "path.name": {
+   "description": "One legal Windows file name, at most 255 UTF-16 code units (never '.' or '..').",
+   "pattern": "^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9\\u00b9\\u00b2\\u00b3]|[Ll][Pp][Tt][1-9\\u00b9\\u00b2\\u00b3]) *(?:[.]|$))[^<>:\"/\\\\|?*\\u0000-\\u001f]*[^<>:\"/\\\\|?*\\u0000-\\u001f .]$",
+   "type": "string",
+   "x-fo-max-utf16-units": {
+    "max": 255
+   }
+  },
   "policy.avoid_folder_subtree": {
    "description": "Locations in the folder subtree rank below otherwise equivalent candidates.",
    "properties": {
@@ -908,6 +1003,49 @@
    },
    "type": "string"
   },
+  "value.desired_location": {
+   "additionalProperties": false,
+   "description": "A literal destination (P3-A126): a project source root's id and a root-relative folder, byte-exact; a collision is never resolved silently (on_collision is 'fail', P3-A134). That the root is a current source root, that no segment is an existing file and the spelling of an existing folder are the store's, from the evidence.",
+   "properties": {
+    "destination_folder": {
+     "$ref": "#/$defs/path.folder"
+    },
+    "destination_root_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "on_collision": {
+     "const": "fail"
+    }
+   },
+   "required": [
+    "destination_root_id",
+    "destination_folder",
+    "on_collision"
+   ],
+   "type": "object"
+  },
+  "value.desired_name": {
+   "additionalProperties": false,
+   "description": "A literal file name (P3-A126), refused at record time when Windows cannot hold it (P3-A142). An extension change needs extension_change_confirmed = true -- checked by the store against the observed name.",
+   "properties": {
+    "extension_change_confirmed": {
+     "type": "boolean"
+    },
+    "name": {
+     "$ref": "#/$defs/path.name"
+    },
+    "on_collision": {
+     "const": "fail"
+    }
+   },
+   "required": [
+    "name",
+    "on_collision",
+    "extension_change_confirmed"
+   ],
+   "type": "object"
+  },
   "value.flag": {
    "const": true,
    "description": "The value true, and nothing else."
@@ -947,8 +1085,14 @@
    }
   },
   "value.override": {
-   "description": "The protection policy (and the version) this override defeats.",
+   "description": "The protection policy (and the version) this override defeats, for one action (B20, P3-A144): action_scope 'removal' (the default; a removal scope is stored with no member, as every row before B20 is) or 'organize'.",
    "properties": {
+    "action_scope": {
+     "enum": [
+      "removal",
+      "organize"
+     ]
+    },
     "policy_id": {
      "$ref": "#/$defs/id"
     },
@@ -1110,7 +1254,7 @@
    ]
   }
  },
- "$id": "urn:fileorganizer:p3:registry:2",
+ "$id": "urn:fileorganizer:p3:registry:3",
  "$schema": "https://json-schema.org/draft/2020-12/schema",
  "description": "The decision kinds and policy kinds Phase 3 records, as rule definitions: what each may target and the shape of its value, scope and effect. Generated from Scripts\\Phase3\\registry.py by Scripts\\Phase3\\registry_schema.py -- do not edit. An instance is one recorded decision or policy version; checks that need the evidence (group or pair membership, a question's field, the policy an override names) are the store's, not this schema's.",
  "oneOf": [
@@ -1122,5 +1266,5 @@
   }
  ],
  "title": "The File Organizer -- Phase 3 rule registry",
- "version": "fileorganizer.p3.registry/2"
+ "version": "fileorganizer.p3.registry/3"
 }

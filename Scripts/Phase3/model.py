@@ -79,6 +79,10 @@ class Location:
     hash_current: bool = True       # its fingerprint (identity or verdict) rests on its current observation
     cloud_only: bool = False        # a placeholder the product never opens
     in_current_group: bool = True   # a member of a current exact-duplicate group
+    # B20 -- what organizing intent reads (optional: a hand-built model may omit them)
+    rel_path: str = ""              # the root-relative path as stored, byte-exact
+    cloud_known: bool = True        # file_state.is_offline_or_cloud was recorded (False: nobody can say)
+    hard_links: int | None = None   # file_state.hard_link_count
 
     @property
     def path_key(self) -> str:
@@ -252,6 +256,15 @@ class MetadataEvidence:
     events: list = field(default_factory=list)          # B17: review events on metadata questions (deferrals, restores)
 
 
+@dataclass
+class OrganizeEvidence:
+    """B20's slice of the model: the organize decisions (desired_location,
+    desired_name), kept apart from `Evidence.decisions` exactly as the metadata
+    decisions are -- the duplicate and pair router, the resolver and bulk
+    previews never see them (a destination is not retention intent)."""
+    decisions: list = field(default_factory=list)       # every organize Decision row, withdrawn and superseded included
+
+
 @dataclass(frozen=True)
 class PolicyVersion:
     policy_version_id: str
@@ -276,6 +289,7 @@ class Evidence:
     batches: list = field(default_factory=list)     # Batch records, when a caller loads them (the fixture check does)
     pairs: dict = field(default_factory=dict)       # pair_id -> VisualPair (Build 5): current pairs, plus any a decision or event names
     metadata: MetadataEvidence = field(default_factory=MetadataEvidence)   # Build 9
+    organize: OrganizeEvidence = field(default_factory=OrganizeEvidence)   # B20
     #: (B19) scopes.ScopeFacts: what the latest scan observed, by path -- the
     #: policies' scopes are judged against it (present / unavailable /
     #: dangling). None when nothing was loaded (no active policy, or a

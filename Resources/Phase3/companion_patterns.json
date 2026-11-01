@@ -1,0 +1,33 @@
+{
+ "schema": "fileorganizer.p3.companion-patterns/1",
+ "version": 1,
+ "note": "Companions are found by NAME BASIS in the same folder, from stored paths only -- no file is opened. A pattern enters this list only with a cited basis (R12 section 11.1; R8 section 13: safely identifiable relationships only). Takeout .json, Apple .aae and video .thm are EXCLUDED: their naming was not verified (open question O-5). Document companions (an HTML page and its _files folder, CAD references) are not attempted (open question O-4).",
+ "raw_extensions": {
+  "basis": "The product's own raw_image file family (Phase3.registry.FILE_FAMILIES), i.e. the camera RAW formats RawImageAnalysis reads; Adobe Camera Raw keeps a sidecar beside a RAW file that cannot hold metadata itself (source S27). DNG is included although a DNG can embed its settings: a sidecar beside one is still a sidecar.",
+  "extensions": [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".srw", ".pef"]
+ },
+ "patterns": [
+  {
+   "id": "adobe_xmp",
+   "sidecar": "<stem>.xmp",
+   "primary": "a camera RAW file in the same folder with the same stem (name without its last extension), compared through path_key",
+   "ambiguous_when": "two or more non-sidecar files in the folder share that stem (RAW + JPEG): the sidecar may belong to either, so it is never guessed (companions_travel_together is unknown for every primary that shares it)",
+   "renamed_as": "<new primary stem>.xmp",
+   "basis": "Adobe Camera Raw settings: the sidecar has the same base name plus .xmp, and must be renamed, moved and deleted together with the raw file (https://helpx.adobe.com/in/camera-raw/desktop/get-started/overview-and-setup/camera-raw-settings.html; R12 source S27)"
+  },
+  {
+   "id": "darktable_xmp",
+   "sidecar": "<name>.<ext>.xmp",
+   "primary": "the file <name>.<ext> in the same folder",
+   "renamed_as": "<new primary name>.xmp",
+   "basis": "darktable user manual, sidecar files: sidecars are named <basename>.<extension>.xmp (https://docs.darktable.org/usermanual/development/en/overview/sidecar-files/sidecar/; R12 source S28)"
+  },
+  {
+   "id": "darktable_version_xmp",
+   "sidecar": "<name>_<n>.<ext>.xmp",
+   "primary": "the file <name>.<ext> in the same folder -- unless a file named <name>_<n>.<ext> exists, in which case the sidecar is that file's own darktable_xmp",
+   "renamed_as": "<new primary stem>_<n><new primary extension>.xmp",
+   "basis": "darktable user manual, sidecar files: duplicates are named <basename>_<n>.<extension>.xmp (R12 source S28)"
+  }
+ ]
+}

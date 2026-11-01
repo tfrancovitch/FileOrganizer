@@ -28,16 +28,16 @@ from Phase2.derived import ensure_duplicate_projection
 
 from . import EVIDENCE_BINDING_SCHEMA
 from .model import (Evidence, Location, Group, Decision, PolicyVersion, ReviewEvent, RootCoverage, VisualPair, path_key,
-                    MetadataEvidence, MetadataQuestion, CapabilityRecord)
+                    MetadataEvidence, MetadataQuestion, CapabilityRecord, OrganizeEvidence)
 from .registry import (LOCATION, GROUP, VISUAL_PAIR, METADATA_QUESTION, METADATA_DECISION_KINDS, METADATA_FIELDS,
-                       METADATA_READ_MAP, file_family)
+                       METADATA_READ_MAP, ORGANIZE_DECISION_KINDS, file_family)
 from .metadata import observe, capability_for
 
 _MEMBER_SQL = """
 SELECT m.file_path_id, m.content_id, m.source_root_id, m.size_bytes, m.physical_key,
        fp.relative_path, fp.path_sort_key,
        sr.root_path, sr.root_path_key, sr.root_ordinal,
-       fs.state, fs.current_observation_id, fs.hash_run_id, fs.is_offline_or_cloud,
+       fs.state, fs.current_observation_id, fs.hash_run_id, fs.is_offline_or_cloud, fs.hard_link_count,
        1 AS hash_current, 1 AS in_current_group
   FROM p2_current_duplicate_member m
   JOIN file_path fp ON fp.file_path_id = m.file_path_id
@@ -60,7 +60,7 @@ SELECT fs.file_path_id, fs.content_id, fs.source_root_id, fs.size_bytes,
             THEN CAST(fs.volume_serial AS TEXT)||':'||CAST(fs.file_index AS TEXT) END AS physical_key,
        fp.relative_path, fp.path_sort_key,
        sr.root_path, sr.root_path_key, sr.root_ordinal,
-       fs.state, fs.current_observation_id, fs.hash_run_id, fs.is_offline_or_cloud,
+       fs.state, fs.current_observation_id, fs.hash_run_id, fs.is_offline_or_cloud, fs.hard_link_count,
        CASE WHEN fs.content_id IS NOT NULL AND fs.content_observation_id = fs.current_observation_id THEN 1
             WHEN fs.hash_observation_id = fs.current_observation_id THEN 1
             WHEN fs.content_id IS NULL AND fs.hash_observation_id IS NULL THEN 1
@@ -94,7 +94,10 @@ def _location(row) -> Location:
         sort_key=(int(row["root_ordinal"] or 0), str(row["path_sort_key"] or ""), int(row["file_path_id"])),
         hash_current=bool(row["hash_current"]),
         cloud_only=bool(row["is_offline_or_cloud"]),
-        in_current_group=bool(row["in_current_group"]))
+        in_current_group=bool(row["in_current_group"]),
+        rel_path=str(row["relative_path"]),
+        cloud_known=row["is_offline_or_cloud"] is not None,
+        hard_links=int(row["hard_link_count"]) if row["hard_link_count"] is not None else None)
 
 
 def _bound_location_ids(decisions, events):
@@ -127,27 +130,38 @@ def _bound_location_ids(decisions, events):
 #: duplicate and pair model never reads them (a note on a file is not a Keep),
 #: and the metadata slice (`load_metadata`) reads nothing else.
 _METADATA_KINDS_SQL = "(" + ",".join(f"'{k}'" for k in METADATA_DECISION_KINDS) + ")"
+#: (B20) The organize decision kinds are a third class, kept apart the same way: a destination or a
+#: new name is not retention intent, so the duplicate and pair model never reads them.
+_ORGANIZE_KINDS_SQL = "(" + ",".join(f"'{k}'" for k in ORGANIZE_DECISION_KINDS) + ")"
 
 
-def _kind_filter(metadata):
+def _kind_filter(metadata, organize=False):
+    """Which decision kinds a read covers. organize=True: the organize kinds only. Otherwise metadata
+    False (the default) is the retention and review kinds -- neither metadata nor organize; True the
+    metadata kinds only; None every row."""
+    if organize:
+        return f" AND d.decision_kind IN {_ORGANIZE_KINDS_SQL}"
     if metadata is None:
         return ""
-    return f" AND d.decision_kind {'IN' if metadata else 'NOT IN'} {_METADATA_KINDS_SQL}"
+    if metadata:
+        return f" AND d.decision_kind IN {_METADATA_KINDS_SQL}"
+    return f" AND d.decision_kind NOT IN {_METADATA_KINDS_SQL} AND d.decision_kind NOT IN {_ORGANIZE_KINDS_SQL}"
 
 
-def load_decisions(conn, where="", args=(), metadata=False) -> list:
+def load_decisions(conn, where="", args=(), metadata=False, organize=False) -> list:
     """Every decision row, oldest first -- or (B14) those a further condition
     on `d` picks: newer than a watermark (`load_decisions_after`), or on one
     target (`store.active_for`). One parser, so a row read either way is the
     same Decision. `metadata` (Build 9): False (the default) reads the
     retention and review decisions only, True the metadata decisions only,
-    None every row."""
+    None every row. B20: `organize=True` reads the organize
+    decisions (desired_location, desired_name) only -- the retention default excludes them."""
     rows = conn.execute(
         "SELECT d.decision_id, d.operation_id, d.target_kind, d.target_ref, d.decision_kind, d.value_json, "
         "       d.origin_kind, d.supersedes_decision_id, d.evidence_binding_json, w.withdrawal_id, o.occurred_utc "
         "  FROM p3_decision d LEFT JOIN p3_decision_withdrawal w ON w.decision_id = d.decision_id "
         "  JOIN p3_operation o ON o.operation_id = d.operation_id "
-        " WHERE d.project_id = 1" + _kind_filter(metadata) + (f" AND ({where})" if where else "")
+        " WHERE d.project_id = 1" + _kind_filter(metadata, organize) + (f" AND ({where})" if where else "")
         + " ORDER BY d.decision_id", tuple(args)).fetchall()
     out = []
     for r in rows:
@@ -209,14 +223,14 @@ def load_decisions_after(conn, after) -> list:
     return load_decisions(conn, "d.decision_id > ?", (int(after),))
 
 
-def withdrawals_after(conn, after, metadata=False) -> list:
+def withdrawals_after(conn, after, metadata=False, organize=False) -> list:
     """(withdrawal_id, decision_id) for each withdrawal row newer than `after`
     -- of the decisions `load_decisions` reads by default (Build 9: not the
     metadata decisions, which the model it refreshes never held); B18:
     `metadata=True` for the metadata decisions only (the queue's cache)."""
     return [(int(r[0]), str(r[1])) for r in conn.execute(
         "SELECT w.withdrawal_id, w.decision_id FROM p3_decision_withdrawal w JOIN p3_decision d ON d.decision_id = w.decision_id "
-        " WHERE w.withdrawal_id > ?" + _kind_filter(metadata) + " ORDER BY w.withdrawal_id",
+        " WHERE w.withdrawal_id > ?" + _kind_filter(metadata, organize) + " ORDER BY w.withdrawal_id",
         (int(after),))]
 
 
@@ -370,13 +384,18 @@ def _load_scope_facts(conn):
             "SELECT fs.source_root_id, fs.state, fs.volume_serial, fs.file_index, fp.relative_path FROM file_state fs "
             "  JOIN file_path fp ON fp.file_path_id = fs.file_path_id").fetchall()
         events = []
+        truncated = []
         if facts.run_id is not None:
             events = conn.execute(
-                "SELECT e.source_root_id, e.relative_path FROM scan_path_event e JOIN inventory_scan s "
+                "SELECT e.source_root_id, e.relative_path, e.event_kind FROM scan_path_event e JOIN inventory_scan s "
                 "  ON s.inventory_scan_id = e.inventory_scan_id WHERE s.run_id = ?", (facts.run_id,)).fetchall()
+            truncated = conn.execute("SELECT source_root_id FROM inventory_scan WHERE project_id = 1 AND run_id = ? "
+                                     "AND inaccessible_truncated = 1", (facts.run_id,)).fetchall()
     except sqlite3.OperationalError:
         return facts
     scanned = {rid for rid, st in states.items() if st.state == ROOT_SCANNED}
+    facts.root_ids = {rid: st.root_key for rid, st in states.items()}
+    pairs, volumes = [], {}
     for rid, state, vs, fi, rel in rows:
         rid = int(rid)
         if rid not in paths:
@@ -385,19 +404,34 @@ def _load_scope_facts(conn):
         key = path_key(full)
         phys = f"{vs}:{fi}" if vs is not None and fi is not None else None
         if rid in scanned and state == "present":
-            facts.present.append(key)
+            pairs.append((key, full))
             if phys:
                 facts.identities.setdefault(phys, []).append((key, full))
+            if vs is not None:
+                volumes.setdefault(states[rid].root_key, set()).add(str(vs))
         elif rid in scanned and state in ("unverified", "inaccessible"):
             facts.unknown.append(key)
+            if state == "inaccessible":
+                facts.inaccessible.append(key)
         elif phys:
             facts.lost.append((key, phys))
-    for rid, rel in events:
+    for rid, rel, kind in events:
         if int(rid) in scanned and int(rid) in paths:
-            facts.folders.append(path_key(full_path(paths[int(rid)], rel)))
-    facts.present.sort()
+            k = path_key(full_path(paths[int(rid)], rel))
+            facts.folders.append(k)
+            if kind == "skipped_reparse_directory":
+                facts.reparse.append(k)
+    for (rid,) in truncated:
+        if int(rid) in scanned and int(rid) in states:
+            facts.truncated.add(states[int(rid)].root_key)
+    pairs.sort()
+    facts.present = [k for k, _f in pairs]
+    facts.present_paths = [f for _k, f in pairs]
+    facts.volumes = {k: sorted(v) for k, v in volumes.items()}
     facts.unknown.sort()
     facts.folders.sort()
+    facts.inaccessible.sort()
+    facts.reparse.sort()
     return facts
 
 
@@ -510,6 +544,7 @@ def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
     groups = {cid: Group(cid, cid, tuple(lids)) for cid, lids in members.items()}
     decisions = load_decisions(conn)
     events = load_events(conn)
+    organize = load_organize(conn) if not content_ids else OrganizeEvidence()
     want_pairs, pairs = pairs, {}
     if want_pairs and not content_ids:
         named = {d.target_ref for d in decisions if d.target_kind == VISUAL_PAIR}
@@ -526,6 +561,8 @@ def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
     metadata = load_metadata(conn) if not content_ids else MetadataEvidence()
     wanted.update(q.location_id for q in metadata.questions.values())
     wanted.update(str(d.target_ref) for d in metadata.decisions if d.target_kind == LOCATION and not d.withdrawn)
+    # B20: every location an organize decision names (it may be in no duplicate group at all).
+    wanted.update(str(d.target_ref) for d in organize.decisions if not d.withdrawn)
     wanted -= set(locations)
     if wanted and not content_ids:
         ids = sorted(int(i) for i in wanted if str(i).isdigit())
@@ -539,10 +576,18 @@ def load_evidence(conn, content_ids=None, pairs=True) -> Evidence:
     ev = Evidence(locations, groups, decisions, policies, events, load_roots(conn), utc_now())
     ev.pairs = pairs
     ev.metadata = metadata
+    ev.organize = organize
     # B19: with any active policy, what the latest scan observed -- its scope
     # is judged against it (present / unavailable / dangling, scopes.py).
-    ev.scopes = load_scope_facts(conn) if any(p.active for p in policies) else None
+    # B20: and with any organize decision, which judges a destination against the same walk.
+    from .model import active_decisions
+    ev.scopes = (load_scope_facts(conn) if (any(p.active for p in policies) or active_decisions(organize.decisions)) else None)
     return ev
+
+
+def load_organize(conn) -> OrganizeEvidence:
+    """(B20) The organize decisions, apart from `Evidence.decisions` -- the metadata pattern."""
+    return OrganizeEvidence(load_decisions(conn, organize=True))
 
 
 # -- Build 9: metadata questions, read from Phase 1/2 evidence ------------------------------------
@@ -897,6 +942,33 @@ def question_binding_from(q) -> dict:
 def group_members(conn, content_id):
     """The current members of one group, as Locations in display order."""
     return [_location(r) for r in _member_rows(conn, " WHERE m.content_id = ?", (int(content_id),))]
+
+
+def location_any(conn, file_path_id):
+    """(B20) One file location as a Location whether or not it is in a duplicate group
+    (a file given a destination need not be a duplicate), or None when there is no such file."""
+    row = conn.execute(_STATE_SQL + " WHERE fs.file_path_id = ?", (int(file_path_id),)).fetchone()
+    return _location(row) if row is not None else None
+
+
+def organize_binding(conn, file_path_id, destination_root_id=None) -> dict:
+    """The evidence an organize decision rests on (R12 5.1/5.4): the location binding
+    (observation, content identity) plus the observed root-relative path and name, the physical
+    identity (volume serial + file index), and -- for a desired_location -- the destination
+    root's id and key. NOT the destination root's walk run: a rescan of the destination does not
+    change whether the person still wants the move (RC 10); the plan item records the run."""
+    b = location_binding(conn, file_path_id)
+    loc = location_any(conn, file_path_id)
+    ob = {"path": loc.rel_path if loc is not None else None,
+          "name": loc.rel_path.rsplit("\\", 1)[-1] if loc is not None else None,
+          "physical_id": loc.physical_id if loc is not None else None}
+    if destination_root_id is not None:
+        row = conn.execute("SELECT root_path, root_path_key FROM source_root WHERE source_root_id = ?",
+                           (int(destination_root_id),)).fetchone()
+        ob["destination_root_id"] = int(destination_root_id)
+        ob["destination_root_key"] = (row["root_path_key"] or path_key(row["root_path"])) if row is not None else None
+    b["organize"] = ob
+    return b
 
 
 def location_of(conn, file_path_id):

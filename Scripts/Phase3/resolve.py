@@ -43,7 +43,7 @@ RESOLVER_VERSION = "fileorganizer.p3.resolver/1"
 from dataclasses import dataclass, field, asdict
 
 from .model import Evidence, Location, Group, active_decisions, active_policies, under, path_key
-from .registry import LOCATION, GROUP, POLICY_KINDS
+from .registry import LOCATION, GROUP, POLICY_KINDS, override_scope
 
 # -- per-location statuses ------------------------------------------------------
 
@@ -241,7 +241,7 @@ def _index_decisions(decisions):
     return index
 
 
-def location_protection(policies, index, loc: Location):
+def location_protection(policies, index, loc: Location, scope="removal"):
     """Step 1 for one location: (covering, in_force, overridden) -- the active
     protection policies that cover it, those still in force after the
     location's own override_protection decisions, and the (policy version,
@@ -252,6 +252,11 @@ def location_protection(policies, index, loc: Location):
     ldec = index.get((LOCATION, loc.location_id), {})
     overrides = {}
     for od in ldec.get("override_protection", []):
+        # B20 (P3-A144): an override lifts protection for ONE action. A removal-scope override
+        # (no action_scope member: every row before B20) never lets a move or rename through,
+        # an organize-scope one never lets a removal through.
+        if override_scope(od.value) != scope:
+            continue
         overrides[str(od.value.get("policy_version_id"))] = od
     in_force = [p for p in covering if p.policy_version_id not in overrides]
     overridden = tuple(sorted((p.policy_version_id, overrides[p.policy_version_id].decision_id)

@@ -179,11 +179,11 @@ def routed(locations, decisions=(), policies=(), events=(), roots=None, now=NOW)
 def test_registry():
     section("1. The decision-kind registry is a gate")
     kinds = set(REG.DECISION_KINDS)
-    check("fourteen decision kinds: the research's six for exact duplicates, Build 5's four for visual pairs, "
-          "Build 9's four for metadata", kinds == {
+    check("sixteen decision kinds: the research's six for exact duplicates, Build 5's four for visual pairs, "
+          "Build 9's four for metadata, B20's two for organizing intent", kinds == {
         "must_keep_location", "keep_all_group", "canonical_location", "redundant_location", "defer_review", "override_protection",
         "equivalent_copy", "related_variant", "different", "keep_both", "project_metadata_set", "desired_source_metadata_set",
-        "desired_source_metadata_clear", "leave_source_metadata_unchanged"}, str(kinds))
+        "desired_source_metadata_clear", "leave_source_metadata_unchanged", "desired_location", "desired_name"}, str(kinds))
     check("five policy kinds", set(REG.POLICY_KINDS) == {
         "protect_source_root", "protect_folder_subtree", "prefer_source_root", "prefer_folder_subtree", "avoid_folder_subtree"})
     check("eight-step resolution order as the catalog names it", REG.RESOLUTION_ORDER == (
@@ -194,7 +194,7 @@ def test_registry():
     for k in REG.DECISION_KINDS.values():
         check(f"{k.key}: targets, value kind, class, domain, confirmation all declared",
               k.target_kinds and k.value_kind in ("flag", "location_ref", "override", "location_pair", "metadata_value",
-                                                  "project_metadata")
+                                                  "project_metadata", "desired_location", "desired_name")
               and (k.resolution_class in REG.RESOLUTION_ORDER or k.resolution_class == "none")
               and k.conflict_domain and k.confirmation in (REG.CONFIRM_NONE, REG.CONFIRM_EXPLICIT_OVERRIDE)
               and k.requires_evidence)
@@ -535,8 +535,8 @@ def test_project(tmp: Path):
     check("app_meta carries the Phase 3 contracts",
           conn.execute("SELECT value FROM app_meta WHERE key='phase3.decision_schema'").fetchone()[0] == "fileorganizer.p3.decisions/1"
           and conn.execute("SELECT value FROM app_meta WHERE key='phase3.bulk_schema'").fetchone()[0] == "fileorganizer.p3.bulk/1")
-    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B19', schema 16 everywhere",
-          fo_db.APP_VERSION == "B19" and __import__("Phase2").VERSION == "B19" and fo_db.APP_SCHEMA_VERSION == 16
+    check("one product version: fo_db.APP_VERSION == Phase2.VERSION == 'B20', schema 16 everywhere",
+          fo_db.APP_VERSION == "B20" and __import__("Phase2").VERSION == "B20" and fo_db.APP_SCHEMA_VERSION == 16
           and __import__("Phase2.core").core.REQUIRED_SCHEMA_VERSION == 16 and __import__("self_check").REQUIRED_SCHEMA_VERSION == 16)
 
     # -- migrating a schema-8 database ---------------------------------------
@@ -562,7 +562,7 @@ def test_project(tmp: Path):
     c9, _ = fo_db.open_project(str(old_dir), app_version=fo_db.APP_VERSION)
     check("a schema-8 project opens and migrates to 16", version8 == 8 and c9.execute("PRAGMA user_version").fetchone()[0] == 16)
     check("migrations 009 to 016 recorded with this build's version",
-          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12,13,14,15,16) ORDER BY version")] == ["B19"] * 8)
+          [r[0] for r in c9.execute("SELECT app_version FROM schema_migration WHERE version IN (9,10,11,12,13,14,15,16) ORDER BY version")] == ["B20"] * 8)
     same = all(c9.execute(f"SELECT * FROM {t}").fetchall() == rows for t, rows in snapshot8.items() if t != "schema_migration")
     check("every pre-existing row is untouched by the migration", same)
     check("a pre-migration backup was made", any(paths.backup_dir and Path(paths.backup_dir).glob("*")))
@@ -627,7 +627,7 @@ def test_project(tmp: Path):
     op = conn.execute("SELECT * FROM p3_operation WHERE operation_id=?", (d1["operation_id"],)).fetchone()
     check("the operation carries actor, actor kind, agent kind and version, session and command ids, time, note",
           op["actor_id"] == "tester" and op["actor_kind"] == "explicit_human" and op["agent_kind"] == "dashboard"
-          and op["agent_version"] == "B19" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
+          and op["agent_version"] == "B20" and op["session_id"] == "session:test" and op["command_id"].startswith("cmd:")
           and op["occurred_utc"].endswith("Z") and op["note"] == "the working copy")
     g = R.resolve_all(E.load_evidence(conn)).group(report_group)
     check("the gate in a real project: the protected backup mark is a conflict; Downloads is eligible only once the conflict clears",
@@ -1125,11 +1125,13 @@ def test_bulk_model():
     # -- the registry -------------------------------------------------------------
     check("the Decide page's five bulk actions (keep all, accept the recommendation, keep / mark under a folder, defer), "
           "Build 6's three over pairs, Build 7's three Survey Mode group controls (not offered by the Bulk dialogs), and "
-          "B18's Confirm over metadata questions",
+          "B18's Confirm over metadata questions, and B20's Move to a folder over file locations (the Files page's, never offered by "
+          "the Decide page or Similar Images)",
           set(REG.BULK_ACTIONS) == {"keep_all", "accept_recommendation", "keep_under", "redundant_under", "defer",
                                     "pairs_related_keep_both", "pairs_equivalent_keep_both", "pairs_different",
-                                    "pairs_keep_both", "pairs_equivalent_prefer", "pairs_defer", "metadata_confirm"}
-          and {a.key for a in REG.BULK_ACTIONS.values() if a.survey_only} == {"pairs_keep_both", "pairs_equivalent_prefer", "pairs_defer"})
+                                    "pairs_keep_both", "pairs_equivalent_prefer", "pairs_defer", "metadata_confirm", "organize_move"}
+          and {a.key for a in REG.BULK_ACTIONS.values() if a.survey_only} == {"pairs_keep_both", "pairs_equivalent_prefer", "pairs_defer",
+                                                                              "organize_move"})
     check("every bulk action names registered decision kinds and, where it has one, a registered policy twin",
           all(all(k in REG.DECISION_KINDS for k in a.decision_kinds) and (a.policy_twin is None or a.policy_twin in REG.POLICY_KINDS)
               and a.member_kind in (LOCATION, GROUP, REG.VISUAL_PAIR, REG.METADATA_QUESTION) for a in REG.BULK_ACTIONS.values()))
@@ -1802,6 +1804,10 @@ def test_gui(tmp: Path, before_corpus_fp, corpus):
             od._update()
             check("...still disabled with the box ticked but no reason", str(od.ok.cget("state")) == "disabled")
             od.reason.insert("1.0", "retiring the backup drive")
+            od._update()
+            check("B20: ...still disabled until it is said which action the override lifts -- and nothing is chosen for you",
+                  str(od.ok.cget("state")) == "disabled" and od.action.get() == "")
+            od.action.set("removal")
             od._update()
             check("...enabled once both are given", str(od.ok.cget("state")) == "normal")
             od._confirm()

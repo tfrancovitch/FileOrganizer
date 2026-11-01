@@ -48,7 +48,15 @@ from pathlib import Path
 from . import registry as REG
 
 DIALECT = "https://json-schema.org/draft/2020-12/schema"
-SCHEMA_ID = "urn:fileorganizer:p3:registry:2"
+SCHEMA_ID = "urn:fileorganizer:p3:registry:3"
+
+#: (B20) A name's length limit is in UTF-16 code units (Windows counts so: a character outside
+#: the BMP is two). A regular expression cannot say that in both ECMA-262 and Python's `re`, so the
+#: schema states it with this annotation keyword -- {"max": 255[, "split": "\\"]} (split: every
+#: part between separators is counted on its own). A validator that does not know the keyword
+#: ignores it (JSON Schema's rule for unknown keywords); the suite's validator implements it from
+#: this sentence alone, independently of registry.py.
+UTF16_KEYWORD = "x-fo-max-utf16-units"
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "Resources" / "Phase3" / "registry.schema.json"
 
 #: The characters Python's str.isspace() -- and so str.strip() -- treats as
@@ -91,6 +99,19 @@ _TIME = "(?:T(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?(?:Z|[+-](?:[01][0-9
 DATE_PATTERN = "^" + WS + "*(?!0000)(?:[0-9]{4}-" + _MONTH_DAY + "|" + _LEAP_DAY + ")" + _TIME + WS + "*$"
 
 
+#: (B20) One Windows name (a file name or a single folder segment): no reserved character
+#: < > : " / \\ | ? * and no control character 0-31; it does not end in a space or a period; and it
+#: is not a reserved device name (CON PRN AUX NUL COM1-9 LPT1-9, with the superscript digits) even
+#: when an extension follows (NUL.tar.gz) -- a POLICY CHOICE (Microsoft words it "avoid"). ASCII
+#: case-insensitivity is spelled out, so the pattern means one thing in ECMA-262 and in Python.
+_RESERVED = '<>:"/\\\\|?*\\u0000-\\u001f'
+_DEVICE = ("(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]"
+           "|[Cc][Oo][Mm][1-9\\u00b9\\u00b2\\u00b3]|[Ll][Pp][Tt][1-9\\u00b9\\u00b2\\u00b3])")
+COMPONENT = "(?!" + _DEVICE + " *(?:[.]|$))[^" + _RESERVED + "]*[^" + _RESERVED + " .]"
+NAME_PATTERN = "^" + COMPONENT + "$"
+FOLDER_PATTERN = "^(?:" + COMPONENT + "(?:[\\\\]" + COMPONENT + ")*)?$"
+
+
 def _ref(name):
     return {"$ref": f"#/$defs/{name}"}
 
@@ -126,9 +147,34 @@ def _defs() -> dict:
     d["value.location_pair"] = {"description": "The pair's two file locations, each its id as text; different.",
                                 "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": True,
                                 "items": _ref("trimmed_id")}
-    d["value.override"] = {"description": "The protection policy (and the version) this override defeats.",
+    d["value.override"] = {"description": "The protection policy (and the version) this override defeats, for one action "
+                                          "(B20, P3-A144): action_scope 'removal' (the default; a removal scope is stored "
+                                          "with no member, as every row before B20 is) or 'organize'.",
                            "type": "object", "required": ["policy_id", "policy_version_id"],
-                           "properties": {"policy_id": _ref("id"), "policy_version_id": _ref("id")}}
+                           "properties": {"policy_id": _ref("id"), "policy_version_id": _ref("id"),
+                                          "action_scope": {"enum": list(REG.OVERRIDE_SCOPES)}}}
+    d["path.name"] = {"description": "One legal Windows file name, at most 255 UTF-16 code units (never '.' or '..').",
+                      "type": "string", "pattern": NAME_PATTERN, UTF16_KEYWORD: {"max": 255}}
+    d["path.folder"] = {"description": "A folder relative to a project source root: legal Windows names joined by a "
+                                       "backslash, each at most 255 UTF-16 code units; '' is the root itself. No drive "
+                                       "letter, no leading separator, no '.' or '..'.",
+                        "type": "string", "pattern": FOLDER_PATTERN, UTF16_KEYWORD: {"max": 255, "split": "\\"}}
+    d["value.desired_location"] = {
+        "description": "A literal destination (P3-A126): a project source root's id and a root-relative folder, byte-exact; "
+                       "a collision is never resolved silently (on_collision is 'fail', P3-A134). That the root is a "
+                       "current source root, that no segment is an existing file and the spelling of an existing folder "
+                       "are the store's, from the evidence.",
+        "type": "object", "required": ["destination_root_id", "destination_folder", "on_collision"],
+        "additionalProperties": False,
+        "properties": {"destination_root_id": {"type": "integer", "minimum": 1},
+                       "destination_folder": _ref("path.folder"), "on_collision": {"const": "fail"}}}
+    d["value.desired_name"] = {
+        "description": "A literal file name (P3-A126), refused at record time when Windows cannot hold it (P3-A142). An "
+                       "extension change needs extension_change_confirmed = true -- checked by the store against the "
+                       "observed name.",
+        "type": "object", "required": ["name", "on_collision", "extension_change_confirmed"], "additionalProperties": False,
+        "properties": {"name": _ref("path.name"), "on_collision": {"const": "fail"},
+                       "extension_change_confirmed": {"type": "boolean"}}}
     d["value.metadata_value"] = {
         "description": "A desired value: anything but nothing -- clearing a field is its own decision "
                        "(desired_source_metadata_clear). Its shape per field: semantic_field.<field>.",

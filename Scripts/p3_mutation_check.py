@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""B18 (extended in B19): mutation sensitivity (task 1.2, M5) -- break each safety-critical rule
+r"""B18 (extended in B19, B20): mutation sensitivity (task 1.2, M5) -- break each safety-critical rule
 on purpose and show the suites fail.
 
 Each mutant is ONE exact text substitution in the product source, applied to a
@@ -61,6 +61,12 @@ SLICES = {
     "relabel.hand": ("p3_relabel_check", "test_hand_built", False),
     "schema.committed": ("p3_registry_schema_check", "test_committed", False),
     "schema.cross": ("p3_registry_schema_check", "test_cross_check", False),
+    "schema.capture": ("p3_registry_schema_check", "test_capture_guarded", True),
+    # B20
+    "org.registry": ("p3_organize_check", "test_registry", False),
+    "org.model": ("p3_organize_check", "test_model", False),
+    "org.real": ("p3_organize_check", "test_real", True),
+    "org.regression": ("p3_organize_check", "test_regression", True),
 }
 
 #: (id, rule, file under Scripts, old text, new text, slices)
@@ -207,6 +213,76 @@ MUTANTS = [
      "    if not all(isinstance(v, str) and v.strip() for v in ids):", ["schema.cross"]),
     ("M44", "W2 (B19): a bulk folder scope that matched more than one on-disk spelling warns",
      "Phase3/bulk.py", "    if len(found) < 2:\n        return None", "    if True:\n        return None", ["close.all"]),
+    # -- B20 task 0b: the schema suite's capture hook ------------------------------------------
+    ("M45", "The capture hook (B20 0b) buffers: it never writes while a suite's WriteGuard is active",
+     "p3_registry_schema_check.py", '        _CAPTURED.append(json.dumps(obj, sort_keys=True, default=str) + "\\n")',
+     '        open(out_path, "a", encoding="utf-8").write(json.dumps(obj, sort_keys=True, default=str) + "\\n")',
+     ["schema.capture"]),
+    # -- B20: organizing intent (P3.R12) ------------------------------------------------------
+    ("M46", "P3-A144 (B20): the resolver lifts protection only for an override of the same action (a removal override never lifts a move)",
+     "Phase3/resolve.py", "        if override_scope(od.value) != scope:\n            continue\n", "        if False:\n            continue\n",
+     ["org.model"]),
+    ("M47", "P3-A144 (B20): the organize gate honours organize-scoped overrides only, never any override",
+     "Phase3/plans.py", "        _cov, in_force, overridden = R.location_protection(ctx.policies, ctx.index, loc, scope=\"organize\")",
+     "        _cov, in_force, overridden = R.location_protection(ctx.policies, ctx.index, loc, scope=\"removal\")", ["org.model"]),
+    ("M48", "P3-A145 (B20): occupancy reads the walk's coverage of the destination folder chain",
+     "Phase3/organize.py", "        gap = coverage_gap(facts, root_key, folder or \"\")\n        if gap:", "        gap = coverage_gap(facts, root_key, folder or \"\")\n        if False:",
+     ["org.model"]),
+    ("M49", "P3-A145 (B20): an unscanned root's empty walk is not 'free' (coverage needs a usable walk)",
+     "Phase3/organize.py", "    if root.state != \"scanned\":\n        return root.detail", "    if False:\n        return root.detail", ["org.model"]),
+    ("M50", "Chain exception (B20): a dependent passes only when its vacator is evidence-clean",
+     "Phase3/plans.py", "                    ok, why = _clean(v)\n                    if not ok:\n                        r = (False, f\"item {v.item_no} cannot proceed ({why})\")",
+     "                    ok, why = _clean(v)\n                    if False:\n                        r = (False, f\"item {v.item_no} cannot proceed ({why})\")", ["org.model"]),
+    ("M51", "Chain exception (B20): the dependency on the vacator is declared in the item graph",
+     "Phase3/plans.py", "                it.depends_on = (v.item_no,) if v is not None else ()", "                it.depends_on = ()", ["org.model"]),
+    ("M52", "Cycles (B20): a swap or rotation is found and blocked (no_dependency_cycle)",
+     "Phase3/organize.py", "        if cur in seen:\n            members.update(seen[seen.index(cur):])", "        if False:\n            members.update(seen[seen.index(cur):])",
+     ["org.model"]),
+    ("M53", "P3-A131 (B20): removal and organize intent on one location block each other (no_conflicting_intent_same_location)",
+     "Phase3/plans.py", "        if lid in removal_items or lid in redundant:\n            who = (f\"item", "        if False:\n            who = (f\"item", ["org.real"]),
+    ("M54", "Conditional attachment (B20): keeper_not_moving is declared on a removal only through the conditional table (a revision "
+            "with no organize decision is B19's)", "Phase3/registry.py",
+     "        (\"source_local_if_required\", \"warning\", STAGE_EVIDENCE),\n    ) + _LIVE_COMMON + ((\"keeper_content_matches\", \"hard\", STAGE_LIVE),),",
+     "        (\"source_local_if_required\", \"warning\", STAGE_EVIDENCE),\n        (\"keeper_not_moving\", \"hard\", STAGE_EVIDENCE),\n    ) + _LIVE_COMMON + ((\"keeper_content_matches\", \"hard\", STAGE_LIVE),),",
+     ["org.regression"]),
+    ("M55", "RC 6 (B20): a keeper that is moved while its duplicate is removed blocks the removal (keeper_not_moving)",
+     "Phase3/plans.py", "        if keepers:\n            k = keepers[0]", "        if False:\n            k = keepers[0]", ["org.real"]),
+    ("M56", "RC 11 (B20): a dangling protection makes every organize item unknown (no_dangling_protection)",
+     "Phase3/plans.py", "    if ctx.dangling:\n        out[\"no_dangling_protection\"] = (", "    if False:\n        out[\"no_dangling_protection\"] = (", ["org.real"]),
+    ("M57", "RC 12 (B20): a sidecar shared by a RAW and a JPEG is ambiguous, never a first match",
+     "Phase3/organize.py", "            if len(group) == 1:", "            if len(group) >= 1:", ["org.model"]),
+    ("M58", "RC 12 (B20): a block on any family member blocks the whole action unit",
+     "Phase3/plans.py", "            ok, why = _clean(m, skip=(\"organize_executor_supported\", \"companions_travel_together\"))\n            if not ok:",
+     "            ok, why = _clean(m, skip=(\"organize_executor_supported\", \"companions_travel_together\"))\n            if False:", ["org.model"]),
+    ("M59", "RC 3 (B20): a cross-volume destination is UNSUPPORTED, never fail (so it reads unsupported_action, not blocked)",
+     "Phase3/plans.py", "            out[\"same_volume\"] = (\"unsupported\", \"the destination is on another volume", "            out[\"same_volume\"] = (\"fail\", \"the destination is on another volume",
+     ["org.model"]),
+    ("M60", "P3-A138 (B20): collisions are compared through the path rule, not by the bytes as typed",
+     "Phase3/organize.py", "    k = path_key(rel)\n    return f\"{root_key}\\\\{k}\" if k else root_key", "    k = str(rel)\n    return f\"{root_key}\\\\{k}\" if k else root_key",
+     ["org.model"]),
+    ("M61", "RC 13 (B20): a destination folder is canonicalised to the observed spelling of an existing folder",
+     "Phase3/organize.py", "                    changed.append((part, spellings[0]))\n                part = spellings[0]", "                    changed.append((part, spellings[0]))\n                pass",
+     ["org.model"]),
+    ("M62", "RC 14 (B20): a name or folder segment is at most 255 UTF-16 code units",
+     "Phase3/organize.py", "    if n > MAX_UNITS:", "    if False:", ["org.model"]),
+    ("M63", "P3-A142 (B20): a reserved device name is refused WITH an extension too (NUL.tar.gz)",
+     "Phase3/organize.py", "    stem = part.split(\".\", 1)[0].rstrip(\" \")", "    stem = part", ["org.model"]),
+    ("M64", "RC 14 (B20): a destination folder segment that is an existing file is refused",
+     "Phase3/organize.py", "            if file_hit:", "            if False:", ["org.real"]),
+    ("M65", "RC 9 (B20): organize decisions are loaded APART from ev.decisions (the router never sees them)",
+     "Phase3/evidence.py", "    return f\" AND d.decision_kind NOT IN {_METADATA_KINDS_SQL} AND d.decision_kind NOT IN {_ORGANIZE_KINDS_SQL}\"",
+     "    return f\" AND d.decision_kind NOT IN {_METADATA_KINDS_SQL}\"", ["org.real"]),
+    ("M66", "RC 10 (B20): the destination root's walk run is not a dependency a plan compares (a new walk alone obsoletes nothing)",
+     "Phase3/plans.py", "    where = f\"item {it.item_no}\"\n    for key, (result, detail, params) in fresh.items():",
+     "    where = f\"item {it.item_no}\"\n    if (it.evidence_binding.get(\"organize\") or {}).get(\"walk_run\") != ctx.facts.run_id:\n        add(\"evidence_changed\", where + \": the walk run moved\")\n    for key, (result, detail, params) in fresh.items():",
+     ["org.real"]),
+    ("M67", "P3-A136 (B20): organize_executor_supported is unsupported until Phase 4 certifies an executor (no item is ever ready)",
+     "Phase3/plans.py", "    out[\"organize_executor_supported\"] = (\"unsupported\",", "    out[\"organize_executor_supported\"] = (\"pass\",", ["org.model"]),
+    ("M68", "RC 7 (B20): a metadata item and an organize item on one location warn each other",
+     "Phase3/plans.py", "            for a, b in ((md, mine), (mine, md)):", "            for a, b in ():", ["org.real"]),
+    ("M69", "P3-A144 (B20): an override records the action it lifts",
+     "Phase3/store.py", "                                     \"action_scope\": action_scope})\n        binding = ev_mod.location_binding(self.conn, file_path_id)",
+     "                                     })\n        binding = ev_mod.location_binding(self.conn, file_path_id)", ["org.real"]),
 ]
 
 
@@ -342,7 +418,7 @@ def main(argv):
           f"{len(results) - len(survived)}/{len(results)}; real tree untouched: {untouched}")
     if survived:
         print("SURVIVED (findings): " + ", ".join(survived))
-    print(f"P3 MUTATION (B19): {(len(results) - len(survived)) + (len(controls) - len(bad_controls)) + int(untouched)}/"
+    print(f"P3 MUTATION (B20): {(len(results) - len(survived)) + (len(controls) - len(bad_controls)) + int(untouched)}/"
           f"{len(results) + len(controls) + 1} checks passed")
     return 0 if not survived and not bad_controls and untouched else 1
 

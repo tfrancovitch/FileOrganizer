@@ -74,11 +74,14 @@ from .registry import (decision_kind, policy_kind, event_kind, return_kind, orig
 from .resolve import _policy_covers
 from .registry import action_kind, PLAN_EVENT_KINDS, LINK_JUSTIFIES, LINK_RETAINS
 from .registry import METADATA_QUESTION, METADATA_DECISION_KINDS, METADATA_CONFIRM, metadata_field, validate_field_value
+from .registry import ORGANIZE_DECISION_KINDS, ORGANIZE_ORIGINS, SCOPE_REMOVAL, SCOPE_ORGANIZE, OVERRIDE_SCOPES
+from . import organize as OG
 
 #: Which decision kinds a read covers (B17, review R1), as
 #: evidence.load_decisions(metadata=...) takes it.
 SCOPE_RETENTION, SCOPE_METADATA, SCOPE_ALL = "retention", "metadata", "all"
-_SCOPES = {SCOPE_RETENTION: False, SCOPE_METADATA: True, SCOPE_ALL: None}
+SCOPE_ORGANIZE_KINDS = "organize"                  # B20: desired_location / desired_name, read apart
+_SCOPES = {SCOPE_RETENTION: False, SCOPE_METADATA: True, SCOPE_ALL: None, SCOPE_ORGANIZE_KINDS: False}
 
 
 def _scope(scope):
@@ -143,7 +146,7 @@ class DecisionStore:
         kinds the duplicate and pair model reads (Build 9 keeps metadata out
         of it; the default, as in B16); SCOPE_METADATA -- the four metadata
         kinds; SCOPE_ALL -- every row."""
-        return active_decisions(ev_mod.load_decisions(self.conn, metadata=_scope(scope)))
+        return active_decisions(ev_mod.load_decisions(self.conn, metadata=_scope(scope), organize=scope == SCOPE_ORGANIZE_KINDS))
 
     def active_for(self, target_kind, target_ref, scope=None):
         """One target's active decisions of one scope. B14: read for that
@@ -151,7 +154,7 @@ class DecisionStore:
         own target, so the target's rows alone say which of them still speak)."""
         ref = str(target_ref)
         return active_decisions(ev_mod.load_decisions(self.conn, "d.target_kind = ? AND d.target_ref = ?", (target_kind, ref),
-                                                      metadata=_scope(scope)))
+                                                      metadata=_scope(scope), organize=scope == SCOPE_ORGANIZE_KINDS))
 
     def still_active(self, decision_ids):
         """(B14) Which of these decision ids still speak -- not withdrawn, not
@@ -360,6 +363,9 @@ class DecisionStore:
             raise ValueError(f"{kind} cannot target a {target_kind}")
         value = spec.validate_value(value)
         target_ref = str(target_ref)
+        if kind in ORGANIZE_DECISION_KINDS:
+            value, evidence_binding = self._validate_organize(kind, target_ref, value, evidence_binding)
+            return kind, target_kind, target_ref, value, evidence_binding
         if evidence_binding is None and spec.requires_evidence:
             evidence_binding = ev_mod.binding_for(self.conn, target_kind, target_ref)
         if target_kind == GROUP and not (evidence_binding or {}).get("members"):
@@ -384,6 +390,81 @@ class DecisionStore:
             if kind == "desired_source_metadata_set":
                 value = validate_field_value(metadata_field(evidence_binding["semantic_field"]), value)
         return kind, target_kind, target_ref, value, evidence_binding
+
+    # -- organizing intent (B20) ---------------------------------------------------------
+    #
+    # desired_location and desired_name are ordinary decisions in the one engine. What the registry
+    # cannot judge from the value alone is judged here from the evidence, BEFORE anything is
+    # written: a refused value writes no decision and no operation (P3-A142; F28). Nothing here
+    # reads a source file; the walk the project already holds is the only evidence.
+
+    def _organize_facts(self):
+        return ev_mod.load_scope_facts(self.conn)
+
+    def _validate_organize(self, kind, target_ref, value, evidence_binding):
+        """(value as it will be stored, evidence binding), or ValueError."""
+        loc = ev_mod.location_any(self.conn, target_ref) if str(target_ref).isdigit() else None
+        if loc is None:
+            raise ValueError(f"no such file location: {target_ref}")
+        if not loc.present:
+            raise ValueError("that file was not present at the last scan, so it cannot be given a place or a name")
+        folder, name = OG.split_rel(loc.rel_path)
+        if kind == "desired_name":
+            if value["name"] == name:
+                raise ValueError("that is already the file's name (a change of case or of normalization counts: the bytes differ)")
+            if OG.extension_of(value["name"]) != OG.extension_of(name) and value["extension_change_confirmed"] is not True:
+                raise ValueError(f"renaming {name} to {value['name']} changes the extension; that needs extension_change_confirmed "
+                                 "(renaming does not convert the file, but it changes how it opens)")
+            binding = evidence_binding if evidence_binding is not None else ev_mod.organize_binding(self.conn, target_ref)
+            return value, binding
+        facts = self._organize_facts()
+        root_key = facts.root_ids.get(int(value["destination_root_id"]))
+        if root_key is None:
+            raise ValueError("the destination root is not a source root of this project")
+        root_path = facts.roots[root_key].root_path if root_key in facts.roots else root_key
+        canonical, _changed = OG.canonical_folder(facts, root_key, root_path, value["destination_folder"])
+        value = dict(value, destination_folder=canonical)
+        if root_key == loc.root_key and OG.path_key(canonical) == OG.path_key(folder):
+            raise ValueError("the file is already in that folder")
+        binding = evidence_binding if evidence_binding is not None else ev_mod.organize_binding(
+            self.conn, target_ref, value["destination_root_id"])
+        return value, binding
+
+    def destination_preview(self, destination_root_id, destination_folder):
+        """What recording this destination would store, without recording: (canonical folder, the
+        changes made to spellings [(typed, observed)], folders that would be created). ValueError
+        when it would be refused. The dialogs show it ("will be saved as ...")."""
+        from .registry import decision_kind
+        value = decision_kind("desired_location").validate_value(
+            {"destination_root_id": destination_root_id, "destination_folder": destination_folder, "on_collision": "fail"})
+        facts = self._organize_facts()
+        root_key = facts.root_ids.get(int(value["destination_root_id"]))
+        if root_key is None:
+            raise ValueError("the destination root is not a source root of this project")
+        root_path = facts.roots[root_key].root_path if root_key in facts.roots else root_key
+        canonical, changed = OG.canonical_folder(facts, root_key, root_path, value["destination_folder"])
+        return canonical, changed, OG.new_folders(facts, root_key, canonical)
+
+    def record_organize(self, file_path_id, destination_root_id=None, destination_folder=None, name=None,
+                        extension_change_confirmed=False, companions=(), rationale=None, command_id=None):
+        """One file's organize intent -- where (destination_root_id + destination_folder), what it is
+        called (name), or both -- and its confirmed companions, as explicit_human decisions in ONE
+        operation: every row lands or none does (P3-A133: nothing propagates). `companions` is
+        [(file_path_id, name or None)]; each gets the same destination, and its mapped name when
+        given. Returns {operation_id, decision_ids, superseded}."""
+        rows = []
+        for fid, new_name in [(file_path_id, name)] + [(c[0], c[1]) for c in companions]:
+            if destination_root_id is not None:
+                rows.append(("desired_location", LOCATION, fid,
+                             {"destination_root_id": destination_root_id, "destination_folder": destination_folder or "",
+                              "on_collision": OG.ON_COLLISION_FAIL}))
+            if new_name is not None:
+                rows.append(("desired_name", LOCATION, fid,
+                             {"name": new_name, "on_collision": OG.ON_COLLISION_FAIL,
+                              "extension_change_confirmed": bool(extension_change_confirmed) if fid == file_path_id else False}))
+        if not rows:
+            raise ValueError("nothing to record: give a destination, a name, or both")
+        return self.record_decisions(rows, rationale=rationale, command_id=command_id)
 
     # -- metadata (Build 9) --------------------------------------------------------
     #
@@ -531,6 +612,8 @@ class DecisionStore:
         """One decision row inside an open operation: supersedes the chain
         head in its conflict domain. Returns (decision_id, supersedes)."""
         origin_kind(origin)
+        if kind in ORGANIZE_DECISION_KINDS and origin not in ORGANIZE_ORIGINS:
+            raise ValueError(f"{kind} is authored by a person only (explicit_human, or bulk_explicit_human for a frozen batch)")
         domain = decision_kind(kind).domain_key(value)
         supersedes = self._chain_head(target_kind, target_ref, domain)
         cur = self.conn.execute(
@@ -564,7 +647,7 @@ class DecisionStore:
             return {"decision_id": int(decision_id), "operation_id": op}
         return self._run(work)
 
-    def record_override(self, file_path_id, policy_id, rationale, command_id=None, confirmed=False):
+    def record_override(self, file_path_id, policy_id, rationale, command_id=None, confirmed=False, action_scope=SCOPE_REMOVAL):
         """The one way past a protection: names the policy version defeated,
         for this location only, with a rationale; demands the caller's
         explicit confirmation flag so no code path records one in passing."""
@@ -578,14 +661,20 @@ class DecisionStore:
             raise ValueError("no active policy with that id")
         if policy_kind(policy["kind"]).effect != "protect":
             raise ValueError("only a protection policy can be overridden")
-        loc = ev_mod.location_of(self.conn, file_path_id)
+        if action_scope not in OVERRIDE_SCOPES:
+            raise ValueError("an override lifts protection for one action: removal or organize (choose which)")
+        # B20: a removal override is about a duplicate; an organize override is about any file.
+        loc = (ev_mod.location_of(self.conn, file_path_id) if action_scope == SCOPE_REMOVAL
+               else ev_mod.location_any(self.conn, file_path_id))
         if loc is None:
-            raise ValueError("that file is not in a current exact-duplicate group")
+            raise ValueError("that file is not in a current exact-duplicate group" if action_scope == SCOPE_REMOVAL
+                             else "no such file location")
         pv = PolicyVersion(str(policy["policy_version_id"]), str(policy["policy_id"]), policy["kind"],
                            policy["scope"], policy["effect"], policy["version_no"], True)
         if not _policy_covers(pv, loc):
             raise ValueError("that policy does not cover this location")
-        value = spec.validate_value({"policy_id": policy["policy_id"], "policy_version_id": policy["policy_version_id"]})
+        value = spec.validate_value({"policy_id": policy["policy_id"], "policy_version_id": policy["policy_version_id"],
+                                     "action_scope": action_scope})
         binding = ev_mod.location_binding(self.conn, file_path_id)
         domain = spec.domain_key(value)
         supersedes = self._chain_head(LOCATION, str(file_path_id), domain)
@@ -794,6 +883,32 @@ class DecisionStore:
             return {"batch_id": int(batch_id), "operation_id": op, "withdrawn": len(active), "restored": len(open_events),
                     "reapplied": len(reapply)}
         return self._run(work)
+
+    def undo_preview(self, batch_id):
+        """(B20) What undoing a batch would do, in words, before it does it: the decisions of the batch that
+        still speak are withdrawn together (a primary and its companions are all in the batch); a decision
+        a person has since superseded or withdrawn is left alone; and nothing a batch superseded is revived
+        (a move batch never supersedes: an earlier destination stands as 'preserved', so there is nothing to
+        re-apply -- only a metadata Confirm batch re-applies what it replaced)."""
+        b = self.batch(batch_id)
+        if b is None:
+            raise ValueError(f"no batch {batch_id}")
+        rows = self.batch_decisions(batch_id)
+        active = [d for d in rows if d["active"]]
+        names = []
+        for d in active:
+            row = self.conn.execute("SELECT fp.relative_path FROM file_path fp WHERE fp.file_path_id = ?", (int(d["target_ref"]),)).fetchone()
+            names.append(row[0].replace("/", "\\").rsplit("\\", 1)[-1] if row else d["target_ref"])
+        left = len(rows) - len(active)
+        lines = [f"Undo batch #{int(batch_id)} ({b['label']}): withdraw {len(active):,} decision(s) that still stand"
+                 + (": " + ", ".join(names[:6]) + (" ..." if len(names) > 6 else "") if names else "") + ".",
+                 f"{left:,} decision(s) of this batch were changed since (superseded or withdrawn): left alone -- your later intent stands."]
+        if b["action"] == METADATA_CONFIRM:
+            lines.append("Each question gets back the decision this Confirm replaced (same kind and value).")
+        else:
+            lines.append("Nothing is revived: no earlier decision was replaced by this batch (an earlier destination was 'preserved').")
+        lines.append("Only the project's record changes; no file moves.")
+        return lines
 
     def _confirm_originals(self, decision_ids):
         """The decisions these Confirm rows superseded, as (kind, target_kind,

@@ -127,6 +127,20 @@ def _id_value(value):
     raise ValueError("an id is an integer or non-blank text")
 
 
+#: (B20, RC 2) The action an override lifts protection for. One override lifts one
+#: action only (P3-A144): a removal-scope override never lets a move through, an
+#: organize-scope one never lets a removal through. A removal scope is stored with
+#: NO member at all -- every row recorded before B20 is exactly that -- so absent
+#: means removal and no existing row, fingerprint or conflict domain changes.
+SCOPE_REMOVAL, SCOPE_ORGANIZE = "removal", "organize"
+OVERRIDE_SCOPES = (SCOPE_REMOVAL, SCOPE_ORGANIZE)
+
+
+def override_scope(value) -> str:
+    """The action scope of a stored override value (absent: removal)."""
+    return (value or {}).get("action_scope", SCOPE_REMOVAL) if isinstance(value, dict) else SCOPE_REMOVAL
+
+
 def _override(value):
     if not isinstance(value, dict):
         raise ValueError("override_protection names the policy it overrides")
@@ -137,7 +151,53 @@ def _override(value):
         version_id = _id_value(value["policy_version_id"])
     except ValueError:
         raise ValueError("override_protection needs policy_id and policy_version_id (integers or text)")
-    return {"policy_id": policy_id, "policy_version_id": version_id}
+    out = {"policy_id": policy_id, "policy_version_id": version_id}
+    if "action_scope" in value:
+        scope = value["action_scope"]
+        if not isinstance(scope, str) or scope not in OVERRIDE_SCOPES:
+            raise ValueError("an override lifts protection for one action: removal or organize")
+        if scope == SCOPE_ORGANIZE:
+            out["action_scope"] = SCOPE_ORGANIZE         # removal: no member (byte-identical to B19)
+    return out
+
+
+def _desired_location(value):
+    """desired_location: {"destination_root_id", "destination_folder", "on_collision"} (B20, R12 §5.1).
+    A literal, root-relative destination -- byte-exact, never a template (P3-A126). The checks that
+    need the evidence (the root is a project source root, the folder is not a file, the spelling of
+    an existing folder, the destination differs from where the file is) are the store's."""
+    from .organize import folder_problem, ON_COLLISION_FAIL
+    if not isinstance(value, dict) or set(value) != {"destination_root_id", "destination_folder", "on_collision"}:
+        raise ValueError('a desired location is {"destination_root_id", "destination_folder", "on_collision"}')
+    rid = value["destination_root_id"]
+    if isinstance(rid, bool):
+        raise ValueError("the destination root is a source root's id")
+    if isinstance(rid, float) and rid.is_integer():
+        rid = int(rid)
+    if not isinstance(rid, int) or rid < 1:
+        raise ValueError("the destination root is a source root's id")
+    why = folder_problem(value["destination_folder"])
+    if why:
+        raise ValueError(why)
+    if value["on_collision"] != ON_COLLISION_FAIL:
+        raise ValueError('on_collision is "fail": a collision is never resolved silently (P3-A134)')
+    return {"destination_root_id": rid, "destination_folder": value["destination_folder"], "on_collision": ON_COLLISION_FAIL}
+
+
+def _desired_name(value):
+    """desired_name: {"name", "on_collision", "extension_change_confirmed"} (B20, R12 §5.2)."""
+    from .organize import name_problem, ON_COLLISION_FAIL
+    if not isinstance(value, dict) or set(value) != {"name", "on_collision", "extension_change_confirmed"}:
+        raise ValueError('a desired name is {"name", "on_collision", "extension_change_confirmed"}')
+    why = name_problem(value["name"])
+    if why:
+        raise ValueError(why)
+    if value["on_collision"] != ON_COLLISION_FAIL:
+        raise ValueError('on_collision is "fail": a collision is never resolved silently (P3-A134)')
+    if not isinstance(value["extension_change_confirmed"], bool):
+        raise ValueError("extension_change_confirmed is true or false")
+    return {"name": value["name"], "on_collision": ON_COLLISION_FAIL,
+            "extension_change_confirmed": value["extension_change_confirmed"]}
 
 
 @dataclass(frozen=True)
@@ -159,7 +219,8 @@ class DecisionKind:
         """The value as it will be stored, or ValueError."""
         return {"flag": _flag, "location_ref": _location_ref, "override": _override,
                 "location_pair": _location_pair, "metadata_value": _desired_value,
-                "project_metadata": _project_metadata}[self.value_kind](value)
+                "project_metadata": _project_metadata, "desired_location": _desired_location,
+                "desired_name": _desired_name}[self.value_kind](value)
 
     def domain_key(self, value):
         """The conflict domain instance for one recorded value.
@@ -170,7 +231,10 @@ class DecisionKind:
         note replaces the note, never the tags.
         """
         if self.key == "override_protection":
-            return f"{self.conflict_domain}:{value['policy_id']}"
+            # B20: an organize-scope override has its own domain per policy, so a removal
+            # override and an organize override on one policy never supersede each other.
+            suffix = ":organize" if override_scope(value) == SCOPE_ORGANIZE else ""
+            return f"{self.conflict_domain}:{value['policy_id']}{suffix}"
         if self.key == "project_metadata_set":
             return f"{self.conflict_domain}:{value['field']}"
         return self.conflict_domain
@@ -569,6 +633,21 @@ PRECONDITIONS = {
     "target_not_protected": "retention",
     "no_retaining_decision": "retention",
     "no_dangling_protection": "retention",            # B19: a protection whose scope matches nothing scanned
+    # B20 (P3.R12): move / rename items. Reused keys keep their class; these are the new ones.
+    "source_identity_known": "identity",
+    "no_conflicting_intent_same_location": "evidence",
+    "destination_within_project_root": "environment",
+    "destination_name_valid": "evidence",
+    "extension_change_confirmed": "evidence",
+    "same_volume": "environment",
+    "no_dependency_cycle": "collision",
+    "companions_travel_together": "collision",
+    "destination_not_protected": "retention",
+    "organize_executor_supported": "environment",
+    "source_identity_matches": "identity",              # declared for Phase 4 only
+    "companions_present_unchanged": "collision",        # declared for Phase 4 only
+    "keeper_not_moving": "retention",
+    "no_organize_metadata_overlap": "evidence",         # a WARNING, attached only where it applies (RC 7)
     "decision_current": "evidence",
     "policy_version_current": "evidence",
     "no_current_conflict": "evidence",
@@ -586,7 +665,10 @@ PRECONDITIONS = {
 }
 POSTCONDITIONS = ("source_removed", "destination_exists", "destination_content_matches", "keeper_still_exists",
                   "minimum_retention_satisfied", "desired_metadata_observed", "project_state_updated",
-                  "rollback_record_exists", "verified_reclaim_recorded")
+                  "rollback_record_exists", "verified_reclaim_recorded",
+                  # B20 (R12 section 9.6)
+                  "source_path_absent", "physical_identity_unchanged", "companions_at_destinations",
+                  "no_other_file_replaced")
 
 #: What each action kind declares: (key, severity, stage), in evaluation
 #: order. Evidence-stage conditions are checked by the Phase 3 Evidence
@@ -608,19 +690,53 @@ ACTION_PRECONDITIONS = {
         ("minimum_physical_copy_count_satisfied", "hard", STAGE_EVIDENCE),
         ("source_local_if_required", "warning", STAGE_EVIDENCE),
     ) + _LIVE_COMMON + (("keeper_content_matches", "hard", STAGE_LIVE),),
+    # B20: made from desired_location / desired_name decisions. The report's 27 keys map onto the
+    # built vocabulary (synthesis 3.1): reused keys keep their class; `source_local_if_required` is
+    # HARD here (a warning for the others); same_volume is evaluated BEFORE the executor, so a
+    # cross-volume item says "cross-volume", not "executor"; no_dependency_cycle precedes the
+    # collision check, so a swap says "cycle". Order is evaluation order.
     ACTION_MOVE: (
         ("target_exists", "hard", STAGE_EVIDENCE),
         ("decision_current", "hard", STAGE_EVIDENCE),
         ("no_current_conflict", "hard", STAGE_EVIDENCE),
+        ("source_identity_known", "hard", STAGE_EVIDENCE),
+        ("source_local_if_required", "hard", STAGE_EVIDENCE),
+        ("target_not_protected", "hard", STAGE_EVIDENCE),
+        ("no_dangling_protection", "hard", STAGE_EVIDENCE),
+        ("destination_within_project_root", "hard", STAGE_EVIDENCE),
+        ("destination_name_valid", "hard", STAGE_EVIDENCE),
+        ("extension_change_confirmed", "hard", STAGE_EVIDENCE),
+        ("no_conflicting_intent_same_location", "hard", STAGE_EVIDENCE),
+        ("no_dependency_cycle", "hard", STAGE_EVIDENCE),
         ("destination_collision_absent", "hard", STAGE_EVIDENCE),
+        ("companions_travel_together", "hard", STAGE_EVIDENCE),
+        ("source_not_hardlinked", "warning", STAGE_EVIDENCE),
+        ("destination_not_protected", "warning", STAGE_EVIDENCE),
+        ("same_volume", "hard", STAGE_EVIDENCE),
+        ("organize_executor_supported", "hard", STAGE_EVIDENCE),
     ) + _LIVE_COMMON + (("destination_available", "hard", STAGE_LIVE), ("free_space_sufficient", "hard", STAGE_LIVE),
-                        ("filesystem_capability_supported", "hard", STAGE_LIVE)),
+                        ("filesystem_capability_supported", "hard", STAGE_LIVE),
+                        ("source_identity_matches", "hard", STAGE_LIVE), ("companions_present_unchanged", "hard", STAGE_LIVE),
+                        ("source_local_if_required", "hard", STAGE_LIVE), ("same_volume", "hard", STAGE_LIVE)),
     ACTION_RENAME: (
         ("target_exists", "hard", STAGE_EVIDENCE),
         ("decision_current", "hard", STAGE_EVIDENCE),
         ("no_current_conflict", "hard", STAGE_EVIDENCE),
+        ("source_identity_known", "hard", STAGE_EVIDENCE),
+        ("source_local_if_required", "hard", STAGE_EVIDENCE),
+        ("target_not_protected", "hard", STAGE_EVIDENCE),
+        ("no_dangling_protection", "hard", STAGE_EVIDENCE),
+        ("destination_name_valid", "hard", STAGE_EVIDENCE),
+        ("extension_change_confirmed", "hard", STAGE_EVIDENCE),
+        ("no_conflicting_intent_same_location", "hard", STAGE_EVIDENCE),
+        ("no_dependency_cycle", "hard", STAGE_EVIDENCE),
         ("destination_collision_absent", "hard", STAGE_EVIDENCE),
-    ) + _LIVE_COMMON + (("destination_available", "hard", STAGE_LIVE), ("filesystem_capability_supported", "hard", STAGE_LIVE)),
+        ("companions_travel_together", "hard", STAGE_EVIDENCE),
+        ("source_not_hardlinked", "warning", STAGE_EVIDENCE),
+        ("organize_executor_supported", "hard", STAGE_EVIDENCE),
+    ) + _LIVE_COMMON + (("destination_available", "hard", STAGE_LIVE), ("filesystem_capability_supported", "hard", STAGE_LIVE),
+                        ("source_identity_matches", "hard", STAGE_LIVE), ("companions_present_unchanged", "hard", STAGE_LIVE),
+                        ("source_local_if_required", "hard", STAGE_LIVE)),
     # Build 9: made from desired_source_metadata_set / _clear decisions. The
     # writer is the capability record's; the integrity flags are evidence.
     ACTION_METADATA: (
@@ -641,16 +757,29 @@ ACTION_PRECONDITIONS = {
 #: unknown, never pass: nobody can say whether the removed file was meant to be
 #: protected), and B17's removal / metadata overlap warning on the two items
 #: it names.
+#:
+#: (B20, RC 8) The same rule for the cross-kind checks organizing intent adds: a removal
+#: carries no_conflicting_intent_same_location only when an organize item exists for its
+#: location, and keeper_not_moving only when its keeper's location has one; a metadata item
+#: and a move / rename item on one location carry the no_organize_metadata_overlap warning.
+#: A revision with no organize decisions is therefore B19's, item for item and byte for byte.
 CONDITIONAL_PRECONDITIONS = {
-    ACTION_REMOVE: (("no_dangling_protection", "hard", STAGE_EVIDENCE),),
-    ACTION_METADATA: (("no_removal_metadata_overlap", "warning", STAGE_EVIDENCE),),
-    ACTION_MOVE: (), ACTION_RENAME: (), ACTION_PRESERVE: (),
+    ACTION_REMOVE: (("no_dangling_protection", "hard", STAGE_EVIDENCE),
+                    ("no_conflicting_intent_same_location", "hard", STAGE_EVIDENCE),
+                    ("keeper_not_moving", "hard", STAGE_EVIDENCE)),
+    ACTION_METADATA: (("no_removal_metadata_overlap", "warning", STAGE_EVIDENCE),
+                      ("no_organize_metadata_overlap", "warning", STAGE_EVIDENCE)),
+    ACTION_MOVE: (("no_organize_metadata_overlap", "warning", STAGE_EVIDENCE),),
+    ACTION_RENAME: (("no_organize_metadata_overlap", "warning", STAGE_EVIDENCE),),
+    ACTION_PRESERVE: (),
 }
 ACTION_POSTCONDITIONS = {
     ACTION_REMOVE: ("source_removed", "keeper_still_exists", "minimum_retention_satisfied", "rollback_record_exists",
                     "verified_reclaim_recorded"),
-    ACTION_MOVE: ("destination_exists", "destination_content_matches", "project_state_updated", "rollback_record_exists"),
-    ACTION_RENAME: ("destination_exists", "destination_content_matches", "project_state_updated", "rollback_record_exists"),
+    ACTION_MOVE: ("destination_exists", "source_path_absent", "physical_identity_unchanged", "destination_content_matches",
+                  "companions_at_destinations", "no_other_file_replaced", "project_state_updated", "rollback_record_exists"),
+    ACTION_RENAME: ("destination_exists", "source_path_absent", "physical_identity_unchanged", "destination_content_matches",
+                    "companions_at_destinations", "no_other_file_replaced", "project_state_updated", "rollback_record_exists"),
     ACTION_METADATA: ("desired_metadata_observed", "rollback_record_exists"),
     ACTION_PRESERVE: (),
 }
@@ -669,6 +798,7 @@ ITEM_STATES = (ITEM_READY, ITEM_BLOCKED, ITEM_BLOCKED_EVIDENCE, ITEM_UNSUPPORTED
 #: it -- except where the research names the reason itself (Build 9, F13 and
 #: F14): WHY it is blocked, where the item's state says WHAT that produces.
 BLOCKED_REASONS = {
+    ("same_volume", "unsupported"): "cross_volume_move_not_supported_initially",      # B20 (F27)
     ("writer_supported", "unsupported"): "writer_unsupported",
     ("source_not_signed_or_certified", "fail"): "signed_or_certified",
     ("source_not_encrypted", "fail"): "encrypted",
@@ -960,6 +1090,49 @@ BULK_ACTIONS[METADATA_CONFIRM] = BulkAction(
     kinds_text="the same decision, re-recorded on the evidence as it is now")
 
 
+# -- B20: organizing intent (P3.R12, accepted with required changes) ---------------------------
+#
+# Two literal, human-authored kinds in the one engine (principle 58): where a file should be, and
+# what it should be called. Neither is retention (P3-A130), neither is a policy (P3-A129), a
+# destination is never assigned by a rule, template or suggestion (P3-A126, P3-A141). They are
+# loaded APART from the retention decisions (evidence.load_decisions(organize=True)) as the
+# metadata decisions are, so the duplicate and pair router never sees them. Only a person authors
+# them: explicit_human, or bulk_explicit_human for a frozen batch.
+
+ORGANIZE_DECISION_KINDS = ("desired_location", "desired_name")
+ORGANIZE_ORIGINS = ("explicit_human", "bulk_explicit_human")
+ORGANIZE_LABEL = "Stored in the project; never moves the file"
+
+DECISION_KINDS.update({k.key: k for k in (
+    DecisionKind(
+        "desired_location", "Desired location", frozenset({LOCATION}), "desired_location",
+        "none", "organize_location",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="Where you want this file to be: a literal folder, relative to a project source root. "
+                    + ORGANIZE_LABEL + ". Plans as Move location; every such item stays blocked until Phase 4 "
+                    "certifies an executor."),
+    DecisionKind(
+        "desired_name", "Desired name", frozenset({LOCATION}), "desired_name",
+        "none", "organize_name",
+        requires_evidence=True, supersedable=True, affects_reclaim=False, confirmation=CONFIRM_NONE,
+        description="What you want this file to be called: a literal Windows file name. " + ORGANIZE_LABEL
+                    + ". Plans as Rename location (or as the name of a Move), blocked until Phase 4."),
+)})
+
+
+#: B20: a frozen batch over file locations -- "Move these to a folder" (R12 8). B10's pipeline unchanged:
+#: members with dispositions, origin bulk_explicit_human + the batch id, commit equal to the preview,
+#: undo_batch. Survey-only in the registry's sense: the Decide page and Similar Images never offer it
+#: (its member kind is the file location, but its window is the Files page). Never a policy.
+ORGANIZE_MOVE = "organize_move"
+BULK_ACTIONS[ORGANIZE_MOVE] = BulkAction(
+    ORGANIZE_MOVE, "Move to a folder", LOCATION, ("desired_location",), False, None, False,
+    "Record one destination folder (inside a project source root) for every checked file, or every file the Files "
+    "page lists now. Stored in the project; never moves the file. A file whose destination is taken, protected, a "
+    "redundant candidate or not safely identified is left out and said so; sidecars found by name are added visibly.",
+    survey_only=True, kinds_text="a destination (Desired location)")
+
+
 # -- B18: what a plan revision records about the vocabulary it was built with (S4) --------
 
 #: The registry's contract version; bumped when a kind, a precondition or a
@@ -974,7 +1147,13 @@ BULK_ACTIONS[METADATA_CONFIRM] = BulkAction(
 #: schema states (ids and keys are text, not anything str() can print; dates
 #: without Python's parser); no_dangling_protection was added. The digest
 #: covers the schema's bytes.
-REGISTRY_VERSION = "fileorganizer.p3.registry/2"
+#:
+#: /3 (B20): desired_location and desired_name (their value kinds, domains organize_location /
+#: organize_name); override_protection's value gains the optional action_scope (an existing kind's
+#: value schema -- a removal scope is stored with no member, so every earlier row is unchanged);
+#: the precondition vocabulary for move / rename items and the conditional cross-kind checks.
+#: The registry DIGEST therefore changes; the plan payload schema does not.
+REGISTRY_VERSION = "fileorganizer.p3.registry/3"
 
 #: (B19) What a policy's scope matches in the current scan (`scopes.py`):
 #: something is there (present); the scope's root was not observed in the
@@ -998,6 +1177,7 @@ def registry_digest() -> str:
         "action_preconditions": sorted([a, [list(x) for x in v]] for a, v in ACTION_PRECONDITIONS.items()),
         "conditional_preconditions": sorted([a, [list(x) for x in v]] for a, v in CONDITIONAL_PRECONDITIONS.items()),
         "plan_states": list(PLAN_STATES), "plan_event_kinds": list(PLAN_EVENT_KINDS),
+        "action_postconditions": sorted([a, list(v)] for a, v in ACTION_POSTCONDITIONS.items()),
         # B19: the bytes Resources\Phase3\registry.schema.json holds (the
         # schema suite fails if the committed file differs from them).
         "schema_sha256": hashlib.sha256(schema_bytes()).hexdigest(),

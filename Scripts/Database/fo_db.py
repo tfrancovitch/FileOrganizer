@@ -152,7 +152,7 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 
 MODULE_VERSION = "1.14.0"
-APP_VERSION = "B19"
+APP_VERSION = "B20"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).

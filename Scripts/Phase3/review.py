@@ -888,7 +888,8 @@ class ReviewPage:
             for d in todo:
                 if d.kind == "override_protection":
                     self.store.record_override(d.target_ref, d.value["policy_id"], "reconfirmed on current evidence",
-                                               command_id=cmd, confirmed=True)
+                                               command_id=cmd, confirmed=True,
+                                               action_scope=d.value.get("action_scope", "removal"))
                 else:
                     self.store.record_decision(d.kind, d.target_kind, d.target_ref, d.value, rationale="reconfirmed on current evidence",
                                                command_id=cmd)
@@ -1069,6 +1070,14 @@ class OverrideDialog:
         for pol in policies:
             ttk.Radiobutton(frame, text=f"{pol['label']}: {pol['scope_text']}  (policy #{pol['policy_id']} v{pol['version_no']})",
                             variable=self.choice, value=int(pol["policy_id"])).pack(anchor="w")
+        # B20 (P3-A144): an override lifts protection for ONE action. It asks which, in words, and defaults to nothing.
+        ttk.Label(frame, text="This override lifts the protection for (choose one):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 2))
+        self.action = tk.StringVar(value="")
+        for value, text in (("removal", "Removal -- the copy may be marked a redundant candidate and planned for removal. "
+                                        "It stays protected against being moved or renamed."),
+                            ("organize", "Moving or renaming -- the file may be given a new place or name. It stays "
+                                         "protected against removal.")):
+            ttk.Radiobutton(frame, text=text, variable=self.action, value=value, command=self._update).pack(anchor="w")
         ttk.Label(frame, text="Why (required):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 2))
         self.reason = tk.Text(frame, height=3, width=70, wrap="word")
         self.reason.pack(fill="x")
@@ -1084,14 +1093,15 @@ class OverrideDialog:
         self.reason.focus_set()
 
     def _update(self):
-        ready = self.ack.get() and bool(self.reason.get("1.0", "end").strip())
+        ready = self.ack.get() and bool(self.reason.get("1.0", "end").strip()) and self.action.get() in ("removal", "organize")
         self.ok.configure(state="normal" if ready else "disabled")
 
     def _confirm(self):
         reason = self.reason.get("1.0", "end").strip()
         try:
             self.store.record_override(self.verdict.location_id, self.choice.get(), reason,
-                                       command_id=new_command_id(), confirmed=bool(self.ack.get()))
+                                       command_id=new_command_id(), confirmed=bool(self.ack.get()),
+                                       action_scope=self.action.get() or "none chosen")
         except ValueError as exc:
             messagebox.showwarning("Override protection", str(exc), parent=self.win)
             return

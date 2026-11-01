@@ -85,6 +85,15 @@ class ScopeFacts:
     identities: dict = field(default_factory=dict)  # physical id -> [(path key, path)] present in a scanned root
     lost: list = field(default_factory=list)        # [(path key, physical id)] known before, not present now
     run_id: int | None = None                       # the latest inventory run
+    # -- B20 (organizing intent): the same scan, read for occupancy and coverage. Pure additions: nothing
+    # B19 reads changes. The sources are the ones coverage already reads (file_state, scan_path_event,
+    # inventory_scan) -- no second coverage query.
+    present_paths: list = field(default_factory=list)   # the full path as stored, parallel to `present`
+    inaccessible: list = field(default_factory=list)    # sorted path keys the scan met and could not read (a folder it could not list too)
+    reparse: list = field(default_factory=list)         # sorted path keys of directory links the scan did not follow
+    truncated: set = field(default_factory=set)         # root keys whose latest scan stored only part of its inaccessible list
+    root_ids: dict = field(default_factory=dict)        # source_root_id -> root key (active roots)
+    volumes: dict = field(default_factory=dict)         # root key -> sorted volume serials seen among its present files
 
     def relabelled(self, fn):
         """The same facts with the physical ids put through fn('physical', id)

@@ -93,7 +93,7 @@ RUNTIME_MODULES = ("fo_db", "fo_scan", "fo_inventory_records", "fo_hash_engine",
                    "Phase3.registry", "Phase3.resolve", "Phase3.pairs", "Phase3.routing", "Phase3.bulk", "Phase3.store",
                    "Phase3.review", "Phase3.imagegame", "Phase3.survey", "Phase3.survey_view", "Phase3.refresh",
                    "Phase3.plans", "Phase3.planview", "Phase3.metadata", "Phase3.metadata_view",
-                   "Phase3.registry_schema", "Phase3.scopes")
+                   "Phase3.registry_schema", "Phase3.scopes", "Phase3.organize", "Phase3.organize_view")
 
 
 class Report(object):

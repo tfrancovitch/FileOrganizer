@@ -7,11 +7,42 @@ what is inside them.**
 Phases 1 and 2 are **observational**. They look, measure, read and record. They
 never rename, move, delete or edit anything you point them at, and never open a
 cloud-only file. Phase 3 (B8 onward) **decides**: it records which copies to
-keep, as an inspectable record of what should happen. Carrying decisions out is
-a later phase; nothing in B8–B19 changes a file either — not even the plan B15 builds, or
+keep, and where files should be and what they should be called, as an inspectable
+record of what should happen. Carrying decisions out is
+a later phase; nothing in B8–B20 changes a file either — not even the plan B15 builds, or
 the metadata you ask for on the Metadata page.
 
 ---
+
+## B20 — Phase 3: where you want a file to be
+
+- **Move to... and Rename... (Files page).** Right-click a file (or tick several
+  and press **Move checked...**, or press **Move listed...** for everything the
+  page lists now) and say where the file should be, or what it should be
+  called. Two plain, literal answers: a folder inside one of your source roots,
+  and a Windows file name. The dialog shows the file's current intent (with
+  **Withdraw**), the folders that would be created, anything already at that
+  name, and the sidecars found beside the file by name (an `.xmp` next to a
+  RAW photo), ticked, with the names they will have.
+- **It is only a record.** Every surface says *"Stored in the project; never
+  moves the file."* — and the dialogs end with *"No source files will change."*
+  Nothing in B20 moves or renames a file. A move or rename shows up on the
+  **Plan** page as an item that stays blocked ("unsupported") until a later
+  phase builds and certifies something that can carry it out. Names Windows
+  cannot hold (`CON`, a trailing dot, 256 characters) are refused when you type
+  them. A destination already taken, a protected file, a file with an unknown
+  identity or a cloud-only one, a swap of two names — each is shown as blocked,
+  with the reason.
+- **Protection and overrides.** A protected file is not moved until you
+  override that protection *for moving*. **Override protection...** now asks
+  which action it lifts — removal, or moving / renaming — and chooses
+  neither for you; one never lets the other through.
+- A batch (**Move checked...** / **Move listed...**) is frozen when you preview
+  it, undone as one, and never becomes a rule: a file that appears tomorrow is
+  not in it.
+
+`CHANGELOG-B20.md` has the detail; `PHASE3_B20_HANDBACK.md` reports against the
+B20 handoff.
 
 ## B19 — Phase 3: the four open closeout rows
 

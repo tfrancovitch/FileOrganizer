@@ -43,6 +43,7 @@ from Phase3 import review as review_view
 from Phase3 import imagegame as imagegame_view
 from Phase3 import planview as plan_view
 from Phase3 import metadata_view
+from Phase3 import organize_view
 
 #: The application root this window is installed under: <root>\Scripts\Phase2\gui.py
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -677,6 +678,9 @@ class Phase2App(tk.Tk):
         ttk.Button(tools,text="Clear filters and sort",command=self.clear_query).pack(side="right")
         ttk.Button(tools,text="Export CSV...",command=self.export_files_csv).pack(side="right",padx=6)
         ttk.Button(tools,text="Columns...",command=self.choose_columns).pack(side="right")
+        # B20: where you want files to be -- recorded in the project, never moving a file.
+        ttk.Button(tools,text="Move listed...",command=self.move_listed).pack(side="right",padx=(0,6))
+        ttk.Button(tools,text="Move checked...",command=self.move_checked).pack(side="right",padx=(0,6))
 
         # A classic PanedWindow: it honours minsize, which is what keeps the
         # details pane from being squeezed to nothing.
@@ -779,7 +783,8 @@ class Phase2App(tk.Tk):
             sel=table.selection()
             if sel:self.show_file_detail(self.current_rows[int(sel[0])])
         table.bind("<<TreeviewSelect>>",choose)
-        table.bind("<Button-3>",lambda e:self._files_header_menu(e,table,columns))
+        self.files_table=table
+        table.bind("<Button-3>",lambda e:self._files_menu(e,table,columns))
         # Paging, both ways, with honest numbers.
         first=self.files_page*PAGE_SIZE+1 if self.current_rows else 0
         last=self.files_page*PAGE_SIZE+len(self.current_rows)
@@ -805,6 +810,57 @@ class Phase2App(tk.Tk):
             direction="desc" if current and current[0]==field and current[1]=="asc" else "asc"
         self.files_sort=(field,direction)
         self.show_files()
+
+    # -- B20: Move to... / Rename... (Phase3.organize_view). Stored in the project; never moves the file. -------
+
+    def _files_menu(self,event,table,columns):
+        """A heading opens the column menu; a row opens Move to... / Rename... (and selects it, if it is not selected)."""
+        if table.identify_region(event.x,event.y)=="heading":
+            return self._files_header_menu(event,table,columns)
+        row=table.identify_row(event.y)
+        if not row: return
+        if row not in table.selection(): table.selection_set(row)
+        ids=self.checked_file_ids()
+        menu=tk.Menu(self,tearoff=0)
+        menu.add_command(label="Move to..." if len(ids)<2 else f"Move {len(ids):,} checked files to...",command=self.move_checked)
+        menu.add_command(label="Rename...",command=lambda:self.rename_file(row),state="normal" if len(ids)<2 else "disabled")
+        menu.add_separator()
+        menu.add_command(label="Stored in the project; never moves the file",state="disabled")
+        try: menu.tk_popup(event.x_root,event.y_root)
+        finally: menu.grab_release()
+
+    def checked_file_ids(self):
+        """The files selected in the table (the Files page's 'checked' set), as file location ids."""
+        table=getattr(self,"files_table",None)
+        if table is None: return []
+        out=[]
+        for iid in table.selection():
+            try: out.append(str(self.current_rows[int(iid)]["path.id"]))
+            except (ValueError,IndexError,KeyError): pass
+        return out
+
+    def listed_file_ids(self):
+        """The page's question (scope, find text, filters, sort) run ONCE, to the ids it lists now -- frozen by the batch."""
+        ids,cursor=[],None
+        while True:
+            result=self.engine.list_files(scope=self.scope,search=self.search_text,filters=self.filters,limit=1000,
+                                          sort=self.files_sort,cursor=cursor,columns=["path.id"])
+            ids+=[str(r["path.id"]) for r in result["rows"] if r.get("path.id") is not None]
+            cursor=result.get("next_cursor")
+            if not cursor: return ids
+
+    def move_checked(self):
+        organize_view.open_move(self,self.checked_file_ids())
+
+    def move_listed(self):
+        try: ids=self.listed_file_ids()
+        except Exception as exc:
+            messagebox.showerror("Move listed",str(exc),parent=self); return
+        organize_view.open_move(self,ids,listed=True,query={"scope":self.scope,"search":self.search_text,"filters":self.filters})
+
+    def rename_file(self,row=None):
+        ids=self.checked_file_ids()
+        if len(ids)==1: organize_view.open_rename(self,ids[0])
 
     def _files_header_menu(self,event,table,columns):
         region=table.identify_region(event.x,event.y)
