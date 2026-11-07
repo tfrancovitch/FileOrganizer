@@ -7,9 +7,10 @@ plan is `PROJECT_PLAN.md` (workspace root); this page only says where things sta
 **Phase 4 (Act and Verify) is approved to start. Nothing is built yet.** On 2026-11-07 the owner approved the v1
 boundary and the build order B21-B27 in `Handoffs/Phase4/PHASE4_SCOPING.md`.
 
-**Next step:** review gate 1. The owner pastes `Docs\Research\phase_4\R4\R4_REVIEW_GATE1_BRIEF.md` and the files
-it names to ChatGPT or Gemini; the Architect records the review in `R4_REVIEW_GATE1.md`, amends the synthesis if
-needed, and writes the B21 handoff. In parallel the owner can run the R4.6 hand probe (needed before B22, not B21).
+**Next step:** the B21 handoff is written (`Handoffs\B21\B21_HANDOFF.md`, uncommitted). On the owner's yes the
+steward files it on `phase4` and makes `build/b21`; then a `fo-builder` session on Sonnet builds units 1-4 and an
+Opus session units 5-6. In parallel, the owner runs the extended hand probe (R4.6 §6 steps 1-8,
+`R4_REVIEW_GATE1.md` §6 steps 9-15, `R4.13_report.md` §7 steps 16-23; needed before B22).
 
 | Phase | Status | Final build / tag |
 |---|---|---|
@@ -22,15 +23,17 @@ needed, and writes the B21 handoff. In parallel the owner can run the R4.6 hand 
 
 ## Phase 4 v1 boundary (approved 2026-11-07; amended by D1 the same day)
 In: same-volume move/rename of single files, removal into quarantine, one metadata writer, undo for each, local
-NTFS fixed drives, collision policy "fail" only; **rename and move inside the same OneDrive sync root for files
-verified fully local at the moment of action, after the probes pass (D1)**. Out (stay blocked, with the reason
-shown): moves out of a sync root, delete or Recycle Bin inside one, cross-volume moves, files that are not fully
-local, other collision policies, folders as movable units, network shares and removable drives, templates.
+NTFS fixed drives, collision policy "fail" only; **rename in place inside a OneDrive sync root for files verified
+fully local at the moment of action, after the probes pass (D1); moves between folders there after brief R4.13
+and its probe**; creating missing destination folders as approved steps (D8). Out (stay blocked, with the reason
+shown): any deletion by the product (D6), moves out of a sync root, Recycle Bin, metadata writes inside a sync
+root, cross-volume moves, files that are not fully local, hard-linked files, other collision policies, folders as
+movable units, network shares and removable drives, templates.
 
 ## Build order (approved 2026-11-07)
 | Build | Content |
 |---|---|
-| B21 | Action lock; journal; job/item state machine (fake action, fault injection; touches no real file) |
+| B21 | Action lock; journal; job/item state machine (fake action, fault injection; touches no real file). **Handoff written 2026-11-07** |
 | B22 | Same-volume move/rename primitive, with just-in-time preflight; sandbox only |
 | B23 | Remove Location into quarantine, with undo |
 | B24 | Move / rename plan items, with location succession |
@@ -45,12 +48,23 @@ B22 and before B26.
 - Scout lookups: done, 7 of 7 answered (`Handoffs/Phase4/R4_SCOUT_ANSWERS.md`).
 - Five research briefs: **done 2026-11-07**, reports `R4.1/.2/.3/.6/.8_report.md` in `Docs/Research/phase_4/R4/`
   (59 / 31 / 44 / 42 / 29 KB), each with a source ledger.
-- Synthesis: **written**, `Handoffs/Phase4/PHASE4_SYNTHESIS.md` (uncommitted): R4.7, R4.9, R4.11, R4.12 answered;
-  decisions D1-D5; final B21-B27 plan. Verdict: no further desk research; remaining unknowns are probes in B21/B22
-  and one Thomas-run OneDrive probe. Review gate 1 not yet run.
-- Decision log started: `Docs\DECISIONS.md` (outside the repo). **D1-D5 all Settled 2026-11-07**, as recommended:
-  OneDrive intra-root moves of verified-local files in; quarantine per root with a 30-day purge guard; PDF title by
-  `pypdf` incremental; journal in a local never-synced folder; gate 1 also covers P3.R12 and the plan contract.
+- Synthesis: `Handoffs/Phase4/PHASE4_SYNTHESIS.md` (committed `985366f`; §12 amendments uncommitted): R4.7, R4.9,
+  R4.11, R4.12 answered; final B21-B27 plan.
+- **Review gate 1 held 2026-11-07**: ChatGPT and Gemini (independent) plus a Claude Sonnet pass. Disposition
+  `Docs\Research\phase_4\R4\R4_REVIEW_GATE1.md`: 24 findings accepted, 4 partially, none rebutted outright. The
+  five faults both independent reviewers found (cross-database commit gap, sticky fulfilment, destination bound by
+  path, hidden quarantine unsynced in OneDrive, purge vs axiom 11) are all fixed in the design (synthesis §12).
+- Brief `Handoffs\Phase4\B-R4.13.md` (OneDrive shared folders, shortcuts, Vault, naming limits, pin inheritance):
+  **done 2026-11-07**, `Docs\Research\phase_4\R4\R4.13_report.md` (42 KB), adopted in synthesis §12 with owner
+  decisions D10 (never touch shared folders or shortcuts) and D11 (the owner's per-job statement stands in where
+  Windows cannot prove a folder private). Its probes (owner hand probes 16-23, B22 U1) are still to run; until they
+  pass, inside OneDrive only rename-in-place is allowed.
+- Decision log `Docs\DECISIONS.md` (outside the repo): **D1-D9 all Settled 2026-11-07.** D1 OneDrive intra-root
+  actions on verified-local files (narrowed to rename in place pending R4.13); D2/D7 a visible synced quarantine
+  folder per root; **D6 no purge in Phase 4, the product never deletes**; D3 PDF title by `pypdf` incremental;
+  D4 journal local and never synced; D5 gate 1 scope; **D8 moves may create folders as approved steps**; D9 the
+  PDF modified date is left as written; **D10 never touch shared folders or shortcuts; D11 the owner's per-job
+  statement where Windows cannot prove a folder private** (D10-D11 added after R4.13).
 
 ## Tests at the base (`phase3-b20` code)
 **Quick tier, 2026-11-01:** `Scripts\run_suites.ps1 -Tier quick`: **20 of 20 suites exited 0, 1,585 checks
