@@ -97,6 +97,11 @@ cloud-root moves; anything on a file that is not fully local; collision policies
 movable units; network shares and removable drives; templates. Each "out" is a candidate for a later build,
 not a dead end.
 
+**Amended 2026-11-07 (owner decision D1, `Docs\DECISIONS.md`):** rename and move *inside the same OneDrive sync
+root* are in for a file verified fully local at the moment of action, gated on the R4.6 hand probe and a Python
+placeholder probe; moves out of a sync root, delete and Recycle Bin inside one, and any cloud-only file stay out.
+Detail: `PHASE4_SYNTHESIS.md` §8.1 D1.
+
 ## 6. Next steps
 1. Thomas: run the scout brief, then the research briefs, in Claude Code (§3).
 2. Architect (new chat or this one): the synthesis, from the reports; the R4.7 / R4.9 / R4.11 / R4.12 answers.
