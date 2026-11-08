@@ -1,23 +1,26 @@
 # FileOrganizer: status (one page)
 
-**Updated:** 2026-11-07 · **Keep this current at every release and at the end of every session.** The canonical
+**Updated:** 2026-11-08 · **Keep this current at every release and at the end of every session.** The canonical
 plan is `PROJECT_PLAN.md` (workspace root); this page only says where things stand.
 
 ## Where we are
-**Phase 4 (Act and Verify) is approved to start. Nothing is built yet.** On 2026-11-07 the owner approved the v1
-boundary and the build order B21-B27 in `Handoffs/Phase4/PHASE4_SCOPING.md`.
+**Phase 4 (Act and Verify): B21 is built, reviewed and released** as `phase4-b21` (approved by the owner
+2026-11-08). B21 is the safety core: the action journal, the project and root locks, the job and item state machine,
+the projection of journal events into the catalog, and the reconciliation tables. **It changes no real file**; its
+only action is a fake one on a fake filesystem inside a test sandbox. Handback: `PHASE4_B21_HANDBACK.md`; changes:
+`CHANGELOG-B21.md`; design: `ARCHITECTURE.md`, section "Phase 4 (B21): journal, locks, jobs".
 
-**Next step:** the B21 handoff is written (`Handoffs\B21\B21_HANDOFF.md`, uncommitted). On the owner's yes the
-steward files it on `phase4` and makes `build/b21`; then a `fo-builder` session on Sonnet builds units 1-4 and an
-Opus session units 5-6. In parallel, the owner runs the extended hand probe (R4.6 §6 steps 1-8,
-`R4_REVIEW_GATE1.md` §6 steps 9-15, `R4.13_report.md` §7 steps 16-23; needed before B22).
+**Next step:** the owner's extended hand probe on throwaway files (R4.6 §6 steps 1-8, `R4_REVIEW_GATE1.md` §6
+steps 9-15, `R4.13_report.md` §7 steps 16-23), and the lock and journal probes that need a person or a VM (L2, L5,
+L6, L7, J2, J3; steps in the B21 handback). Both are needed before B22. Then review gate 2 (a different-model design
+review of the move/rename primitive) and the B22 handoff.
 
 | Phase | Status | Final build / tag |
 |---|---|---|
 | 1 Observe | Shipped | B6.2 · `phase1-b6.2` |
 | 2 Understand | Shipped; closeout approved 2026-09-19 | B7.2 · `phase2-b7.2` |
 | 3 Decide / Plan | **Closed 2026-10-13** by the owner (`Docs\Handoffs\P3_CLOSEOUT.md` §5a) | B20 · `phase3-b20` = `045a0a1` |
-| 4 Act and Verify | **Approved; research next** | none yet; builds are B21+ on `build/b##`, tags `phase4-b##` |
+| 4 Act and Verify | **In progress: B21 released** | B21 · `phase4-b21`; builds on `build/b##`, tags `phase4-b##` |
 | 5 Maintain | Not started (the product-completion boundary) | |
 | 6-8 | Research horizon | |
 
@@ -28,12 +31,12 @@ fully local at the moment of action, after the probes pass (D1); moves between f
 and its probe**; creating missing destination folders as approved steps (D8). Out (stay blocked, with the reason
 shown): any deletion by the product (D6), moves out of a sync root, Recycle Bin, metadata writes inside a sync
 root, cross-volume moves, files that are not fully local, hard-linked files, other collision policies, folders as
-movable units, network shares and removable drives, templates.
+movable units, network shares and removable drives, templates, shared folders and shortcuts (D10).
 
 ## Build order (approved 2026-11-07)
 | Build | Content |
 |---|---|
-| B21 | Action lock; journal; job/item state machine (fake action, fault injection; touches no real file). **Handoff written 2026-11-07** |
+| B21 | Action lock; journal; job/item state machine (fake action, fault injection; touches no real file). **Released 2026-11-08** |
 | B22 | Same-volume move/rename primitive, with just-in-time preflight; sandbox only |
 | B23 | Remove Location into quarantine, with undo |
 | B24 | Move / rename plan items, with location succession |
@@ -44,42 +47,32 @@ movable units, network shares and removable drives, templates.
 Review gate 2 (a different-model design review of any code that moves, renames, deletes or writes) falls before
 B22 and before B26.
 
-## Research status (Phase 4 gap-fill)
-- Scout lookups: done, 7 of 7 answered (`Handoffs/Phase4/R4_SCOUT_ANSWERS.md`).
-- Five research briefs: **done 2026-11-07**, reports `R4.1/.2/.3/.6/.8_report.md` in `Docs/Research/phase_4/R4/`
-  (59 / 31 / 44 / 42 / 29 KB), each with a source ledger.
-- Synthesis: `Handoffs/Phase4/PHASE4_SYNTHESIS.md` (committed `985366f`; §12 amendments uncommitted): R4.7, R4.9,
-  R4.11, R4.12 answered; final B21-B27 plan.
-- **Review gate 1 held 2026-11-07**: ChatGPT and Gemini (independent) plus a Claude Sonnet pass. Disposition
-  `Docs\Research\phase_4\R4\R4_REVIEW_GATE1.md`: 24 findings accepted, 4 partially, none rebutted outright. The
-  five faults both independent reviewers found (cross-database commit gap, sticky fulfilment, destination bound by
-  path, hidden quarantine unsynced in OneDrive, purge vs axiom 11) are all fixed in the design (synthesis §12).
-- Brief `Handoffs\Phase4\B-R4.13.md` (OneDrive shared folders, shortcuts, Vault, naming limits, pin inheritance):
-  **done 2026-11-07**, `Docs\Research\phase_4\R4\R4.13_report.md` (42 KB), adopted in synthesis §12 with owner
-  decisions D10 (never touch shared folders or shortcuts) and D11 (the owner's per-job statement stands in where
-  Windows cannot prove a folder private). Its probes (owner hand probes 16-23, B22 U1) are still to run; until they
-  pass, inside OneDrive only rename-in-place is allowed.
-- Decision log `Docs\DECISIONS.md` (outside the repo): **D1-D9 all Settled 2026-11-07.** D1 OneDrive intra-root
-  actions on verified-local files (narrowed to rename in place pending R4.13); D2/D7 a visible synced quarantine
-  folder per root; **D6 no purge in Phase 4, the product never deletes**; D3 PDF title by `pypdf` incremental;
-  D4 journal local and never synced; D5 gate 1 scope; **D8 moves may create folders as approved steps**; D9 the
-  PDF modified date is left as written; **D10 never touch shared folders or shortcuts; D11 the owner's per-job
-  statement where Windows cannot prove a folder private** (D10-D11 added after R4.13).
+## Research and decisions
+- Research for Phase 4 is done: scout lookups 7/7, reports R4.1/.2/.3/.6/.8 and R4.13 in
+  `Docs/Research/phase_4/R4/`; synthesis `Handoffs/Phase4/PHASE4_SYNTHESIS.md` (§12 holds the gate-1 amendments and
+  wins over earlier sections). Review gate 1 held 2026-11-07 (ChatGPT, Gemini, Claude); disposition
+  `Docs\Research\phase_4\R4\R4_REVIEW_GATE1.md`.
+- Decision log `Docs\DECISIONS.md` (outside the repo): **D1-D11 Settled**, plus the B21 build rulings (the breaker
+  rule max(3, ceil(10 % of items)); the builder's questions Q-1..Q-6 answered as built). None open.
 
-## Tests at the base (`phase3-b20` code)
-**Quick tier, 2026-11-01:** `Scripts\run_suites.ps1 -Tier quick`: **20 of 20 suites exited 0, 1,585 checks
-passed.** Not re-run since. Standard and full tiers (mutation testing 69/69 killed, `b6_regression` 73/73) were last
-run for the B20 handback.
+## Tests (`phase4-b21`)
+**Standard tier, 2026-11-08** (`Scripts\run_suites.ps1 -Tier standard`, the builder's run): **26 of 26 suites exited
+0.** The Phase 1-3 suites at their base counts (quick-tier Phase 1-3 suites 1,585 checks); `p3_mutation_check`
+69/69 mutants killed; `b6_regression` 73/73. The new suites, re-run by the Architect: `p4_journal_check` 291/291,
+`p4_lock_check` 76/76, `p4_mutation_check` 23/23 mutants killed (controls 15/15, the real tree untouched). No test
+sandbox left; `%LOCALAPPDATA%\FileOrganizer\` never created. `Test-Installation.ps1`: manifest verified (249 rows).
+Schema 17 (migration 017 adds one table, `p4_journal_binding`).
 
 ## Known open items
+- **Not run yet:** lock and journal probes L2, L5, L6, L7, J2, J3 (need a person, a second account or a VM);
+  L9 and L10 (OneDrive, SMB) are never run by tests. The owner's hand probes 1-23. All before B22.
 - **A-014** (a case-only pair in a case-sensitive folder folds into one row) is kept by decision, 2026-09-20.
-- **OneDrive placeholder cases** (L-001, L-002, L-006) have never been exercised; R4.6 plans a hand probe.
+- **OneDrive placeholder cases** (L-001, L-002, L-006) have never been exercised; the hand probe covers them.
 - **Stale plan text.** Root `PROJECT_PLAN.md` §6 "After B20" still calls §5a empty and B20 uncommitted. Fix it at
   the next sync.
 - **Do not push local `phase2` as it is.** In the main clone it points at B10 code, ahead of the remote `phase2`.
 - **Owner decisions pending:** fast-forward `main`; delete local `phase3-bNN` branches whose names match tags (use
   `refs/tags/...` when you mean the tag); slim `PROJECT_PLAN.md`; archive old build folders and duplicate documents.
-  (The P3.R12 second opinion is now part of review gate 1, by decision D5.)
 
 ## How work runs
 See `AGENTS.md` for the team, the models, the branches and the rules. One planner owns the plan at a time.

@@ -152,7 +152,7 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 
 MODULE_VERSION = "1.14.0"
-APP_VERSION = "B20"
+APP_VERSION = "B21"
 
 #: Highest schema version this build understands. A database whose
 #: user_version exceeds this is refused (see open_project).
@@ -194,7 +194,10 @@ APP_VERSION = "B20"
 #: 16 -> B18 (the Phase 3 closeout round): analyzer_result.encryption_state,
 #:      encryption evidence from the PDF and Office analyzers; see
 #:      migrations/016_encryption_evidence.sql.
-APP_SCHEMA_VERSION = 16
+#: 17 -> B21 (Phase 4, the action journal): p4_journal_binding -- the one fact the catalog keeps
+#:      about its journal (which journal belongs to this project); see
+#:      migrations/017_phase4_journal_binding.sql. Nothing in Phases 1-3 reads it.
+APP_SCHEMA_VERSION = 17
 
 PROJECT_JSON_NAME = "project.json"
 PROJECT_JSON_SCHEMA = "fileorganizer.project/1"

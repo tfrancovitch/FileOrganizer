@@ -24,7 +24,7 @@ Resources\Phase3\fingerprint_vectors.json. What this proves, in order:
      called. So the payload schema stays /1.
   4. Revisions LOCKED BY THE B15, B16 AND B17 CODE (each materialized from its
      git tag and run in its own process on a corpus with non-ASCII names) are
-     opened by this build -- the database migrated to schema 16 -- and verify
+     opened by this build -- the database migrated to schema 17 -- and verify
      against the fingerprint they were locked with, under the payload schema
      recorded (none: /1). A revision locked by this build records its schema
      in its basis and verifies too.
@@ -398,9 +398,9 @@ def test_old_locks(tmp: Path):
         same = old_canonical(PL.payload(items), calls) == PL.canonical(PL.payload(items))
         calls_all += calls
         check(f"{tag}: its code locked a revision on schema {schema} ({old['items']} items: {', '.join(old['kinds'])}, non-ASCII "
-              "paths among them); this build migrated the project to 16 and it verifies against the fingerprint it was "
+              "paths among them); this build migrated the project to 17 and it verifies against the fingerprint it was "
               "locked with, under /1 (its basis records no schema)",
-              old["ok"] and before == schema and conn.execute("PRAGMA user_version").fetchone()[0] == 16
+              old["ok"] and before == schema and conn.execute("PRAGMA user_version").fetchone()[0] == 17
               and rev["fingerprint"] == old["fingerprint"] and "payload_schema" not in rev["basis"]
               and st.verify_plan_revision(old["revision"]) is True and PL.fingerprint(items) == old["fingerprint"] and same)
         if tag == "phase3-b17":

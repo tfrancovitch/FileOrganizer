@@ -8,6 +8,8 @@ routing, bulk, similar images, bulk over pairs, Survey Mode, the incremental
 refresh, the Plan Builder, metadata and its page, the closeout round, B19's four fixes) at the end say what B7 and
 B8–B19 added on top; the Phase 3 section also holds its written state machines, the path-matching rule (renamed roots,
 links and mounts included), the rule registry as JSON Schema, the identifier rule and the plan fingerprint.
+The **Phase 4 (B21)** section, last, says what the action journal, the locks and the job state machine add (no real file
+is touched yet); it also says how a lost or corrupt journal is put back.
 
 ---
 
@@ -1120,3 +1122,188 @@ which protection a copy names as its rule by the policies' content
 set in canonical form. `p3_relabel_check` replaces every id in 13 spaces
 (3 seeds; a hand-built model and a real project) and requires every result
 and every list order to map back unchanged.
+
+---
+
+## Phase 4 (B21): journal, locks, jobs
+
+B21 is the first Phase 4 build, and it **touches no real file**. It builds the machinery every later Phase 4 build
+writes through: a separate durable **action journal**, the **project lock** and the **root-level locks**, the
+**job and item state machine** with its commit points, a replayable **projection** of journal events into the catalog,
+and **reconciliation tables** that classify an interrupted job on restart and never act on their own. All of it is
+driven by a fake action over a fake filesystem (a JSON file inside a test sandbox), because the first real file step
+is B22. The package is `Scripts\Phase4\` (`paths`, `journal`, `locks`, `jobs`, `projection`, `reconcile`); the
+test-only fakes are `Scripts\p4_fakes.py` and are never part of the package. No AI or recovery code is ever the
+action authority (axiom 17): a person approves a job, and a person chooses every resume, retry or roll-back.
+
+```
+   catalog (FileOrganizer.db, schema 17)            journal (<project_uid>.journal.db, its own file)
+   p4_journal_binding: at most one row  <------->   journal_meta  job  operation_item  evidence_snapshot
+   (which journal belongs to this project)          operation_event  recovery_record  owner
+            ^                                                  ^
+            |  P: projectors write catalog rows,               |  C0 C1 C2 C3 (P mark) C4: each its own
+            |  keyed by action_id, idempotent                  |  commit, each checks the fencing token
+            +---------------- projection.py -------------------+
+                                                               ^
+   locks.py: <project_uid>.lock (byte 0)  +  root_<key>.lock per source root  --- held for any execute / recovery / undo run
+   reconcile.py: tables A C D E F as data -- reads, classifies, shows; takes no action
+```
+
+### Where the journal and the locks live
+
+The journal, its `-wal` and `-shm`, and the locks live in a **local, never-synced, non-network folder keyed by
+`project_uid`**: by default `%LOCALAPPDATA%\FileOrganizer\journals\<project_uid>\`. `paths.py` refuses a UNC path,
+a drive that is not `DRIVE_FIXED`, and any path under the folders named by the `OneDrive`, `OneDriveConsumer` and
+`OneDriveCommercial` environment variables (the validator is injectable; B22 adds the Cloud Files check). Every test
+passes a sandbox folder as the override, and no test creates or touches `%LOCALAPPDATA%\FileOrganizer\`. The
+root-level locks share one folder for all projects (`journals\_root_locks`), because their job is to exclude *other*
+projects.
+
+### The journal (`journal.py`)
+
+A separate SQLite file: `journal_mode=WAL`, **`synchronous=FULL` on every connection that writes it** (the one
+function `connect_writer` opens them), explicit `BEGIN IMMEDIATE` / `COMMIT`, `foreign_keys=ON`, `busy_timeout=5000`,
+its own `application_id` and `user_version`. It is backed up only through SQLite's backup API (`Journal.backup_to`);
+a live journal file is never copied. Tables: `journal_meta` (one row: journal uid, project uid, the machine's
+`MachineGuid`, machine name, app version), `job`, `operation_item`, `evidence_snapshot`, `operation_event`,
+`recovery_record`, `owner`. Events are append-only facts (triggers forbid changing or deleting one; only
+`projection_state` may move, and only `PENDING` to `PROJECTED`), `UNIQUE(item_id, seq)`, and at most one event of an
+action carries a projection. A job freezes its revision, manifest hash and authorising record at C0 (a trigger).
+It is **journalled intent and verification**, never a transaction.
+
+**Migration 017** adds one catalog table, `p4_journal_binding` (at most one row: project uid, journal uid, machine
+guid, machine name, created time), and nothing else; no other table, row or column changes, and a plan revision
+locked under B20 still verifies and is not obsoleted. `APP_SCHEMA_VERSION` is **17**. The opening rules
+(`journal.open_for_project`): no binding and no journal, create the journal and then write the binding; binding but
+no journal, **refuse** (`JournalMissing`; the product never auto-creates a blank journal for a project that already
+has one); journal but no binding and no jobs in it, complete the binding; journal but no binding and jobs in it,
+refuse and ask (`JournalBindingAsk`); a project uid, machine or journal uid that differs, refuse
+(`JournalMismatch`). v1 mutation is single-machine.
+
+### Commit points
+
+Never merged, never reordered, each a separate journal commit that checks the fencing token inside its own
+transaction:
+
+| Point | What it records |
+|---|---|
+| **C0** | Job approval: the manifest hash, the catalog backup path (taken with `fo_db.backup_database`), the person's answer to "OneDrive is synced and not paused" exactly as given (never inferred), the revision reference, every item `PLANNED`. The revision check runs first. |
+| preconditions | The live preflight of the item. No file change. |
+| **C1** | Intent: the evidence snapshot, the before-state, the recovery token, item `INTENT`. Committed **before** any file call. |
+| *the one step* | The action. |
+| **C2** | Result: what the step reported (native result, Win32 error). Never recorded before the step ran. |
+| verify | The action observes the post-state. |
+| **C3** | Verification and the terminal item state, with the projection payload (the event is `PENDING`). |
+| **P** | The projector writes the catalog (its own commit); then the event is marked `PROJECTED` (its own fenced journal commit). Only after C3. |
+| **C4** | The job closes only when every item is terminal and every event is `PROJECTED` or `NOT_APPLICABLE`. |
+
+### Locks (`locks.py`)
+
+The **project lock** is `<project_uid>.lock`, held with `msvcrt.locking(fd, LK_NBLCK, 1)` on byte 0 for the life of
+any execute, recovery or undo run (non-blocking; a busy lock is retried for 5-10 s, 7 s by default, then reported
+busy with the holder's information). Owner information (Windows user, machine name, PID, start time, operation,
+heartbeat) is in bytes 1 onward and mirrored in the journal's `owner` row; a second instance reads it with
+`holder_info()`. The owner's `run_id` is a **fencing token**: every C0-C4 and P transaction checks it after
+`BEGIN IMMEDIATE`, so a run that was frozen while another took the lock fails `JOB_GLOBAL` and writes nothing. The OS
+frees the byte lock when the process dies (measured: milliseconds after `taskkill /F`, `os._exit` and an access
+violation), so a leftover lock file is harmless. No named mutex, no `BEGIN EXCLUSIVE` held across a run, no lease alone.
+
+The **root-level lock** is one file per source root, named from the root directory's (`st_dev`, `st_ino`), recording
+the project, the display path and the key of every ancestor. To acquire it a short-held `registry.lock` is taken;
+the root is refused if another project's *held* root lock is the same root, contains it or is inside it (the OS lock
+is the authority). A project's own nested roots do not exclude each other (the project lock already serialises it).
+
+### Jobs and items (`jobs.py`)
+
+Item kinds: `move`, `rename`, `case_only`, `quarantine`, `restore`, `create_folder`, `metadata_write`, and `fake`,
+the only one B21 executes. Item and job states, and the only allowed edges between them, are data
+(`ITEM_TRANSITIONS`, `JOB_TRANSITIONS`); every state change goes through `set_item_state` / `set_job_state`, which
+refuse any other edge. **Refusal scopes:** `ITEM_LOCAL` (CONFLICT, STALE, a typed BLOCKED_LOCKED or BLOCKED_CLOUD_ONLY,
+and only when it happened before any mutation) lets the job go on; everything else, and every class the module does
+not name, is `JOB_GLOBAL` and pauses the job (unknown blocks). **Circuit breaker:** three consecutive refusals of one
+class, or refusals of one class reaching `max(3, ceil(10 % of the job's items))`, or any `source_root_available`
+failure, pause the job. A transient lock refusal is retried at 250 ms, 1 s and 3 s, then ends `BLOCKED_LOCKED`. Any
+journal commit failure, including an injected `SQLITE_FULL`, is `JOB_GLOBAL`. The **revision check** is a callback
+that runs at C0 and at every resume, never from the job's own writes. A paused job keeps the lock while its process
+lives; on exit it becomes `INTERRUPTED` and the lock is released. A resume re-runs each item's preflight and refuses
+to run past an item that needs a person's decision.
+
+### The projection (`projection.py`)
+
+The journal is the single authority for physical actions. A catalog change that records one is a **projection of one
+journal event**: a function of that event alone, keyed by its `action_id`, idempotent. A projector is registered by
+item kind and has `apply`, `observe` and `action_ids`. B21 registers none for the product (`PRODUCT_PROJECTORS` is
+empty; B24 writes the real ones) and tests register a fake that writes a sandbox-only table. On every open
+(`projection.open_session`: validate the folder, take the project lock, apply the opening rules, write the owner row,
+replay by table E, mark orphaned `RUNNING` / `PAUSED` jobs `INTERRUPTED`) every `PENDING` event is replayed and a
+catalog row the journal never recorded stops everything. The same replay repairs a catalog restored from an older
+backup.
+
+### Reconciliation (`reconcile.py`)
+
+Five tables **as data**: **A** same-volume rename or move (R4.3 rows A1-A12), **C** metadata write (C1-C4), **D** job
+level, **E** journal x projection (E1-E5), **F** `create_folder` (F1-F4). Table B (cross-volume) is not built. Each
+table has a key space and an X row: a key that no explicit row covers is `UNKNOWN_AFTER_INTERRUPT`, "ask". The
+classifier maps (last durable journal state, observed disk state, identity match) to exactly one row, and the suite
+proves over the whole key space (A 270, C 40, D 21, E 15, F 30 keys) that no key is covered by two rows. In all, 36
+rows. **Recovery classifies and shows; it never acts.** It reads through a read-only journal connection, asks an
+observer what the disk shows, and returns each row's recovered state and next action. Every resume or roll-back is a
+new journalled action that the person chooses; a retry is a new step with its own intent, never a replay. The one
+exception is table E's catalog replay and record on open, which re-derives catalog rows from the journal and never
+touches a file.
+
+| Table | Rows | Next actions |
+|---|---|---|
+| A | A1 INTERRUPTED_NOT_APPLIED (finish) .. A12 CHANGED_AFTER_FINAL (none), AX | finish / record / ask / none |
+| C | C1-C4, CX | finish / record / ask |
+| D | D1-D6, DX | ask / finish / none |
+| E | E1 replay, E2 record, E3 replay, E4 ask, E5 none, EX | replay / record / ask / none |
+| F | F1-F4, FX | finish / record / ask |
+
+### Tests
+
+`p4_journal_check` (the journal, the tables walked over every pair, a 500-item fake job, faults, the projection, the
+generated reconciliation scenarios reached by real kills where possible), `p4_lock_check` (the lock probes of R4.3
+5.5, the project and root locks, cross-process kills), and `p4_mutation_check` (23 mutants of the rules above, each
+one text substitution in a sandboxed copy, a control run first). All three work under
+`tempfile.mkdtemp(prefix="fo_p4_b21_")` and assert that no such folder survives them and that
+`%LOCALAPPDATA%\FileOrganizer\` is unchanged.
+
+### The restore ceremony for a lost or corrupt journal
+
+The action journal (`Scripts\Phase4\journal.py`) is the single authority for what the product did to the
+user's files. If it is lost or damaged the product does not guess, and it never creates a blank journal for a
+project that already has one (`JournalMissing`). It stops, and the person goes through this ceremony.
+
+**When.** The project's journal will not open: it is missing while the catalog's `p4_journal_binding` names it
+(`JournalMissing`); the file is not a journal, has a newer schema or has no `journal_meta` row (`JournalMismatch`,
+`JournalCorrupt`); the catalog was restored without its binding while the journal holds jobs (`JournalBindingAsk`);
+or table E finds catalog rows the journal never recorded (row E4, `ProjectionAsk`). Until the ceremony is over, no
+execute, recovery or undo run starts; the project can still be opened to look at.
+
+**The four steps.**
+
+1. **Take the latest backup.** A journal is backed up only through SQLite's backup API (`Journal.backup_to`); a
+   live journal file is never copied. Set the damaged file and its `-wal` and `-shm` aside (rename them; nothing is
+   deleted, D6) and put the latest backup in its place under the journal's name. A catalog is restored the same
+   way: close every connection, remove its stale `-wal` and `-shm` first (SQLite would replay a stale WAL into the
+   restored file), then copy the backup in. The catalog backup taken at C0 of each job is named in that job's
+   `catalog_backup_path`.
+2. **Compare its last receipt with the identities on disk.** The backup knows only what happened before it was
+   taken. Run the reconciliation (`reconcile.recover_on_start`: tables A, C, D and F) against what is on disk now.
+   It is read-only: it reads the journal and looks at the disk, and shows each job and each unfinished item with
+   its row and next action. A step that ran after the backup was taken shows as applied but unrecorded (A2, A7,
+   F2) or as matching no expected shape (AX, FX, "ask"). Nothing is inferred.
+3. **Reconcile the catalog.** Open the project for a run (`projection.open_session`). Table E compares the
+   catalog's projected rows with the restored journal: rows the journal recorded and the catalog lacks are
+   replayed (E1, E3); a catalog row the journal never recorded stops everything (E4, "ask"). If the catalog is
+   newer than the restored journal, the person chooses between restoring the catalog backup that pairs with the
+   journal (the C0 backup of the last job the journal knows) and settling each E4 row; the product does not choose.
+4. **Get the person's acknowledgement before any action.** Show the whole list, every job and item row with its
+   next action, and record the person's acknowledgement as the authorising record of what they choose next. Every
+   "finish", "record" or "roll back" after that is a new journalled action that the person starts; a retry is a
+   new step with its own intent. Recovery itself never acts.
+
+**No backup at all.** Then there is nothing to restore. B21 builds no way past `JournalMissing`: the project stays
+blocked for mutation until a later build gives the person an explicit, acknowledged way to bind a new journal. It
+will not be automatic.

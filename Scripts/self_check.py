@@ -59,7 +59,7 @@ MINIMUM_PYTHON = (3, 11)
 #: The current build requires schema 11 (Phase 3's decision records, review
 #: events and bulk batches on top of Phase 2's projections and FTS map). Kept equal to
 #: fo_db.APP_SCHEMA_VERSION; the check failed on every machine while it said 7.
-REQUIRED_SCHEMA_VERSION = 16
+REQUIRED_SCHEMA_VERSION = 17
 
 #: import name -> (pip name, what stops working without it)
 OPTIONAL_PACKAGES = {

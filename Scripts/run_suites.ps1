@@ -11,8 +11,8 @@ console shows one line per suite.
   powershell -ExecutionPolicy Bypass -File Scripts\run_suites.ps1 -List
 
 Tiers
-  quick     self_check, p2_regression and every Phase 3 suite except mutation testing
-  standard  quick + p3_mutation_check + b6_regression (once) + p2_dashboard_check (opens the real window)
+  quick     self_check, p2_regression, every Phase 3 suite except mutation testing, and the Phase 4 journal and lock suites
+  standard  quick + p3_mutation_check + p4_mutation_check + b6_regression (once) + p2_dashboard_check (opens the real window)
   full      standard + b6_regression four more times (five in all) + p2_mutation_check + p2_hostile_check
             + p2_acceptance (only with -AcceptProject; otherwise reported SKIPPED)
 
@@ -37,9 +37,10 @@ $quick = @(
     'p3_plan_check', 'p3_closeout_check', 'p3_encryption_check', 'p3_revalidation_check',
     'p3_metadata_check', 'p3_metadata_view_check', 'p3_refresh_check', 'p3_survey_check',
     'p3_visual_check', 'p3_visual_bulk_check', 'p3_relabel_check', 'p3_dangling_check',
-    'p3_registry_schema_check', 'p3_fingerprint_check', 'p3_organize_check'
+    'p3_registry_schema_check', 'p3_fingerprint_check', 'p3_organize_check',
+    'p4_journal_check', 'p4_lock_check'
 )
-$standard = $quick + @('p3_mutation_check', 'b6_regression', 'p2_dashboard_check')
+$standard = $quick + @('p3_mutation_check', 'p4_mutation_check', 'b6_regression', 'p2_dashboard_check')
 $full = $standard + @('b6_regression', 'b6_regression', 'b6_regression', 'b6_regression',
                       'p2_mutation_check', 'p2_hostile_check', 'p2_acceptance')
 

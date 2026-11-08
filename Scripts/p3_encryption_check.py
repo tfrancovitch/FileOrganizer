@@ -323,8 +323,8 @@ def test_pipeline(tmp: Path, built):
     conn = connect(project_dir, write=True)
 
     section("1. Schema 16: analyzer_result.encryption_state")
-    check("schema 16; the column exists; the app_meta contract row names it",
-          conn.execute("PRAGMA user_version").fetchone()[0] == 16
+    check("schema 16 or later; the column exists; the app_meta contract row names it",
+          conn.execute("PRAGMA user_version").fetchone()[0] >= 16
           and "encryption_state" in [r[1] for r in conn.execute("PRAGMA table_info(analyzer_result)")]
           and conn.execute("SELECT value FROM app_meta WHERE key='phase2.encryption_evidence'").fetchone()[0]
           == "analyzer_result.encryption_state/1")
